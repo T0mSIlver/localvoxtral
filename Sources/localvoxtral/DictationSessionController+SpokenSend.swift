@@ -171,23 +171,19 @@ extension DictationSessionController {
         liveSpokenSendTypedSinceReturn = false
         liveSpokenSendReturnPressed = false
         liveSpokenSendTypedWord = ""
-        liveSpokenSendSegmentMode = .undecided
         liveSpokenSendBlockLogged = false
         liveSpokenSendPaneLeft = false
         textInsertion.clearLiveInsertionTargetPIDs()
     }
 
-    /// Whether the current segment's text is held back until its final. Taken
-    /// at the segment's first insertion and kept for the rest of it: a segment
-    /// half typed live cannot have its trigger removed, and one half withheld
-    /// must be typed whole at its final.
-    func liveSpokenSendWithholdsSegment() -> Bool {
-        if liveSpokenSendSegmentMode == .undecided {
-            let withholds = settings.liveSpokenSendEnabled
-                && (textInsertion.promptRelayTakesText || frontmostReturnSubmitsPID() != nil)
-            liveSpokenSendSegmentMode = withholds ? .withheld : .typedLive
-        }
-        return liveSpokenSendSegmentMode == .withheld
+    /// Whether a segment that reaches the trigger is withheld until its
+    /// final. `spokenCommandGate` asks at the segment's first insertion and
+    /// keeps the answer for the rest of it: a segment half typed live cannot
+    /// have its trigger removed, and one half withheld must be typed whole
+    /// at its final.
+    var liveSpokenSendIsArmed: Bool {
+        settings.liveSpokenSendEnabled
+            && (textInsertion.promptRelayTakesText || frontmostReturnSubmitsPID() != nil)
     }
 
     /// A final of a withheld segment. Only the backend's non-empty final can
@@ -196,7 +192,6 @@ extension DictationSessionController {
     /// never parsed. The cost: when the final is not empty, words only a
     /// partial had are not typed.
     func deliverLiveSpokenSendFinal(_ finalText: String, merged: String, startsMidWord: Bool) {
-        liveSpokenSendSegmentMode = .undecided
         let final = finalText.trimmed
         guard !final.isEmpty else {
             spokenSendLatch.noteNonSubmittingFinal()
@@ -244,7 +239,7 @@ extension DictationSessionController {
             // Tabs of one terminal, and Claude Desktop's sessions, share a
             // pid: only the pane read back tells the session's prompt from
             // another one. Later segments wait, as behind a go-to.
-            liveGoToTask = Task { @MainActor [weak self] in
+            spokenCommandGate.action = Task { @MainActor [weak self] in
                 let shows = await navigator.focusedPaneShows(sessionID: paneSessionID, bundleID: bundleID)
                 guard let self, !Task.isCancelled else { return }
                 if self.wasCancelled {
@@ -260,8 +255,8 @@ extension DictationSessionController {
                     self.liveSpokenSendPaneLeft = true
                     self.typeLiveSpokenSendText(final, startsMidWord: startsMidWord)
                 }
-                self.liveGoToTask = nil
-                self.drainLiveGoToQueue()
+                self.spokenCommandGate.action = nil
+                self.drainLiveSpokenCommandQueue()
             }
         }
     }
@@ -288,16 +283,6 @@ extension DictationSessionController {
             if case .unsupported = SessionPaneFocusRoute.of(snapshot) { return nil }
             return snapshot.sessionID
         }
-    }
-
-    /// A withheld segment promoted without a final (stop, dropped socket):
-    /// typed as text, never a trigger.
-    func deliverPromotedLiveSpokenSendSegment(_ segment: String, startsMidWord: Bool) {
-        let mode = liveSpokenSendSegmentMode
-        liveSpokenSendSegmentMode = .undecided
-        guard mode == .withheld else { return }
-        spokenSendLatch.noteNonSubmittingFinal()
-        typeLiveSpokenSendText(segment, startsMidWord: startsMidWord)
     }
 
     /// Live text was typed: the next withheld segment needs a space before

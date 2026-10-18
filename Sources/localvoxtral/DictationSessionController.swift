@@ -626,13 +626,12 @@ final class DictationSessionController {
     /// sizes the next one's deadline (#1867).
     @ObservationIgnored
     let secondPassUploadRates = StopSecondPass.UploadRates()
+    /// Live Auto-Paste's hold-back for spoken commands
+    /// (`DictationSessionController+SpokenCommandGate.swift`), reset per session.
+    @ObservationIgnored
+    var spokenCommandGate = SpokenCommandGate(rules: DictationSessionController.liveSpokenCommandRules)
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
-    enum LiveSpokenSendSegmentMode {
-        case undecided, typedLive, withheld
-    }
-    @ObservationIgnored
-    var liveSpokenSendSegmentMode = LiveSpokenSendSegmentMode.undecided
     @ObservationIgnored
     var spokenSendLatch = SendNowResubmitLatch()
     /// Whether live text was typed since the last Return, so the next
@@ -655,20 +654,6 @@ final class DictationSessionController {
     /// Return: no Return for the rest of this dictation.
     @ObservationIgnored
     var liveSpokenSendPaneLeft = false
-    /// Live Auto-Paste "go to <name>" state
-    /// (`DictationSessionController+LiveGoToSession.swift`), reset per session.
-    @ObservationIgnored
-    var liveGoToSegmentMode = LiveGoToSegmentMode.undecided
-    /// The current segment's deltas the go-to hold-back has not typed.
-    @ObservationIgnored
-    var liveGoToHeldText = ""
-    /// Resolves a spoken name and brings its pane forward, or reads the
-    /// pane back before a spoken send's Return; later segments wait for it.
-    @ObservationIgnored
-    var liveGoToTask: Task<Void, Never>?
-    /// Segments that ended while `liveGoToTask` ran, in order.
-    @ObservationIgnored
-    var liveGoToQueuedSegments: [LiveGoToQueuedSegment] = []
     /// Where the last go-to of this dictation moved the words, if one did.
     @ObservationIgnored
     var liveGoToLanding: LiveGoToLanding?

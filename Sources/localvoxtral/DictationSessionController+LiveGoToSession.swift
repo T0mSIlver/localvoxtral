@@ -2,20 +2,6 @@ import ClaudeContextWire
 import Foundation
 import os
 
-/// Where a Live Auto-Paste segment stands with "go to <name>" (#747).
-enum LiveGoToSegmentMode {
-    /// No delta of this segment has arrived.
-    case undecided
-    /// Held: what was heard so far may still read "go to".
-    case holding
-    /// Held until the final: it opens with "go to".
-    case possibleCommand
-    /// Held: a go-to ahead of it has not finished.
-    case behindGoTo
-    /// Not a go-to: typed as if there were no hold-back.
-    case passThrough
-}
-
 /// Where a go-to moved the words this dictation.
 enum LiveGoToLanding {
     /// Its pane, read back.
@@ -24,30 +10,20 @@ enum LiveGoToLanding {
     case unverified
 }
 
-/// A segment that ended while a go-to was resolving or focusing.
-enum LiveGoToQueuedSegment {
-    case final(String, merged: String, startsMidWord: Bool)
-    case promoted(String, startsMidWord: Bool)
-}
-
 /// "Go to <name>" in Live Auto-Paste (#747): a segment that is only that
 /// phrase, naming a live joined session, brings its pane forward instead of
-/// being typed. Words are typed as they stream and cannot be taken back, so a
-/// segment is held while what was heard can still read "go to", and one that
-/// opens with it is held until its final. Anything else is released at once:
-/// "Good" is typed as soon as the third letter rules out "go to". Nothing is
-/// held while no session is live. Segments that end while the pane comes
-/// forward wait, then land in it. The name lookup and the focus are Overlay
-/// Buffer's (`SessionNavigator`, `SessionPaneFocusing`).
+/// being typed. `spokenCommandGate` holds a segment while what was heard can
+/// still read "go to", and one that opens with it until its final; anything
+/// else is released at once: "Good" is typed as soon as the third letter
+/// rules out "go to". Nothing is held while no session is live. Segments
+/// that end while the pane comes forward wait, then land in it. The name
+/// lookup and the focus are Overlay Buffer's (`SessionNavigator`,
+/// `SessionPaneFocusing`).
 extension DictationSessionController {
-    /// Session start: nothing carries over.
-    func resetLiveGoToForSession() {
-        liveGoToTask?.cancel()
-        liveGoToTask = nil
-        liveGoToQueuedSegments = []
-        liveGoToSegmentMode = .undecided
-        liveGoToHeldText = ""
-        liveGoToLanding = nil
+    /// Whether a segment that reaches go-to is held: only while a session
+    /// is live.
+    var liveGoToIsArmed: Bool {
+        sessionNavigator?.hasLiveSessions == true
     }
 
     /// The session "call this session" names: the one the dictation joined,
@@ -61,83 +37,6 @@ extension DictationSessionController {
         }
     }
 
-    /// A partial. True when the go-to hold-back took it: nothing else may
-    /// type it.
-    func liveGoToHoldsPartial(_ delta: String) -> Bool {
-        if liveGoToSegmentMode == .undecided {
-            if liveGoToTask != nil {
-                liveGoToSegmentMode = .behindGoTo
-            } else if sessionNavigator?.hasLiveSessions == true {
-                liveGoToSegmentMode = .holding
-            } else {
-                liveGoToSegmentMode = .passThrough
-            }
-        }
-        switch liveGoToSegmentMode {
-        case .passThrough, .undecided:
-            return false
-        case .behindGoTo:
-            liveGoToHeldText += delta
-            return true
-        case .holding, .possibleCommand:
-            liveGoToHeldText += delta
-            switch SessionVoiceCommandParser.segmentPrefix(liveGoToHeldText) {
-            case .undecided:
-                liveGoToSegmentMode = .holding
-            case .possibleCommand:
-                liveGoToSegmentMode = .possibleCommand
-            case .ordinary:
-                releaseLiveGoToHeldPartials()
-            }
-            return true
-        }
-    }
-
-    /// A final. True when the go-to hold-back delivered it.
-    func liveGoToHandlesFinal(_ finalText: String, merged: String, startsMidWord: Bool) -> Bool {
-        let mode = liveGoToSegmentMode
-        liveGoToSegmentMode = .undecided
-        liveGoToHeldText = ""
-        switch mode {
-        case .passThrough:
-            return false
-        case .undecided:
-            // A final with no partial before it.
-            if liveGoToTask != nil {
-                liveGoToQueuedSegments.append(.final(finalText, merged: merged, startsMidWord: startsMidWord))
-                return true
-            }
-            guard sessionNavigator?.hasLiveSessions == true,
-                  SessionVoiceCommandParser.command(in: finalText) != nil
-            else { return false }
-        case .behindGoTo where liveGoToTask != nil:
-            liveGoToQueuedSegments.append(.final(finalText, merged: merged, startsMidWord: startsMidWord))
-            return true
-        case .behindGoTo, .holding, .possibleCommand:
-            break
-        }
-        decideLiveGoToFinal(finalText, merged: merged, startsMidWord: startsMidWord)
-        return true
-    }
-
-    /// A held segment promoted without a final (stop, dropped socket): text,
-    /// never a command, as with the spoken send trigger. True when the go-to
-    /// hold-back delivered it.
-    func liveGoToHandlesPromotion(_ segment: String, startsMidWord: Bool) -> Bool {
-        let mode = liveGoToSegmentMode
-        liveGoToSegmentMode = .undecided
-        liveGoToHeldText = ""
-        switch mode {
-        case .passThrough, .undecided:
-            return false
-        case .behindGoTo where liveGoToTask != nil:
-            liveGoToQueuedSegments.append(.promoted(segment, startsMidWord: startsMidWord))
-        case .behindGoTo, .holding, .possibleCommand:
-            typeLiveGoToHeldSegment(segment, startsMidWord: startsMidWord)
-        }
-        return true
-    }
-
     /// Stop: the session finishes once every go-to and the segments behind
     /// them are done, and text waiting behind a code-fence paste is pasted
     /// (#1664), with the audio recorded up to the stop. The wait counts
@@ -149,10 +48,10 @@ extension DictationSessionController {
         finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
     ) -> Bool {
         // The hold-back's tail first: released behind a paste, it waits too.
-        if liveGoToTask == nil, !wasCancelled {
+        if spokenCommandGate.action == nil, !wasCancelled {
             textInsertion.flushFinalLiveReplacementCorrections()
         }
-        guard liveGoToTask != nil || (!wasCancelled && textInsertion.pendingTextWaitsOnPaste) else { return false }
+        guard spokenCommandGate.action != nil || (!wasCancelled && textInsertion.pendingTextWaitsOnPaste) else { return false }
         isFinalizingStop = true
         statusText = StatusStrings.finalizing
         let sessionAudio = audio.sessionRecording.finish()
@@ -184,7 +83,7 @@ extension DictationSessionController {
         polishAndCommitTask = Task { @MainActor [weak self] in
             // A go-to the queue started after the first one is waited for
             // too, or the cleanup would cancel it and drop what follows it.
-            while let goTo = self?.liveGoToTask {
+            while let goTo = self?.spokenCommandGate.action {
                 await goTo.value
                 guard !Task.isCancelled else { return }
             }
@@ -214,7 +113,7 @@ extension DictationSessionController {
     /// such session is typed as text).
     func drainUntypedLiveTail() -> String {
         var tail = textInsertion.drainPendingInsertionText()
-        for segment in liveGoToQueuedSegments {
+        for segment in spokenCommandGate.takeQueue() {
             let text: String
             let startsMidWord: Bool
             switch segment {
@@ -227,34 +126,20 @@ extension DictationSessionController {
                 ? "" : " "
             tail += separator + text
         }
-        liveGoToQueuedSegments = []
         return tail.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Private
+    // MARK: - Acting
 
-    /// The segment turned out not to be a go-to: what was held is typed as
-    /// the partials would have been, unless the spoken send trigger withholds
-    /// the segment, and then its final types it whole.
-    private func releaseLiveGoToHeldPartials() {
-        liveGoToSegmentMode = .passThrough
-        let held = liveGoToHeldText
-        liveGoToHeldText = ""
-        guard !liveSpokenSendWithholdsSegment() else { return }
-        textInsertion.enqueueRealtimeInsertion(held)
-        noteLiveTextTyped(held)
-        if let accessibilityError = textInsertion.lastAccessibilityError {
-            lastError = accessibilityError
-        }
-    }
-
-    private func decideLiveGoToFinal(_ finalText: String, merged: String, startsMidWord: Bool) {
+    /// A final go-to holds, or a queued one: a command acts, anything else
+    /// goes on to the next phrase.
+    func decideLiveGoToFinal(_ finalText: String, merged: String, startsMidWord: Bool) {
         // Only the backend's final names a session, as only it can trigger a
         // send: the accumulator's merge can hold words the final dropped.
         guard let navigator = sessionNavigator,
               let command = SessionVoiceCommandParser.command(in: finalText)
         else {
-            deliverLiveGoToHeldFinal(finalText, merged: merged, startsMidWord: startsMidWord)
+            passLiveSpokenCommandFinal(after: .goTo, finalText, merged: merged, startsMidWord: startsMidWord)
             return
         }
         // A voice command is a final that submits nothing: the same
@@ -268,19 +153,19 @@ extension DictationSessionController {
             if nameSession(nickname, sessionID: liveThisSessionID, navigator: navigator) {
                 statusText = GoToSessionStatus.named
             } else {
-                deliverLiveGoToHeldFinal(finalText, merged: merged, startsMidWord: startsMidWord)
+                passLiveSpokenCommandFinal(after: .goTo, finalText, merged: merged, startsMidWord: startsMidWord)
             }
             return
         }
-        liveGoToTask = Task { @MainActor [weak self] in
+        spokenCommandGate.action = Task { @MainActor [weak self] in
             // Assigned before this body runs.
-            let task = self?.liveGoToTask
+            let task = self?.spokenCommandGate.action
             let resolution = await navigator.resolve(spokenName: spokenName)
             guard let self, !Task.isCancelled else { return }
             switch resolution {
             case .unknown:
                 Log.dictation.notice("live go to session: no live session has that name; typing it as text")
-                self.deliverLiveGoToHeldFinal(finalText, merged: merged, startsMidWord: startsMidWord)
+                self.passLiveSpokenCommandFinal(after: .goTo, finalText, merged: merged, startsMidWord: startsMidWord)
             case .ambiguous(let count):
                 Log.dictation.notice("live go to session: \(count, privacy: .public) panes have that name; nothing done")
                 self.statusText = GoToSessionStatus.ambiguous
@@ -317,44 +202,11 @@ extension DictationSessionController {
                 }
             }
             // A name that resolved to nothing was delivered as a spoken send,
-            // which may have started its own pane read-back: that task holds
+            // which may have started its own pane read-back: that action holds
             // the queue now and drains it when it is done.
-            guard self.liveGoToTask == task else { return }
-            self.liveGoToTask = nil
-            self.drainLiveGoToQueue()
+            guard self.spokenCommandGate.action == task else { return }
+            self.spokenCommandGate.action = nil
+            self.drainLiveSpokenCommandQueue()
         }
-    }
-
-    /// Delivers the segments that waited, until one of them is itself a
-    /// go-to, or a spoken send that reads its pane back.
-    func drainLiveGoToQueue() {
-        while liveGoToTask == nil, !liveGoToQueuedSegments.isEmpty {
-            switch liveGoToQueuedSegments.removeFirst() {
-            case .final(let finalText, let merged, let startsMidWord):
-                decideLiveGoToFinal(finalText, merged: merged, startsMidWord: startsMidWord)
-            case .promoted(let segment, let startsMidWord):
-                typeLiveGoToHeldSegment(segment, startsMidWord: startsMidWord)
-            }
-        }
-    }
-
-    /// A held final that is not a command: typed whole, through the spoken
-    /// send trigger when it withholds the segment.
-    private func deliverLiveGoToHeldFinal(_ finalText: String, merged: String, startsMidWord: Bool) {
-        if liveSpokenSendWithholdsSegment() {
-            deliverLiveSpokenSendFinal(finalText, merged: merged, startsMidWord: startsMidWord)
-            return
-        }
-        liveSpokenSendSegmentMode = .undecided
-        typeLiveSpokenSendText(merged, startsMidWord: startsMidWord)
-    }
-
-    private func typeLiveGoToHeldSegment(_ segment: String, startsMidWord: Bool) {
-        if liveSpokenSendWithholdsSegment() {
-            deliverPromotedLiveSpokenSendSegment(segment, startsMidWord: startsMidWord)
-            return
-        }
-        liveSpokenSendSegmentMode = .undecided
-        typeLiveSpokenSendText(segment, startsMidWord: startsMidWord)
     }
 }
