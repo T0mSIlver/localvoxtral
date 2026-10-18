@@ -150,6 +150,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
         /// While set, `pump` hands back no `done`: the server is still
         /// transcribing.
         private var holdsDones = false
+        private var doneSpelling = "transcription.done"
         /// While set, `pump` plays no handshake for a socket a rollover
         /// opened: it is still opening.
         private var holdsHandshakes = false
@@ -255,6 +256,14 @@ final class RealtimeContextRolloverTests: XCTestCase {
             lock.unlock()
         }
 
+        /// The spelling the server's `done` reaches the client in: the client
+        /// takes three.
+        func spellDones(_ type: String) {
+            lock.lock()
+            doneSpelling = type
+            lock.unlock()
+        }
+
         /// The socket the client holds now.
         var currentSocket: URLSessionWebSocketTask {
             lock.lock()
@@ -292,8 +301,10 @@ final class RealtimeContextRolloverTests: XCTestCase {
                     return
                 }
                 outbox.removeFirst()
+                var json = next.json
+                if json["type"] as? String == "transcription.done" { json["type"] = doneSpelling }
                 lock.unlock()
-                client.debugHandleFrameForTesting(json: next.json, from: next.generation)
+                client.debugHandleFrameForTesting(json: json, from: next.generation)
             }
         }
 
@@ -501,23 +512,31 @@ final class RealtimeContextRolloverTests: XCTestCase {
 
     /// A reported stall that the retiring socket's `done` ends is logged as
     /// resumed, though that `done` moves the session to the next socket (#1866).
+    /// The line names the `done` as the server spelled it (review of #1869).
     func testTheRetiringSocketsDoneThatEndsAStallIsLoggedBeforeTheHandover() {
-        // A window wide enough to hold the 5 s a stall takes to report.
-        let harness = Harness(budget: RealtimeContextBudget(maxModelLen: 200))
-        harness.holdDones(true)
-        harness.speak(seconds: 0.1, talking: false)
-        harness.client.sendCommit(final: false)
-        harness.speak(seconds: 10.0, talking: false)
-        let before = harness.client.debugServerSilenceLogForTesting()
-        XCTAssertEqual(before.filter { $0.hasPrefix("realtime server silent") }.count, 1, "\(before)")
+        for spelling in [
+            "transcription.done",
+            "response.audio_transcript.done",
+            "conversation.item.input_audio_transcription.completed",
+        ] {
+            // A window wide enough to hold the 5 s a stall takes to report.
+            let harness = Harness(budget: RealtimeContextBudget(maxModelLen: 200))
+            harness.spellDones(spelling)
+            harness.holdDones(true)
+            harness.speak(seconds: 0.1, talking: false)
+            harness.client.sendCommit(final: false)
+            harness.speak(seconds: 10.0, talking: false)
+            let before = harness.client.debugServerSilenceLogForTesting()
+            XCTAssertEqual(before.filter { $0.hasPrefix("realtime server silent") }.count, 1, "\(before)")
 
-        harness.holdDones(false)
-        harness.pump()
+            harness.holdDones(false)
+            harness.pump()
 
-        XCTAssertEqual(harness.rollovers, 1)
-        let after = harness.client.debugServerSilenceLogForTesting()
-        XCTAssertEqual(after.filter { $0.hasPrefix("realtime server resumed") }.count, 1, "\(after)")
-        XCTAssertTrue(after.last?.hasSuffix("(transcription.done)") ?? false, "\(after)")
+            XCTAssertEqual(harness.rollovers, 1, spelling)
+            let after = harness.client.debugServerSilenceLogForTesting()
+            XCTAssertEqual(after.filter { $0.hasPrefix("realtime server resumed") }.count, 1, "\(after)")
+            XCTAssertTrue(after.last?.hasSuffix("(\(spelling))") ?? false, "\(after)")
+        }
     }
 
     /// A stop during the rollover with nothing sent since: the retiring

@@ -428,8 +428,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// The retiring socket answered (or will not): close it, open the next
     /// one with the carried audio queued, and hand the session over. `cause`
     /// is nil for the `done` that answers the rollover's final commit.
-    private func finishRollover(retiring: RealtimeConnectionGeneration, cause: String?) {
+    private func finishRollover(
+        retiring: RealtimeConnectionGeneration, cause: String?, doneType: String = "transcription.done"
+    ) {
         let now = clock.now()
+        let uptime = clock.uptime()
         // The `done` is the retiring socket's last event, and closing it drops
         // its health: end a reported stall here, where `noteServerEvent` can
         // no longer reach it.
@@ -458,7 +461,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
             let usage = takeUsageLocked(&s)
             if cause == nil {
-                resumedAfter = s.health?.serverEvent(at: now.timeIntervalSinceReferenceDate) ?? nil
+                resumedAfter = s.health?.serverEvent(at: uptime) ?? nil
             }
             closeSocketLocked(&s, cancelTask: true)
             let next = RealtimeConnectionGeneration.next()
@@ -519,7 +522,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case .switched(let next, let dial, let usage, let carriedBytes):
             if let resumedAfter {
                 logServerSilence(
-                    "realtime server resumed after \(String(format: "%.1f", resumedAfter))s of silence (transcription.done)")
+                    "realtime server resumed after \(String(format: "%.1f", resumedAfter))s of silence (\(doneType))")
             }
             recordUsage(usage)
             if let cause {
@@ -679,7 +682,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             case .emitTranscriptionFinalized:
                 emit(.transcriptionFinalized, from: generation)
             case .finishRollover:
-                finishRollover(retiring: generation, cause: nil)
+                finishRollover(retiring: generation, cause: nil, doneType: type)
             }
         case "error":
             state.withLock { s in
@@ -841,7 +844,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// `MistralStreamHealth.stallThreshold`.
     private func admitLocked(_ s: inout State, audio: Data?) -> MistralStreamHealth.StallReport? {
         guard let audio, !audio.isEmpty else { return nil }
-        let now = clock.now().timeIntervalSinceReferenceDate
+        let now = clock.uptime()
         if s.health == nil { s.health = MistralStreamHealth(openedAt: now) }
         return s.health?.audioSent(
             bytes: audio.count, levelDBFS: MistralStreamHealth.rmsDBFS(pcm16: audio), at: now)
@@ -850,7 +853,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// Any frame from the server ends its silence; one that ends a reported
     /// stall says how long it lasted.
     private func noteServerEvent(_ type: String, from generation: RealtimeConnectionGeneration) {
-        let receivedAt = clock.now().timeIntervalSinceReferenceDate
+        let receivedAt = clock.uptime()
         let silence: TimeInterval? = state.withLock { s in
             guard isCurrentConnectionLocked(s.base, generation) else { return nil }
             return s.health?.serverEvent(at: receivedAt) ?? nil
@@ -911,7 +914,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     private func sendKeepalivePing() {
-        let sentAt = clock.now().timeIntervalSinceReferenceDate
+        let sentAt = clock.uptime()
         let task: URLSessionWebSocketTask? = state.withLock { s in
             guard s.base.socketState == .connected else { return nil }
             s.health?.pingSent(at: sentAt)

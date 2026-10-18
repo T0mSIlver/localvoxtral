@@ -53,5 +53,29 @@ final class RealtimeServerSilenceLogTests: XCTestCase {
             "realtime server resumed after 8.0s of silence (transcription.delta)")
         XCTAssertEqual(client.debugServerSilenceLogForTesting().count, 2)
     }
+
+    /// The silence is measured on the clock's uptime, not its wall time: a
+    /// time change mid-dictation neither hides a stall nor invents one
+    /// (review of #1869; `MistralStreamHealth` wants a monotonic clock).
+    func testServerSilenceIsMeasuredOnUptimeNotWallTime() async {
+        let manual = ManualSessionClock()
+        let wallJumpedBack = Date(timeIntervalSinceReferenceDate: 0)
+        let client = RealtimeAPIWebSocketClient(
+            clock: SessionClock(
+                sleep: manual.clock.sleep,
+                now: { wallJumpedBack },
+                uptime: { manual.now.timeIntervalSinceReferenceDate }))
+        let task = urlSession.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/v1/realtime")!)
+        client.debugPrimeConnectedStateForTesting(task: task, hasReceivedSessionCreated: true)
+        addTeardownBlock { client.disconnect() }
+
+        for _ in 0..<32 {
+            client.sendAudioChunk(chunk)
+            manual.advance(by: 0.25)
+        }
+
+        let silent = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(silent.count, 1, "\(silent)")
+    }
 }
 #endif
