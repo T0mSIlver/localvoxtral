@@ -440,6 +440,168 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(inserted.map(\.pid), [4242], "the app focused at the stop")
     }
 
+    /// Secure Keyboard Entry at commit: the real coordinator copies the text
+    /// instead of typing it, and History lists it as not inserted (#1872).
+    func testASecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(polish: nil, copies: Self.phrase)
+    }
+
+    func testAPolishedSecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(
+            polish: FakePolishingService { "<\($0.inputText)>" }, copies: "<\(Self.phrase)>")
+    }
+
+    private func assertSecureInputFallbackIsSavedAsNotInserted(
+        polish: FakePolishingService?, copies expected: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        var copied: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { copied.append($0); return true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, overlayCoordinator: overlay
+        )
+        let store = try XCTUnwrap(DictationSessionStore.inMemory(), file: file, line: line)
+        pipeline.viewModel.sessionStore = store
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        var typed: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating, file: file, line: line)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline, finalStatus: DictationViewModel.StatusStrings.overlayCopiedToClipboard,
+            file: file, line: line)
+
+        XCTAssertEqual(typed, [], "Secure Keyboard Entry would swallow the keys", file: file, line: line)
+        XCTAssertEqual(copied, [expected], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], file: file, line: line)
+        let notInserted = await store.entries(matching: DictationHistoryQuery(filter: .notInserted))
+        XCTAssertEqual(notInserted.map(\.rawText), [Self.phrase], file: file, line: line)
+    }
+
+    /// A clipboard fallback reached no app, so it teaches nothing: no learned
+    /// term, no correction watch, no project-term proposal (#1872). The same
+    /// joined dictation inserted normally does all three.
+    func testAClipboardFallbackLearnsNothingAndAsksNothing() async throws {
+        let effects = try await dictateJoinedPolishedCommit(secureInput: true)
+        XCTAssertEqual(effects.typed, [], "precondition: nothing reached the app")
+        XCTAssertEqual(effects.learnedTerms, 0)
+        XCTAssertEqual(effects.watchedSessions, [])
+        XCTAssertEqual(effects.proposalRuns, 0)
+    }
+
+    func testAnInsertedJoinedDictationLearnsWatchesAndAsks() async throws {
+        let effects = try await dictateJoinedPolishedCommit(secureInput: false)
+        XCTAssertEqual(
+            effects.typed, ["<\(Self.phrase.replacingOccurrences(of: "localvoxtral", with: "LocalVoxtral"))>"],
+            "precondition: the text reached the app"
+        )
+        XCTAssertGreaterThan(effects.learnedTerms, 0)
+        XCTAssertEqual(effects.watchedSessions, ["s1"])
+        XCTAssertEqual(effects.proposalRuns, 1)
+    }
+
+    private struct CommitEffects {
+        var typed: [String]
+        var learnedTerms: Int
+        var watchedSessions: [String]
+        var proposalRuns: Int
+    }
+
+    /// One polished Overlay Buffer dictation joined to a session, through the
+    /// real overlay coordinator, then what its commit taught.
+    private func dictateJoinedPolishedCommit(secureInput: Bool) async throws -> CommitEffects {
+        var typed: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: FakePolishingService { "<\($0.inputText)>" },
+            earlyPolish: false, overlayCoordinator: overlay
+        )
+        let viewModel = pipeline.viewModel
+        viewModel.settings.repoVocabularyEnabled = true
+        viewModel.settings.projectTermProposalsEnabled = true
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            outcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])],
+                isFallbackOnly: false
+            )
+        )
+        let store = LearnedTermStore(fileURL: nil)
+        viewModel.learnedTermStore = store
+        let correctionLearning = CorrectionLearning(store: store, knownTerms: { [] })
+        viewModel.session.correctionLearning = correctionLearning
+        let runner = RecordingProjectTermRunner()
+        viewModel.session.projectTermProposer = ProjectTermProposer(
+            store: store, runner: runner, now: { Date(timeIntervalSince1970: 0) },
+            trackedFiles: { _ in ["README.md"] }
+        )
+        TerminalTargetDetector.debugSecureEventInputOverride = { secureInput }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline)
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: "/nonexistent-1872/acme", origin: origin)
+        viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline,
+            finalStatus: secureInput ? DictationViewModel.StatusStrings.overlayCopiedToClipboard
+                : DictationViewModel.StatusStrings.ready
+        )
+        await viewModel.session.projectTermProposalTask?.value
+        store.waitForPendingWrites()
+
+        return CommitEffects(
+            typed: typed,
+            learnedTerms: store.snapshot().termCount,
+            watchedSessions: correctionLearning.pending.keys.sorted(),
+            proposalRuns: runner.all.count
+        )
+    }
+
     /// A new microphone restarts the dictation while the stopped text still
     /// waits on its polish: that text is saved as not inserted, and the next
     /// dictation's stop commits (#1055).
@@ -488,7 +650,7 @@ final class DictationPipelineTests: XCTestCase {
         await polish.releaseHeldRequest()
         let recorded = await pipeline.records.waitForCount(1)
         XCTAssertTrue(recorded)
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await awaitEnd(pipeline.viewModel.session.polishAndCommitTask)
 
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after a cancel")
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
@@ -516,7 +678,7 @@ final class DictationPipelineTests: XCTestCase {
         await polish.releaseHeldRequest()
         let recorded = await pipeline.records.waitForCount(1)
         XCTAssertTrue(recorded)
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await awaitEnd(pipeline.viewModel.session.polishAndCommitTask)
 
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after Escape")
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
@@ -584,7 +746,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         releaseFirstRead.resolve()
-        await cancelledStart.value
+        await awaitEnd(cancelledStart)
 
         XCTAssertEqual(
             viewModel.context.claudeSessionJoin?.snapshot.sessionID, "s-next",
@@ -723,7 +885,7 @@ final class DictationPipelineTests: XCTestCase {
         let commit = try XCTUnwrap(pipeline.viewModel.session.polishAndCommitTask)
         // What `applicationWillTerminate` runs before it drains History.
         pipeline.viewModel.saveStoppedDictationForQuit()
-        await store.pendingWrites?.value
+        await awaitEnd(store.pendingWrites)
 
         let saved = try XCTUnwrap(pipeline.records.all.first, "the quit lost the dictation")
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
@@ -734,7 +896,7 @@ final class DictationPipelineTests: XCTestCase {
             DictationAudioRecording.wav(fromPCM16: Self.speech(seed: 1)))
 
         await polish.releaseHeldRequest()
-        await commit.value
+        await awaitEnd(commit)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after the quit")
         XCTAssertEqual(pipeline.records.all.count, 1, "the polish answering later saves nothing more")
     }
@@ -761,7 +923,7 @@ final class DictationPipelineTests: XCTestCase {
 
         // What `applicationWillTerminate` runs before it drains History.
         pipeline.viewModel.saveStoppedDictationForQuit()
-        await store.pendingWrites?.value
+        await awaitEnd(store.pendingWrites)
 
         let saved = try XCTUnwrap(pipeline.records.all.first, "the quit lost the dictation")
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
@@ -794,7 +956,7 @@ final class DictationPipelineTests: XCTestCase {
 
         // What `applicationWillTerminate` runs before it drains History.
         pipeline.viewModel.saveStoppedDictationForQuit()
-        await store.pendingWrites?.value
+        await awaitEnd(store.pendingWrites)
 
         let saved = try XCTUnwrap(pipeline.records.all.first, "the quit lost the dictation")
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
@@ -827,7 +989,7 @@ final class DictationPipelineTests: XCTestCase {
             XCTAssertTrue(answered, "the quit never got its answer")
         }
         pipeline.viewModel.saveStoppedDictationForQuit()
-        await store.pendingWrites?.value
+        await awaitEnd(store.pendingWrites)
 
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
@@ -877,7 +1039,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.engines.applyManagedSpeechModelChange(otherModel.repoID)
         let restart = try XCTUnwrap(pipeline.viewModel.engines.dictationShutdownTask)
         await stopAndFinalize(pipeline)
-        await restart.value
+        await awaitEnd(restart)
 
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
         XCTAssertEqual(backend.stopDictationCallCount, 1)
@@ -1031,7 +1193,7 @@ final class DictationPipelineTests: XCTestCase {
         await polish.releaseHeldRequest()
         let recorded = await pipeline.records.waitForCount(1)
         XCTAssertTrue(recorded)
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await awaitEnd(pipeline.viewModel.session.polishAndCommitTask)
         store.waitForPendingWrites()
 
         let requests = await polish.requests
@@ -1111,7 +1273,7 @@ final class DictationPipelineTests: XCTestCase {
         await polish.releaseHeldRequest()
         let recorded = await pipeline.records.waitForCount(1)
         XCTAssertTrue(recorded)
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await awaitEnd(pipeline.viewModel.session.polishAndCommitTask)
 
         let requests = await polish.requests
         XCTAssertFalse(
@@ -1308,7 +1470,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.clock.advance(by: 0.5)
         XCTAssertEqual(shown()?.isOpen, true, "the second Tab restarted the wait")
         pipeline.clock.advance(by: openFor - 0.5)
-        await session.destinationListCloseTask?.value
+        await awaitEnd(session.destinationListCloseTask)
         XCTAssertEqual(shown()?.isOpen, false)
         XCTAssertEqual(shown()?.selectedKind, .focusedApp(joined: nil), "closing keeps the pick")
 
@@ -1377,7 +1539,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.moveDestination(forward: true)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox, "the first Tab reaches the Inbox")
         pipeline.viewModel.session.moveDestination(forward: true)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
         XCTAssertTrue(waiting.tracker.queue.isEmpty, "answering takes it out of the queue")
@@ -1413,7 +1575,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         XCTAssertTrue(pipeline.viewModel.textInsertion.promptRelayTakesText, "precondition: the relay is armed")
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
         pipeline.overlay.commitTargetAppPID = terminalPID
@@ -1941,9 +2103,9 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "Stop Claude.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the stop phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         XCTAssertFalse(pipeline.viewModel.isDictating)
         await finishCommand(pipeline, finalText: "Stop Claude.")
 
@@ -1993,7 +2155,7 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.server.awaitClose(file: file, line: line)
         let finished = await waitUntilObserved { !pipeline.viewModel.isFinalizingStop }
         XCTAssertTrue(finished, "the stop never finished", file: file, line: line)
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await awaitEnd(pipeline.viewModel.session.polishAndCommitTask)
     }
 
     func testTheStopPhraseSentencesFitThePopoverLine() {
@@ -2062,7 +2224,7 @@ final class DictationPipelineTests: XCTestCase {
         sendPartials(pipeline)
         let shownWhileDictating = await shown.value(failAfter: 10)
         XCTAssertTrue(shownWhileDictating)
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await pipeline.clock.waitForSleeper(dueIn: 10)
         let resent = BoundedWait()
         recorder.onState = { resent.resolve() }
         pipeline.clock.advance(by: 10)
@@ -2500,7 +2662,7 @@ final class DictationPipelineTests: XCTestCase {
         }
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
         // Same Ghostty, another tab.
@@ -2530,7 +2692,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
         pipeline.overlay.commitTargetAppPID = terminalPID
         pipeline.viewModel.stopDictation(reason: "test")
@@ -2643,7 +2805,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
         // The user clicked into Safari before stopping.
@@ -2672,7 +2834,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         pipeline.overlay.commitTargetAppPID = otherAppPID
         sendPartials(pipeline)
         await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.overlayCopiedToClipboard)
@@ -2697,7 +2859,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         pipeline.overlay.commitTargetAppPID = terminalPID
         pipeline.viewModel.stopDictation(reason: "test")
         await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
@@ -2726,7 +2888,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
 
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
@@ -2753,11 +2915,11 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
         pipeline.viewModel.session.moveDestination(forward: true)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(activated, [], "activating the terminal would bring the session pane, not the start")
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
         XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.cantGoBack)
@@ -2767,7 +2929,7 @@ final class DictationPipelineTests: XCTestCase {
             $0 == terminalPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
         }
         pipeline.viewModel.session.moveDestination(forward: true)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(activated, [terminalPID])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
         pipeline.viewModel.session.cancelDictation()
@@ -2816,7 +2978,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
         waiting.focuser.releaseHeldFocuses()
-        await sessionPick.value
+        await awaitEnd(sessionPick)
 
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
         XCTAssertTrue(pipeline.viewModel.session.sessionIsQuickCapture)
@@ -2845,7 +3007,7 @@ final class DictationPipelineTests: XCTestCase {
         }
         await startAndSpeak(pipeline)
         pipeline.viewModel.session.moveDestination(forward: false)
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
 
         pipeline.overlay.commitTargetAppPID = terminalPID
@@ -2878,7 +3040,7 @@ final class DictationPipelineTests: XCTestCase {
             var picked: [OverlayDestinationStrip.Kind?] = []
             for key in [forward, forward, back, back] {
                 pipeline.viewModel.session.destinationKeyHandler.handle(key)
-                await pipeline.viewModel.session.destinationFocusTask?.value
+                await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
                 picked.append(pipeline.overlay.shownDestinations.last??.selectedKind)
             }
             XCTAssertEqual(picked, expected, "\(back) and \(forward)")
@@ -2906,12 +3068,12 @@ final class DictationPipelineTests: XCTestCase {
             pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil),
             "the overlay waits for the pane"
         )
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
         pipeline.viewModel.session.clickDestination(.session(id: "pay"))
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"], "a click on the picked session does nothing")
 
         pipeline.overlay.commitTargetAppPID = terminalPID
@@ -2932,7 +3094,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
 
         pipeline.viewModel.session.clickDestination(.session(id: "pay"))
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
 
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
@@ -2986,7 +3148,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
 
         pipeline.viewModel.session.answerAgentThatNeedsYou()
-        await pipeline.viewModel.session.destinationFocusTask?.value
+        await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertTrue(pipeline.viewModel.isDictating)
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
@@ -3705,9 +3867,9 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.handle(event: .finalTranscript(first))
         pipeline.viewModel.session.handle(event: .finalTranscript(second))
         // The first paste's restore window passes, then the second's.
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await pipeline.clock.waitForSleeper(dueIn: 0.15)
         pipeline.clock.advance(by: 0.15)
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await pipeline.clock.waitForSleeper(dueIn: 0.15)
         pipeline.clock.advance(by: 0.15)
         await stopAndFinalize(pipeline)
 
@@ -4285,12 +4447,12 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3 - 0.01)
         XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
 
         pipeline.clock.advance(by: 0.01)
-        await armed.value
+        await awaitEnd(armed)
         XCTAssertFalse(pipeline.viewModel.isDictating)
         XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the stop finalizes like a pressed stop")
         await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
@@ -4316,9 +4478,9 @@ final class DictationPipelineTests: XCTestCase {
         await sendDelta(pipeline, "d")
         await sendDelta(pipeline, " it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "overlay: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "")")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         await finishStoppedSession(pipeline, finalText: "d it.")
 
         XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
@@ -4352,10 +4514,10 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 2.9)
         await sendDelta(pipeline, " and then report.")
-        await armed.value
+        await awaitEnd(armed)
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
         pipeline.clock.advance(by: 10)
         XCTAssertTrue(pipeline.viewModel.isDictating)
@@ -4382,7 +4544,7 @@ final class DictationPipelineTests: XCTestCase {
         let saidAt = pipeline.clock.now
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         var stopSleeps = pipeline.clock.pendingDeadlines
         for deadline in sessionSleeps {
             if let index = stopSleeps.firstIndex(of: deadline) { stopSleeps.remove(at: index) }
@@ -4396,7 +4558,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.clock.advance(by: 0.01)
         // A longer wait must still end, or the session outlives the test.
         if !stopsAtOneSecond { pipeline.clock.advance(by: 2) }
-        await armed.value
+        await awaitEnd(armed)
         XCTAssertFalse(pipeline.viewModel.isDictating)
         await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
 
@@ -4415,10 +4577,10 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 1.4)
         await sendDelta(pipeline, " and then report.")
-        await armed.value
+        await awaitEnd(armed)
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
         pipeline.clock.advance(by: 10)
         XCTAssertTrue(pipeline.viewModel.isDictating)
@@ -4460,9 +4622,9 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "send it is ordinary text now")
         await sendDelta(pipeline, " Ship it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         await finishStoppedSession(pipeline, finalText: "run the tests, send it. Ship it.")
 
         XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests, send it"])
@@ -4483,9 +4645,9 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
         await sendDelta(pipeline, "buy milk, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         await finishStoppedSession(
             pipeline, finalText: "buy milk, send it.",
             finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
@@ -4520,12 +4682,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.moveDestination(forward: true)
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "the Inbox stops on its phrase")
         // Tab also opened the destination list, whose close timer sleeps on
-        // the same clock. Waiting for one new sleeper could return on that
-        // timer alone, and an advance before the stop's own sleep registers
-        // never reaches its deadline (#1378).
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 2)
+        // the same clock (#1378).
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         await finishStoppedSession(
             pipeline, finalText: "buy milk, send it.",
             finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
@@ -4769,7 +4929,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await sendDelta(pipeline, "File it.")
         await stopAndFinalize(pipeline, finalText: "File it.", finalStatus: QuickCaptureReviewStatus.filing)
-        await pipeline.viewModel.session.draftReviewTask?.value
+        await awaitEnd(pipeline.viewModel.session.draftReviewTask)
 
         XCTAssertEqual(inbox.github.created.withLock { $0.map(\.[1]) }, ["Dark mode"])
         XCTAssertEqual(inbox.model.items.first?.state, .filed)
@@ -4802,9 +4962,9 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
         await sendDelta(pipeline, "Drop it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the whole phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         XCTAssertFalse(pipeline.viewModel.isDictating)
         await finishStoppedSession(pipeline, finalText: "Drop it.", finalStatus: QuickCaptureReviewStatus.dropped)
 
@@ -4825,13 +4985,13 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
         await sendDelta(pipeline, "Make it only the popover part, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the send phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        await waitForSpokenStopTimer(pipeline)
         pipeline.clock.advance(by: 3)
-        await armed.value
+        await awaitEnd(armed)
         await finishStoppedSession(
             pipeline, finalText: "Make it only the popover part, send it.", finalStatus: QuickCaptureReviewStatus.redrafting
         )
-        await pipeline.viewModel.session.draftReviewTask?.value
+        await awaitEnd(pipeline.viewModel.session.draftReviewTask)
 
         XCTAssertEqual(inbox.model.items.first?.title, "Popover dark mode")
         XCTAssertEqual(inbox.model.items.first?.changes, ["Make it only the popover part"])
@@ -4854,7 +5014,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "payments needs you (+1)")
 
         pipeline.viewModel.session.answerAgentThatNeedsYou()
-        await pipeline.viewModel.session.answerAgentTask?.value
+        await awaitEnd(pipeline.viewModel.session.answerAgentTask)
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach", "the draft waits its turn")
         XCTAssertTrue(pipeline.overlay.shownDraftReviews.isEmpty)
@@ -5022,7 +5182,7 @@ final class DictationPipelineTests: XCTestCase {
         let run = await dropAndReconnect(
             pipeline, events, attempts: [.closedUnready, .closedUnready, .closedUnready, .handshake], gap: gap
         )
-        await run?.value
+        await awaitEnd(run)
 
         await assertReconnected(pipeline, events, dials: 4, gap: gap)
     }
@@ -5038,7 +5198,7 @@ final class DictationPipelineTests: XCTestCase {
         let run = await dropAndReconnect(
             pipeline, events, attempts: Array(repeating: .closedUnready, count: 4), gap: Self.speech(seed: 4)
         )
-        await run?.value
+        await awaitEnd(run)
 
         XCTAssertEqual(events.connected, 5, "the first socket, then four attempts of one run")
         XCTAssertFalse(pipeline.viewModel.isDictating)
@@ -5056,7 +5216,7 @@ final class DictationPipelineTests: XCTestCase {
         let gap = Self.speech(seed: 4)
 
         let run = await dropAndReconnect(pipeline, events, attempts: [.fallback], gap: gap)
-        await run?.value
+        await awaitEnd(run)
 
         await assertReconnected(pipeline, events, dials: 1, gap: gap)
     }
@@ -5185,6 +5345,43 @@ final class DictationPipelineTests: XCTestCase {
             }
         }
         return events
+    }
+
+    // MARK: - A server that goes quiet mid-dictation (#1866)
+
+    /// The server stops answering while the dictation's audio still goes
+    /// out over the real socket: the realtime client logs it once, the
+    /// dictation goes on, and the next event logs the silence's end.
+    func testAServerThatGoesQuietWhileDictatingIsLoggedOnceAndItsEnd() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let client = pipeline.viewModel.session.realtimeAPIClient
+        await startAndSpeak(pipeline)
+
+        // Seven seconds of speech, one second per send, and nothing back.
+        for seed in UInt8(10)..<17 {
+            let spoken = Self.speech(seed: seed)
+            XCTAssertTrue(pipeline.microphone.deliver(spoken))
+            pipeline.clock.advance(by: 1)
+            await pipeline.server.awaitFrame("audio \(seed)") { $0.audio == spoken }
+            await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+        }
+        let silent = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(silent.count, 1, "\(silent)")
+        XCTAssertTrue(
+            silent.first?.hasPrefix("realtime server silent: no server event for ") ?? false, "\(silent)")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a log line, not a stop")
+        XCTAssertNil(pipeline.viewModel.lastError)
+
+        // The receive loop handles the partials before the stop's final, so
+        // once the dictation is recorded their resume line is in.
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        let log = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(log.count, 2, "\(log)")
+        XCTAssertTrue(log.last?.hasPrefix("realtime server resumed after ") ?? false, "\(log)")
+        XCTAssertTrue(log.last?.hasSuffix("s of silence (transcription.delta)") ?? false, "\(log)")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
     }
 
     // MARK: - The two halves every scenario shares
@@ -5319,6 +5516,31 @@ final class DictationPipelineTests: XCTestCase {
         @MainActor var listeningTimers: Int {
             viewModel.session.isLiveAutoPasteModeEnabled ? 5 : 4
         }
+    }
+
+    /// Waits for the spoken stop's own timer. A count of timers can be met
+    /// by the session's other timers before it registers, and an advance
+    /// then never reaches its deadline (#1378, #1863).
+    private func waitForSpokenStopTimer(
+        _ pipeline: Pipeline, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        let wait = pipeline.viewModel.settings.spokenStopWait
+        await pipeline.clock.waitForSleeper(dueIn: Double(wait.rawValue) / 1000, file: file, line: line)
+    }
+
+    /// Awaits `task`; a missed wake fails after 10 s of wall time instead of
+    /// freezing the run (#1863). Nil is done.
+    private func awaitEnd<Success: Sendable>(
+        _ task: Task<Success, Never>?, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        guard let task else { return }
+        let ended = BoundedWait()
+        Task {
+            _ = await task.value
+            ended.resolve()
+        }
+        let didEnd = await ended.value(failAfter: 10)
+        XCTAssertTrue(didEnd, "the task never ended", file: file, line: line)
     }
 
     /// True once `count` polish requests arrived, false after 10 s of wall time.
@@ -5467,7 +5689,7 @@ final class DictationPipelineTests: XCTestCase {
         let runner = FakeQuickCaptureDraftRunner()
         let model = QuickCaptureFixture.model(fileURL: nil, answer: ["reach": 0.9], github: github, runner: runner)
         pipeline.viewModel.installDraftCue(for: model)
-        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        await awaitEnd(model.capture(text: "Add a dark mode", historyRecordID: nil))
         XCTAssertEqual(model.items.first?.isReadyDraft, true)
         if shown { pipeline.viewModel.agentAttention?.reachedBreak() }
         return (model, github, runner)

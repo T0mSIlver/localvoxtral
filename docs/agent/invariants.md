@@ -2882,7 +2882,9 @@ there is not.
   runs only while Keep the tunnel open is off and only turns it ON, inside the
   host setup run the user clicked. They carry no token at all, and no byte of their
   output reaches a verdict, an alert, or the log. The whole action has a
-  finite timeout, and every captured result, thrown error, alert, and log string
+  finite timeout, and quit stops a run in flight: its ssh, like every
+  `claude` CLI run, is a `BoundedProcessChildren` child (#1875). Every
+  captured result, thrown error, alert, and log string
   is token-redacted before it leaves the service. A plugin version the host's
   listing reports reaches an error only as dot-separated numbers; anything
   else reads as unreadable (#1817). Keep the filesystem and

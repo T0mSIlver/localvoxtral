@@ -90,6 +90,9 @@ struct DictationOverlayView: View {
     var polishedFrom: String? = nil
     /// The polish request is out: "Polishing", and a band sweeps the words.
     var polishing: Bool = false
+    /// The stop's second pass missed its deadline (#1867): the header says
+    /// so until polish, if any, has changed the words.
+    var secondPassMissed: Bool = false
     /// Drives the level bars while listening; nil draws them at rest.
     var micLevel: OverlayMicLevel? = nil
     var motion: OverlayMotion = .system
@@ -134,6 +137,7 @@ struct DictationOverlayView: View {
                 : "Listening"
         case .finalizing:
             if polished { return "Polished" }
+            if secondPassMissed { return Self.secondPassMissedTitle }
             if polishing { return "Polishing" }
             return secureInputActive ? "Finalizing (secure input)" : "Finalizing"
         case .commitFailed:
@@ -147,8 +151,11 @@ struct DictationOverlayView: View {
         secureInputActive && (phase == .buffering || phase == .finalizing)
     }
 
+    static let secondPassMissedTitle = "Transcribing again timed out"
+
     private var titleColor: Color {
         if phase == .finalizing, polished { return polishColor }
+        if phase == .finalizing, secondPassMissed { return Self.warningColor }
         return isSecureInputTitle ? Self.warningColor : .secondary
     }
 

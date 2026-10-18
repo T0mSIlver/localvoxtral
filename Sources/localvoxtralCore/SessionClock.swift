@@ -14,17 +14,23 @@ package struct SessionClock: Sendable {
     /// cancelled — the same contract as `try? await Task.sleep(for:)`.
     package var sleep: @Sendable (Duration) async -> Void
     package var now: @Sendable () -> Date
+    /// Seconds on a clock the user's time settings never move, for measuring
+    /// intervals. A clock that sets only `now` measures on `now`.
+    package var uptime: @Sendable () -> TimeInterval
 
     package init(
         sleep: @escaping @Sendable (Duration) async -> Void,
-        now: @escaping @Sendable () -> Date
+        now: @escaping @Sendable () -> Date,
+        uptime: (@Sendable () -> TimeInterval)? = nil
     ) {
         self.sleep = sleep
         self.now = now
+        self.uptime = uptime ?? { now().timeIntervalSinceReferenceDate }
     }
 
     package static let live = SessionClock(
         sleep: { try? await Task.sleep(for: $0) },
-        now: { Date() }
+        now: { Date() },
+        uptime: { ProcessInfo.processInfo.systemUptime }
     )
 }

@@ -417,10 +417,13 @@ public final class ClaudeRemoteModChannels: Sendable {
         hub.bye(sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: hostID, sessionID: sessionID))
     }
 
-    /// Whether `sessionID` (scoped) has a lease, attached or closing.
+    #if DEBUG
+    /// Test seam: whether `sessionID` (scoped) has a lease, attached or
+    /// closing.
     package func hasLease(_ sessionID: String) -> Bool {
         state.withLock { $0.leases[sessionID] != nil }
     }
+    #endif
 
     // MARK: Leases
 

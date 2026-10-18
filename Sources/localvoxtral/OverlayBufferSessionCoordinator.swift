@@ -82,6 +82,12 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// The polish request is out, or ended without a polished text (#1074).
     /// Defaulted so test doubles stay unchanged.
     func markPolishing(_ polishing: Bool)
+    /// The stop's second pass missed its deadline (#1867). Defaulted so
+    /// test doubles stay unchanged.
+    func markSecondPassMissed()
+    /// The panel says the second pass missed: its hold is
+    /// `TimingConstants.overlaySecondPassMissVisibility`, long enough to read.
+    var showsSecondPassMiss: Bool { get }
     /// The panel shows words polish changed: its hold is
     /// `TimingConstants.overlayPolishedVisibility`, long enough to see them.
     var showsPolishChange: Bool { get }
@@ -100,6 +106,8 @@ extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
     func markPolished(_ polished: Bool) {}
     func markPolishing(_ polishing: Bool) {}
+    func markSecondPassMissed() {}
+    var showsSecondPassMiss: Bool { false }
     var showsPolishChange: Bool { false }
     func updateMicLevel(_ level: Double) {}
     func showDestinations(_ strip: OverlayDestinationStrip?) {}
@@ -316,6 +324,18 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     var showsPolishChange: Bool {
         stateMachine.polished
+    }
+
+    func markSecondPassMissed() {
+        stateMachine.setSecondPassMissed()
+        // The line is new on screen: its hold counts from now, not from the
+        // last words, which the pass's deadline left seconds behind.
+        lastOverlayDisplayTextChangeAt = now()
+        renderCurrentSnapshot()
+    }
+
+    var showsSecondPassMiss: Bool {
+        stateMachine.secondPassMissed
     }
 
     func updateMicLevel(_ level: Double) {

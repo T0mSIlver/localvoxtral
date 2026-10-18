@@ -207,6 +207,12 @@ jobs:
         # (scripts/ci/ui-gate-suite-filter.sh); every push to main and every
         # dispatch runs it. The changed-file list is the fast-path step's, and
         # a missing one fails open.
+        #
+        # The `linux` job runs every scripts/ci/test-*.sh, ungated too, so a
+        # suite belongs here only when what it tests also runs on macOS: the
+        # Mac's gates and runner scripts, the macOS CI jobs' filters, a macOS
+        # remote host's doctor. Repo-only checks (the AGENTS.md budget, step
+        # names) run there alone (#1858).
         run: |
           set -euo pipefail
           UI_GATE_SUITE=""
@@ -259,8 +265,6 @@ jobs:
             ./scripts/ci/test-herdr-fixture-recovery.sh \
             ./scripts/ci/test-json-value.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
-            ./scripts/ci/test-workflow-step-names.sh \
-            ./scripts/ci/test-agents-guide-budget.sh \
             ./scripts/ci/test-resolve-release-notes.sh \
             ./scripts/ci/test-nightly-version.sh \
             ./scripts/ci/test-prune-nightly-releases.sh \
