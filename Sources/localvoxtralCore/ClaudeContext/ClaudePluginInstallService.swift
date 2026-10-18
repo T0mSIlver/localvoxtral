@@ -467,10 +467,14 @@ public extension ClaudePluginInstallService {
     ///   cap, never comes back. So the wait after it is a grace period, not
     ///   `waitUntilExit()`, and SIGKILL follows. Exit is observed through
     ///   `terminationHandler`, so no path here waits without a deadline.
+    /// * **`children` owns the child while it runs** (#1875). The deadline
+    ///   lives in this loop, which ends with the app, so quit stops the child
+    ///   through `terminateAll`.
     package static func processRunner(
         executableURL: URL?,
         timeout: TimeInterval = defaultCommandTimeout,
-        gracePeriod: TimeInterval = terminationGracePeriod
+        gracePeriod: TimeInterval = terminationGracePeriod,
+        children: BoundedProcessChildren = .shared
     ) -> Runner {
         { invocation in
             guard let executableURL else { throw ServiceError.claudeCLINotFound }
@@ -484,8 +488,13 @@ public extension ClaudePluginInstallService {
             // Armed before run() so the exit can never be missed, and read
             // through a semaphore so every wait below can carry a deadline.
             let exited = DispatchSemaphore(value: 0)
-            process.terminationHandler = { _ in exited.signal() }
+            process.terminationHandler = { finished in
+                children.unregister(finished.processIdentifier)
+                exited.signal()
+            }
             try process.run()
+            let pid = children.adopt(process, label: "claude CLI")
+            defer { children.unregister(pid) }
 
             /// True when the child exited inside `window`.
             func waitForExit(_ window: TimeInterval) -> Bool {
