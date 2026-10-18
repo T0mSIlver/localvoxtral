@@ -147,12 +147,15 @@ extension DictationSessionController {
     /// join of the pane the dictation started in, not the named session.
     /// `text` is what the commit handed over, captured before a new
     /// dictation could replace the transcript.
-    func finishAddressedCommit(_ addressed: AddressedCommit, text: String, sessionMode: DictationOutputMode) {
+    /// `generation` is the dictation's, taken before the commit awaited.
+    func finishAddressedCommit(
+        _ addressed: AddressedCommit, text: String, generation: UInt64, sessionMode: DictationOutputMode
+    ) {
         guard !addressed.superseded else {
             // The cleanup and the status are the new dictation's; the text
             // a route refused is still kept (#1658).
             if addressed.status == AddressedSendStatus.notSent {
-                _ = keepUndeliveredAgentText(text)
+                _ = keepUndeliveredAgentText(text, of: generation)
             }
             return
         }
@@ -161,7 +164,7 @@ extension DictationSessionController {
         }
         var status = addressed.status
         if status == AddressedSendStatus.notSent {
-            status = keepUndeliveredAgentText(text)
+            status = keepUndeliveredAgentText(text, statusLineSaysSo: true)
         } else if status == AddressedSendStatus.unsupported {
             status = keepUntypedText(text, status: AddressedSendStatus.unsupported)
         }

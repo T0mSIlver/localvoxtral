@@ -1746,7 +1746,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
 
         viewModel.session.beginDictationAfterManagedBackendIfNeeded()
 
@@ -1783,7 +1783,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .authorized
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.beginDictationAfterManagedBackendIfNeeded()
@@ -1830,7 +1830,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.session.isShowingConnectionFailureAlert = true
         viewModel.fakeMicrophone.authorization = .notDetermined
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
         retainForTestProcessLifetime(viewModel)
 
         // Toggle tap: the secure-input preflight passes, the mic gate parks

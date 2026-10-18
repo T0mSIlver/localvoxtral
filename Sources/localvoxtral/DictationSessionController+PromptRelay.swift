@@ -18,7 +18,7 @@ extension DictationSessionController {
         textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] text in
             kept.text += text
             guard let self else { return }
-            self.lastError = self.keepUndeliveredAgentText(kept.text)
+            self.lastError = self.keepUndeliveredAgentText(kept.text, of: generation)
             self.forgetLanding(ofSession: sessionID, generation: generation)
         })
     }

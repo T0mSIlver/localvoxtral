@@ -890,6 +890,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.autoCopyEnabled = false
         pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
         let copied = pipeline.viewModel.recordPasteboardWrites()
+        var warnings = 0
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         await polish.holdNextRequest()
 
         await startAndSpeak(pipeline)
@@ -902,6 +906,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.server.forgetFrames()
         await startAndSpeak(pipeline) { $0.session.toggleQuickCapture() }
         XCTAssertEqual(copied.values, [Self.phrase], "the interrupted dictation is on the clipboard")
+        XCTAssertEqual(warnings, 1, "the capture's start replaces the notice, so a sound says it (#1887)")
         await polish.releaseHeldRequest()
 
         pipeline.viewModel.session.toggleQuickCapture()
@@ -914,6 +919,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded).first, false)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reached the focused app")
         XCTAssertEqual(copied.values, [Self.phrase], "the capture leaves the clipboard alone")
+        XCTAssertEqual(warnings, 1, "the capture's own stop copies nothing")
         XCTAssertEqual(
             pipeline.viewModel.session.lastDictation?.textToCopy, "a note for later",
             "Copy last dictation still copies the newest dictation")
@@ -1763,6 +1769,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.dictationHistoryRetention = .off
         pipeline.viewModel.settings.autoCopyEnabled = false
         let copied = pipeline.viewModel.recordPasteboardWrites()
+        var warnings = 0
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
@@ -1774,6 +1784,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["run the tests."])
         XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
         XCTAssertEqual(copied.values, ["run the tests."])
+        XCTAssertEqual(warnings, 1, "the popover shows this notice as an error pointing at the Console (#1887)")
 
         // The next dictation goes in by keys: the mod is gone.
         pipeline.viewModel.context.claudeModChannels = nil
@@ -4477,6 +4488,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.dictationHistoryRetention = .off
         pipeline.viewModel.settings.autoCopyEnabled = false
         let copied = pipeline.viewModel.recordPasteboardWrites()
+        var warnings = 0
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         joinCmuxSurface(pipeline, cmux: cmux)
         let typed = recordTypedText(pipeline)
 
@@ -4488,6 +4503,7 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.viewModel.textInsertion.promptRelaySink?.waitUntilIdle()
         await stopAndFinalize(pipeline, expectedError: DictationViewModel.StatusStrings.overlayCopiedToClipboard)
         XCTAssertEqual(copied.values.last, Self.phrase, "both appends, not the last one alone")
+        XCTAssertEqual(warnings, 1, "one sound for the dictation, though each append copied (#1887)")
         let copiesAfterFirst = copied.values.count
 
         // The next dictation goes to a plain terminal, by keys.

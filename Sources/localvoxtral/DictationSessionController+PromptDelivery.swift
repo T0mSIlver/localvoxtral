@@ -41,7 +41,7 @@ extension DictationSessionController {
     ) -> Bool {
         guard sessionStartGeneration == generation else {
             Log.overlay.notice("overlay commit: refused after the next dictation started; text kept")
-            _ = keepUndeliveredAgentText(text)
+            _ = keepUndeliveredAgentText(text, of: generation)
             forgetLanding(ofSession: sessionID, generation: generation)
             return false
         }
@@ -50,12 +50,12 @@ extension DictationSessionController {
         case .delivered:
             return false
         case .mayHaveLanded:
-            lastError = keepUndeliveredAgentText(text)
+            lastError = keepUndeliveredAgentText(text, of: generation)
         case .refused where keysReachPrompt:
             inserted = typeUndeliveredOverlayText(text, preferredAppPID: pid)
         case .refused:
             Log.overlay.notice("overlay commit: the route did not take the text and keys would not reach its prompt; text kept")
-            lastError = keepUndeliveredAgentText(text)
+            lastError = keepUndeliveredAgentText(text, of: generation)
         }
         if !inserted {
             forgetLanding(ofSession: sessionID, generation: generation)
