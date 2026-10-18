@@ -88,7 +88,7 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     @discardableResult
     func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
+        into destination: OverlayCommitDestination,
         autoCopyEnabled _: Bool
     ) -> OverlayBufferCommitOutcome {
         commitCallCount += 1
@@ -97,11 +97,17 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         if let polishedTurnEnded {
             commitsInPolishedTurn.append(!polishedTurnEnded)
         }
-        if insertsThroughCommitter,
-           !textCommitter.insertTextPrioritizingKeyboard(
-               commitBufferText, preferredAppPID: passesTargetPIDToCommitter ? commitTargetAppPID : nil
-           ).isSuccess {
-            return .failed(message: "insert failed")
+        if insertsThroughCommitter {
+            let text = destination.text(for: commitBufferText)
+            let pid = passesTargetPIDToCommitter ? commitTargetAppPID : nil
+            switch destination.kind {
+            case .keyboard(let keyboard):
+                guard keyboard.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess else {
+                    return .failed(message: "insert failed")
+                }
+            case .route(let handOff):
+                handOff(text, pid)
+            }
         }
         onCommit?()
         return commitOutcome

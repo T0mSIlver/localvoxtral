@@ -29,52 +29,62 @@ struct OverlayCommitLanding: Equatable {
 /// decides instead of that guess (#1406): a space only when the cursor
 /// follows a character that is not whitespace.
 extension DictationSessionController {
-    /// The committer for this commit: the usual one, or the session's mod
-    /// when the commit sends no Return of its own, behind a leading space
-    /// when `draft` (the session's prompt box at the stop) ends in a word,
-    /// or, without one, when the evidence says the last commit is still in
-    /// the prompt.
-    ///
-    /// A spoken send by Return keeps the keyboard, since a fill handed off
-    /// to the mod could arrive behind the key; one the mod submits asks the
-    /// mod to submit after its fill (#1644).
-    func overlayCommitter(
-        join: ClaudeSessionJoin?,
-        targetPID: pid_t?,
-        spokenSend: OverlaySpokenSend?,
-        draft: ClaudePromptDraft? = nil
-    ) -> any OverlayTextCommitting {
-        let modCommitter: ModChannelOverlayCommitter? = switch spokenSend {
+    /// The mod that takes this commit, or nil: a commit that sends no
+    /// Return of its own fills through the session's mod. A spoken send by
+    /// Return keeps the keyboard, since a fill handed off to the mod could
+    /// arrive behind the key; one the mod submits asks the mod to submit
+    /// after its fill (#1644).
+    func overlayCommitMod(
+        join: ClaudeSessionJoin?, targetPID: pid_t?, spokenSend: OverlaySpokenSend?
+    ) -> ModChannelOverlayCommitter? {
+        switch spokenSend {
         case nil: modChannelCommitter(join: join, targetPID: targetPID)
         case .modSubmit: modChannelCommitter(join: join, targetPID: targetPID, submits: true)
         case .returnKey, .promptRelaySubmit: nil
         }
-        let committer: any OverlayTextCommitting = modCommitter ?? overlayTextCommitter
+    }
+
+    /// Where this commit goes: `mod` when one takes it, the usual route
+    /// otherwise, behind a leading space when `draft` (the session's prompt
+    /// box at the stop) ends in a word, or, without one, when the evidence
+    /// says the last commit is still in the prompt.
+    func overlayCommitDestination(
+        join: ClaudeSessionJoin?,
+        targetPID: pid_t?,
+        mod: ModChannelOverlayCommitter?,
+        draft: ClaudePromptDraft? = nil
+    ) -> OverlayCommitDestination {
+        var destination: OverlayCommitDestination = if let mod {
+            .route { mod.handOff($0, preferredAppPID: $1) }
+        } else {
+            overlayTextDestination
+        }
         if let join, let draft, draft.decidesLeadingSpace(for: join) {
             guard draft.commitNeedsLeadingSpace else {
                 Log.overlay.info("overlay commit: the prompt box is empty or ends in whitespace; no leading space")
-                return committer
+                return destination
             }
             Log.overlay.info("overlay commit: the prompt box ends in a word; leading space")
-            return LeadingSpaceOverlayCommitter(base: committer)
+            destination.leadingSpace = true
+            return destination
         }
         guard let landing = lastOverlayCommitLanding,
               landing.isAt(currentLanding(join: join, targetPID: targetPID))
-        else { return committer }
+        else { return destination }
         Log.overlay.info("overlay commit: continues the unsent prompt; leading space")
-        return LeadingSpaceOverlayCommitter(base: committer)
+        destination.leadingSpace = true
+        return destination
     }
 
-    /// The committer for "send that to <name>" in a terminal pane: the same
-    /// evidence, judged against the pane's pid and the named session (#1480).
-    func addressedOverlayCommitter(
-        _ committer: any OverlayTextCommitting, session: ClaudeSessionSnapshot, targetPID: pid_t
-    ) -> any OverlayTextCommitting {
+    /// Whether "send that to <name>" in a terminal pane starts with a
+    /// space: the same evidence, judged against the pane's pid and the
+    /// named session (#1480).
+    func addressedCommitNeedsLeadingSpace(session: ClaudeSessionSnapshot, targetPID: pid_t) -> Bool {
         guard let landing = lastOverlayCommitLanding,
               landing.isAt(currentLanding(session: session, targetPID: targetPID))
-        else { return committer }
+        else { return false }
         Log.overlay.info("send to session: continues the unsent prompt; leading space")
-        return LeadingSpaceOverlayCommitter(base: committer)
+        return true
     }
 
     /// Whether the last commit went into `session`'s unsent prompt and the
@@ -151,35 +161,5 @@ extension DictationSessionController {
         return OverlayCommitLanding(
             targetPID: targetPID, sessionID: sessionID, promptsSubmitted: promptsSubmitted, generation: generation
         )
-    }
-}
-
-/// Inserts through `base` with one space in front, unless the text already
-/// starts with whitespace or with punctuation that attaches to the word
-/// before it.
-@MainActor
-final class LeadingSpaceOverlayCommitter: OverlayTextCommitting {
-    let base: any OverlayTextCommitting
-
-    init(base: any OverlayTextCommitting) {
-        self.base = base
-    }
-
-    var isAccessibilityTrusted: Bool { base.isAccessibilityTrusted }
-    var postsNoKeys: Bool { base.postsNoKeys }
-
-    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
-        base.insertTextPrioritizingKeyboard(Self.spaced(text), preferredAppPID: preferredAppPID)
-    }
-
-    func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool {
-        base.pasteUsingCommandV(Self.spaced(text), preferredAppPID: preferredAppPID)
-    }
-
-    static func spaced(_ text: String) -> String {
-        guard let first = text.first, !first.isWhitespace, !",.;:!?)]}".contains(first) else {
-            return text
-        }
-        return " " + text
     }
 }

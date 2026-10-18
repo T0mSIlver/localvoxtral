@@ -24,25 +24,29 @@ extension DictationSessionController {
         })
     }
 
-    /// What the overlay commit inserts through: the route while it takes
-    /// text, the keyboard otherwise.
-    var overlayTextCommitter: any OverlayTextCommitting {
+    /// Where the overlay commit goes without a mod: the route while it
+    /// takes text, the keyboard otherwise. The append is handed off, not
+    /// awaited: the relay delivers in order and gives a refused text back
+    /// to the keyboard.
+    var overlayTextDestination: OverlayCommitDestination {
         guard textInsertion.promptRelayTakesText, let sink = textInsertion.promptRelaySink else {
-            return textInsertion
+            return .keyboard(textInsertion)
         }
         // Read now: an answer that comes after the next dictation armed its
         // own relay still belongs to this one.
         let sessionID = promptRelaySessionID
         let generation = sessionStartGeneration
-        return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in
-            guard let self else { return }
-            guard self.sessionStartGeneration == generation else {
-                self.keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
-                return
+        return .route { [weak self] text, pid in
+            sink.append(text) { refused in
+                guard let self else { return }
+                guard self.sessionStartGeneration == generation else {
+                    self.keepOverlayTextOfARetiredDictation(refused, sessionID: sessionID, generation: generation)
+                    return
+                }
+                self.commitOverlayTextThePromptRelayRefused(
+                    refused, preferredAppPID: pid, sessionID: sessionID, generation: generation
+                )
             }
-            self.commitOverlayTextThePromptRelayRefused(
-                text, preferredAppPID: pid, sessionID: sessionID, generation: generation
-            )
         }
     }
 
@@ -105,33 +109,5 @@ extension DictationSessionController {
         else { return }
         Log.overlay.notice("overlay commit: handed-off text not in the prompt; next commit adds no space")
         lastOverlayCommitLanding = nil
-    }
-}
-
-/// Commits the overlay by appending to the relay. The append is handed off,
-/// not awaited: the relay delivers in order and gives a refused text back to
-/// the keyboard. Secure Keyboard Entry does not stop it, since no key is
-/// posted.
-@MainActor
-final class PromptRelayOverlayCommitter: OverlayTextCommitting {
-    private let sink: AgentPromptSink
-    private let refused: @MainActor (String, pid_t?) -> Void
-
-    init(sink: AgentPromptSink, refused: @escaping @MainActor (String, pid_t?) -> Void) {
-        self.sink = sink
-        self.refused = refused
-    }
-
-    var isAccessibilityTrusted: Bool { true }
-    var postsNoKeys: Bool { true }
-
-    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
-        let refused = self.refused
-        sink.append(text) { refused($0, preferredAppPID) }
-        return .insertedByAccessibility
-    }
-
-    func pasteUsingCommandV(_: String, preferredAppPID _: pid_t?) -> Bool {
-        false
     }
 }

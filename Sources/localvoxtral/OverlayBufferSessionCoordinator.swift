@@ -24,22 +24,57 @@ protocol OverlayAnchorResolving: AnyObject {
 
 extension OverlayAnchorResolver: OverlayAnchorResolving {}
 
+/// Types an Overlay Buffer commit into the focused app: keys first, then
+/// Cmd+V.
 @MainActor
-protocol OverlayTextCommitting: AnyObject {
+protocol OverlayKeyboardInserting: AnyObject {
     var isAccessibilityTrusted: Bool { get }
 
     func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool
-    /// True for a committer that delivers without posting keys (the
-    /// opencode prompt relay), which Secure Keyboard Entry cannot swallow.
-    var postsNoKeys: Bool { get }
 }
 
-extension OverlayTextCommitting {
-    var postsNoKeys: Bool { false }
-}
+extension TextInsertionService: OverlayKeyboardInserting {}
 
-extension TextInsertionService: OverlayTextCommitting {}
+/// Where an Overlay Buffer commit's text goes.
+struct OverlayCommitDestination {
+    enum Kind {
+        /// Typed into the focused app now; the panel shows whether it went in.
+        case keyboard(any OverlayKeyboardInserting)
+        /// Handed to a route that writes into the agent's prompt by session
+        /// id (the session's mod, the prompt relay). No key is posted, so
+        /// Secure Keyboard Entry cannot swallow it. The route's answer goes
+        /// to whoever made the route, not to the panel: the commit ends at
+        /// the hand-off. Called with the commit's target pid, and only for a
+        /// commit with text.
+        case route((String, pid_t?) -> Void)
+    }
+
+    var kind: Kind
+    /// One space in front of the text, unless it already starts with
+    /// whitespace or with punctuation that attaches to the word before it.
+    var leadingSpace = false
+
+    static func keyboard(_ keyboard: any OverlayKeyboardInserting) -> Self {
+        Self(kind: .keyboard(keyboard))
+    }
+
+    static func route(_ handOff: @escaping (String, pid_t?) -> Void) -> Self {
+        Self(kind: .route(handOff))
+    }
+
+    /// `commitText` as this destination receives it.
+    func text(for commitText: String) -> String {
+        leadingSpace ? Self.spaced(commitText) : commitText
+    }
+
+    static func spaced(_ text: String) -> String {
+        guard let first = text.first, !first.isWhitespace, !",.;:!?)]}".contains(first) else {
+            return text
+        }
+        return " " + text
+    }
+}
 
 enum OverlayBufferCommitOutcome: Equatable {
     case succeeded
@@ -62,7 +97,7 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     func beginFinalizing(displayBufferText: String, commitBufferText: String)
     func refresh(displayBufferText: String, commitBufferText: String)
     @discardableResult
-    func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome
+    func commitIfNeeded(into destination: OverlayCommitDestination, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome
     func dismissAfterHold(minimumVisibility: TimeInterval)
     func reset()
     /// Latches the frontmost non-self app PID for use as a commit/correction target,
@@ -218,13 +253,26 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     @discardableResult
     func commitIfNeeded(
-        using textCommitter: OverlayTextCommitting,
+        into destination: OverlayCommitDestination,
         autoCopyEnabled: Bool
     ) -> OverlayBufferCommitOutcome {
         let commitText = OverlayBufferTextAssembler.insertionText(from: commitBufferText)
         guard !commitText.isEmpty else {
             Log.overlay.info("overlay commit skipped (empty buffer)")
             return .succeeded
+        }
+        let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
+        let keyboard: any OverlayKeyboardInserting
+        switch destination.kind {
+        case .route(let handOff):
+            handOff(destination.text(for: commitText), preferredPID)
+            if autoCopyEnabled {
+                _ = copyToPasteboard(commitText)
+            }
+            Log.overlay.info("overlay commit succeeded")
+            return .succeeded
+        case .keyboard(let typing):
+            keyboard = typing
         }
 
         // Re-check Secure Keyboard Entry AT COMMIT TIME (the session-start
@@ -235,7 +283,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         // happily, and the words would be gone. Skip the doomed attempts,
         // put the text on the clipboard unconditionally — losing it is the
         // only alternative — and show the failure state.
-        if !textCommitter.postsNoKeys, TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
+        if TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
             // The clipboard is the ONLY preservation path here: if the write
             // fails, claiming "copied" and dismissing the panel would lose
             // the transcript's last remaining copy — fall back to the
@@ -265,17 +313,17 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             return .copiedToClipboard(message: fallbackMessage)
         }
 
-        let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
+        let typedText = destination.text(for: commitText)
         // Keep overlay commit aligned with live auto-paste behavior: try keyboard
         // Unicode insertion first for web field compatibility, then AX, then Cmd+V.
-        let primaryResult = textCommitter.insertTextPrioritizingKeyboard(
-            commitText,
+        let primaryResult = keyboard.insertTextPrioritizingKeyboard(
+            typedText,
             preferredAppPID: preferredPID
         )
         let inserted =
             primaryResult.isSuccess
-            || textCommitter.pasteUsingCommandV(
-                commitText,
+            || keyboard.pasteUsingCommandV(
+                typedText,
                 preferredAppPID: preferredPID
             )
 
@@ -288,7 +336,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         }
 
         let failureMessage: String
-        if textCommitter.isAccessibilityTrusted {
+        if keyboard.isAccessibilityTrusted {
             failureMessage = "Unable to insert buffered text into the focused app."
         } else {
             failureMessage = TextInsertionService.accessibilityErrorMessage

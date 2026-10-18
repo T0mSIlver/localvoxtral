@@ -33,7 +33,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         // Auto-copy OFF on purpose: under secure input the clipboard is the
         // only place the words can survive, so the copy must be unconditional.
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         guard case .copiedToClipboard(let message) = outcome else {
             return XCTFail("commit must report the clipboard fallback, got \(outcome)")
@@ -45,6 +45,34 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(copiedTexts, ["secret words"])
         XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.phase, .commitFailed)
+    }
+
+    /// A route posts no key, so Secure Keyboard Entry cannot swallow it: the
+    /// commit hands it the text, spaced, with the commit's target, and puts
+    /// nothing on the clipboard.
+    func testARouteTakesTheCommitUnderSecureInput() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        let anchorResolver = MockOverlayAnchorResolver()
+        var copiedTexts: [String] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: anchorResolver,
+            copyToPasteboard: { copiedTexts.append($0); return true }
+        )
+        var handedOff: [(text: String, pid: pid_t?)] = []
+        var destination = OverlayCommitDestination.route { handedOff.append(($0, $1)) }
+        destination.leadingSpace = true
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "secret words", commitBufferText: "secret words")
+        let outcome = coordinator.commitIfNeeded(into: destination, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(handedOff.map(\.text), [" secret words"])
+        XCTAssertEqual(handedOff.map(\.pid), [111])
+        XCTAssertEqual(copiedTexts, [])
     }
 
     func testClipboardFallbackPanelDismissesAfterReadableHold() async {
@@ -71,7 +99,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         // fallback message render, the elapsed time would swallow the whole
         // visibility window and the message would flash away unread.
         currentDate = currentDate.addingTimeInterval(10)
-        _ = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        _ = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
         XCTAssertEqual(renderer.hideCallCount, 0, "the fallback message is showing")
 
         coordinator.dismissAfterHold(
@@ -105,7 +133,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         coordinator.startSession()
         coordinator.beginFinalizing(displayBufferText: "words", commitBufferText: "words")
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         guard case .failed(let message) = outcome else {
             return XCTFail("must report a real failure, got \(outcome)")
@@ -135,7 +163,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "hello"
         )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertedTexts, ["hello"])
@@ -245,7 +273,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "hello again"
         )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertPreferredPIDs.count, 1)
@@ -277,7 +305,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
                 commitBufferText: "copy me"
             )
 
-            let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: row.autoCopyEnabled)
+            let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: row.autoCopyEnabled)
 
             XCTAssertEqual(outcome, .succeeded, "auto copy enabled: \(row.autoCopyEnabled)")
             XCTAssertEqual(
@@ -322,7 +350,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "hello"
         )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(
             outcome,
@@ -355,7 +383,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             displayBufferText: "hello",
             commitBufferText: "hello"
         )
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertPreferredPIDs.first ?? nil, 111)
@@ -379,7 +407,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "commit\nhello\nworld"
         )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertedTexts.first ?? "", "commit\nhello\nworld")
@@ -404,7 +432,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "hello"
         )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertedTexts.count, 1)
@@ -430,7 +458,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "hello"
         )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertedTexts.count, 1)
@@ -604,7 +632,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 }
 
 @MainActor
-private final class MockOverlayTextCommitter: OverlayTextCommitting {
+private final class MockOverlayTextCommitter: OverlayKeyboardInserting {
     var isAccessibilityTrusted = true
     var insertResult: TextInsertResult = .failed
     var pasteResult = false

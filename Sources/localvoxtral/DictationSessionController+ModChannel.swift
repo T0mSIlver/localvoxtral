@@ -220,7 +220,7 @@ enum ModChannelCommitOutcome: Equatable {
 /// as for the opencode relay). Secure Keyboard Entry does not stop it,
 /// since no key is posted.
 @MainActor
-final class ModChannelOverlayCommitter: OverlayTextCommitting {
+final class ModChannelOverlayCommitter {
     private let hub: ClaudeModChannelHub
     private let sessionID: String
     private let submits: Bool
@@ -244,20 +244,11 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
     static var debugFillSettled: (@MainActor (Bool) -> Void)?
     #endif
 
-    var isAccessibilityTrusted: Bool { true }
-    var postsNoKeys: Bool { true }
     /// Whether the commit handed this committer its text. The overlay
     /// commits nothing for an empty buffer, so a lone send phrase never does.
     private(set) var handedOff = false
 
-    /// The mod committer `committer` hands its text to, if any.
-    static func underlying(_ committer: any OverlayTextCommitting) -> ModChannelOverlayCommitter? {
-        if let mod = committer as? ModChannelOverlayCommitter { return mod }
-        if let spaced = committer as? LeadingSpaceOverlayCommitter { return underlying(spaced.base) }
-        return nil
-    }
-
-    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
+    func handOff(_ text: String, preferredAppPID: pid_t?) {
         handedOff = true
         let hub = hub
         let sessionID = sessionID
@@ -295,11 +286,6 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
             ModChannelOverlayCommitter.debugFillSettled?([.filled, .sent, .queued, .filledNotSent, .notRestored].contains(outcome))
             #endif
         }
-        return .insertedByAccessibility
-    }
-
-    func pasteUsingCommandV(_: String, preferredAppPID _: pid_t?) -> Bool {
-        false
     }
 
     static func outcome(of exchange: ClaudeModChannelHub.Exchange, submits: Bool) -> ModChannelCommitOutcome {

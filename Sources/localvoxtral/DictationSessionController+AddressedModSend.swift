@@ -58,14 +58,17 @@ extension DictationSessionController {
         // The box decides the space; a mod that did not say what it holds
         // leaves the last commit's evidence, as for the typed route (#802).
         let needsSpace = draft?.commitNeedsLeadingSpace ?? lastCommitContinuesPrompt(of: session)
-        let capture = CapturingOverlayCommitter()
-        let committer: any OverlayTextCommitting = needsSpace ? LeadingSpaceOverlayCommitter(base: capture) : capture
+        // The overlay hands its text over and inserts nothing, so a refusal
+        // can still commit it through another route.
+        var captured: String?
+        var destination = OverlayCommitDestination.route { text, _ in captured = text }
+        destination.leadingSpace = needsSpace
         let commit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: committer,
+            into: destination,
             autoCopyEnabled: settings.autoCopyEnabled
         )
-        guard let text = capture.text else { return .fallBack }
+        guard let text = captured else { return .fallBack }
         // Handed over: a cancel from here no longer saves the record, and
         // a quit does (#1667), until a refusal gives the text back to the
         // usual route.
@@ -129,25 +132,5 @@ extension DictationSessionController {
         takeBackAddressedCommit(handedOff)
         saveInterruptedPolishCommit = saveIfInterrupted
         return .fallBack
-    }
-}
-
-/// Takes the overlay's commit text and inserts nothing, so the caller can
-/// hand it to the mod and still commit through another route if the mod
-/// refuses.
-@MainActor
-final class CapturingOverlayCommitter: OverlayTextCommitting {
-    private(set) var text: String?
-
-    var isAccessibilityTrusted: Bool { true }
-    var postsNoKeys: Bool { true }
-
-    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID _: pid_t?) -> TextInsertResult {
-        self.text = text
-        return .insertedByAccessibility
-    }
-
-    func pasteUsingCommandV(_: String, preferredAppPID _: pid_t?) -> Bool {
-        false
     }
 }

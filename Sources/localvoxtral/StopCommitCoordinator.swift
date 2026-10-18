@@ -198,11 +198,11 @@ enum StopCommitCoordinator {
     @MainActor
     static func commit(
         overlay: any OverlayBufferSessionCoordinating,
-        textInsertion: any OverlayTextCommitting,
+        into destination: OverlayCommitDestination,
         autoCopyEnabled: Bool
     ) -> CommitResult {
         let outcome = overlay.commitIfNeeded(
-            using: textInsertion,
+            into: destination,
             autoCopyEnabled: autoCopyEnabled
         )
         switch outcome {

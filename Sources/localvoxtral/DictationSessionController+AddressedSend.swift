@@ -187,10 +187,9 @@ extension DictationSessionController {
             // `AddressedPromptRoute` turns every refusal into a keep.
             fallback: { _ in }
         )
-        let committer = PromptRelayOverlayCommitter(sink: sink) { _, _ in }
         let commit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: committer,
+            into: .route { text, _ in sink.append(text) },
             autoCopyEnabled: settings.autoCopyEnabled
         )
         sink.submit()
@@ -241,11 +240,13 @@ extension DictationSessionController {
         guard navigator.agentHoldsItsTerminal(sessionID: session.sessionID) else {
             return .notSent(AddressedSendStatus.notSent)
         }
+        var destination = OverlayCommitDestination.keyboard(
+            PinnedAppOverlayCommitter(textInsertion: textInsertion, pid: pid)
+        )
+        destination.leadingSpace = addressedCommitNeedsLeadingSpace(session: session, targetPID: pid)
         let commit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: addressedOverlayCommitter(
-                PinnedAppOverlayCommitter(textInsertion: textInsertion, pid: pid), session: session, targetPID: pid
-            ),
+            into: destination,
             autoCopyEnabled: settings.autoCopyEnabled
         )
         guard commit.outcome == .succeeded else {
@@ -367,7 +368,7 @@ final class HandedOffAddressedCommit {
 /// Types the overlay's text into one app, the named session's terminal,
 /// whatever the overlay latched as its target at start.
 @MainActor
-final class PinnedAppOverlayCommitter: OverlayTextCommitting {
+final class PinnedAppOverlayCommitter: OverlayKeyboardInserting {
     private let textInsertion: TextInsertionService
     private let pid: pid_t
 
