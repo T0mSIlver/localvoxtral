@@ -624,6 +624,14 @@ final class ViewSnapshotTests: XCTestCase {
             ("finalizing", DictationOverlayView(
                 phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics)),
+            // The stop's second pass missed its deadline (#1867); the header
+            // keeps saying so while polish runs.
+            ("second-pass-missed", DictationOverlayView(
+                phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, secondPassMissed: true)),
+            ("second-pass-missed-polishing", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, secondPassMissed: true, motion: .frozen)),
             ("polishing", DictationOverlayView(
                 phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, polishing: true, motion: .frozen)),
