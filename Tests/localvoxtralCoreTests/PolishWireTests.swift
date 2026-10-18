@@ -124,7 +124,17 @@ final class PolishWireTests: XCTestCase {
             let probabilities = try await classifier.classify(capture: "c", options: Self.options)
             XCTAssertEqual(probabilities, ["quill": 0.9])
         }
-        XCTAssertEqual(ledger.entries().map(\.feature), [.quickCaptureRouting])
+        try await answering(#"""
+            {"stop_reason":"refusal","content":[{"type":"text","text":"{\"project\":\"quill\",\"confidence\":0.95}"}]}
+            """#) {
+            do {
+                _ = try await classifier.classify(capture: "c", options: Self.options)
+                XCTFail("a refusal was routed")
+            } catch {
+                XCTAssertEqual(error as? QuickCaptureChatRouting.Failure, .malformedResponse)
+            }
+        }
+        XCTAssertEqual(ledger.entries().map(\.feature), [.quickCaptureRouting, .quickCaptureRouting])
         XCTAssertEqual(ledger.entries().first?.promptTokens, 910)
         XCTAssertEqual(ledger.entries().first?.completionTokens, 7)
     }

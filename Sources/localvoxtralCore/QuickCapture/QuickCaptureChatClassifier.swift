@@ -135,6 +135,8 @@ package struct QuickCaptureChatClassifier: QuickCaptureClassifying {
                 usage: reply?.usage
             ))
         }
-        return try QuickCaptureChatRouting.probabilities(status: status, answer: reply?.text, options: options)
+        // A declined request may still carry partial text; never route on it.
+        let answer = reply?.refused == true ? nil : reply?.text
+        return try QuickCaptureChatRouting.probabilities(status: status, answer: answer, options: options)
     }
 }
