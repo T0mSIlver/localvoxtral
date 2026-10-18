@@ -19,7 +19,7 @@ extension DictationSessionController {
         textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] text in
             kept.text += text
             guard let self else { return }
-            self.lastError = self.keepUndeliveredAgentText(kept.text)
+            self.lastError = self.keepUndeliveredAgentText(kept.text, of: generation)
             self.forgetLanding(ofSession: sessionID, generation: generation)
         })
     }
@@ -56,7 +56,7 @@ extension DictationSessionController {
     /// dictation's.
     func keepOverlayTextOfARetiredDictation(_ text: String, sessionID: String?, generation: UInt64) {
         Log.overlay.notice("overlay commit: refused after the next dictation started; text kept")
-        _ = keepUndeliveredAgentText(text)
+        _ = keepUndeliveredAgentText(text, of: generation)
         forgetLanding(ofSession: sessionID, generation: generation)
     }
 

@@ -156,7 +156,7 @@ extension DictationSessionController {
             return false
         }
         if mayHaveLanded {
-            lastError = keepUndeliveredAgentText(text)
+            lastError = keepUndeliveredAgentText(text, of: generation)
         } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
             // The read-back awaited: the next dictation may have started.
             guard sessionStartGeneration == generation else {
@@ -170,7 +170,7 @@ extension DictationSessionController {
             Log.overlay.notice(
                 "overlay commit: the mod did not fill and the session's pane is not in front; text kept"
             )
-            lastError = keepUndeliveredAgentText(text)
+            lastError = keepUndeliveredAgentText(text, of: generation)
         }
         if !inserted {
             forgetLanding(ofSession: sessionID, generation: generation)
