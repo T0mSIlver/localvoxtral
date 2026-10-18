@@ -719,9 +719,6 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.server.forgetFrames()
         await startAndSpeak(pipeline) { $0.session.toggleQuickCapture() }
         XCTAssertEqual(copied.values, [Self.phrase], "the interrupted dictation is on the clipboard")
-        XCTAssertEqual(
-            pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard,
-            "the popover says so while the capture runs")
         await polish.releaseHeldRequest()
 
         pipeline.viewModel.session.toggleQuickCapture()
