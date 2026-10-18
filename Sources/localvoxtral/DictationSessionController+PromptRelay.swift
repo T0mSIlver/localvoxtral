@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import os
 
@@ -37,62 +36,16 @@ extension DictationSessionController {
         let sessionID = promptRelaySessionID
         let generation = sessionStartGeneration
         return .route { [weak self] text, pid in
+            // The relay answers a refusal `typeInstead` only when keys
+            // would reach the same prompt; one that may have landed it keeps
+            // itself (`armPromptRelayForSession`).
             sink.append(text) { refused in
-                guard let self else { return }
-                guard self.sessionStartGeneration == generation else {
-                    self.keepOverlayTextOfARetiredDictation(refused, sessionID: sessionID, generation: generation)
-                    return
-                }
-                self.commitOverlayTextThePromptRelayRefused(
-                    refused, preferredAppPID: pid, sessionID: sessionID, generation: generation
+                self?.settleUndeliveredOverlayText(
+                    refused, outcome: .refused, keysReachPrompt: true,
+                    sessionID: sessionID, generation: generation, preferredAppPID: pid
                 )
             }
         }
-    }
-
-    /// An overlay commit's text that the relay or the mod gave back after
-    /// the next dictation started: the keys serve that dictation now, so the
-    /// text is kept, never typed (#1466, #1657). The status line is the new
-    /// dictation's.
-    func keepOverlayTextOfARetiredDictation(_ text: String, sessionID: String?, generation: UInt64) {
-        Log.overlay.notice("overlay commit: refused after the next dictation started; text kept")
-        _ = keepUndeliveredAgentText(text)
-        forgetLanding(ofSession: sessionID, generation: generation)
-    }
-
-    /// The overlay's text the relay did not take, committed the way the
-    /// overlay commits without one: keys, then Cmd+V, to the target the
-    /// commit named when it handed the text off (the overlay may have reset
-    /// since). Under Secure Keyboard Entry, or when no key lands, the text
-    /// goes on the clipboard: the panel is gone, and it may exist nowhere
-    /// else. The session's mod (#1409) gives its refusals back here too.
-    ///
-    /// - Returns: whether keys put the text in.
-    @discardableResult
-    func commitOverlayTextThePromptRelayRefused(
-        _ text: String, preferredAppPID pid: pid_t?, sessionID: String?, generation: UInt64
-    ) -> Bool {
-        if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
-           textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
-            || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
-            Log.overlay.notice("overlay commit: relay refused; text inserted by keyboard")
-            return true
-        }
-        Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
-        forgetLanding(ofSession: sessionID, generation: generation)
-        #if DEBUG
-        // A test must never write the host's clipboard.
-        if TerminalTargetDetector.isRunningUnderXCTest {
-            lastError = StatusStrings.overlayCopiedToClipboard
-            return false
-        }
-        #endif
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        lastError = pasteboard.setString(text, forType: .string)
-            ? StatusStrings.overlayCopiedToClipboard
-            : "Unable to insert buffered text into the focused app."
-        return false
     }
 
     /// The commit recorded its landing when it handed the text off. Text the

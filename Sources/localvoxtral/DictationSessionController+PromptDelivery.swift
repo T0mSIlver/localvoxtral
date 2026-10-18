@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os
 
@@ -39,7 +40,9 @@ extension DictationSessionController {
         preferredAppPID pid: pid_t?
     ) -> Bool {
         guard sessionStartGeneration == generation else {
-            keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
+            Log.overlay.notice("overlay commit: refused after the next dictation started; text kept")
+            _ = keepUndeliveredAgentText(text)
+            forgetLanding(ofSession: sessionID, generation: generation)
             return false
         }
         var inserted = false
@@ -49,9 +52,7 @@ extension DictationSessionController {
         case .mayHaveLanded:
             lastError = keepUndeliveredAgentText(text)
         case .refused where keysReachPrompt:
-            inserted = commitOverlayTextThePromptRelayRefused(
-                text, preferredAppPID: pid, sessionID: sessionID, generation: generation
-            )
+            inserted = typeUndeliveredOverlayText(text, preferredAppPID: pid)
         case .refused:
             Log.overlay.notice("overlay commit: the route did not take the text and keys would not reach its prompt; text kept")
             lastError = keepUndeliveredAgentText(text)
@@ -60,5 +61,35 @@ extension DictationSessionController {
             forgetLanding(ofSession: sessionID, generation: generation)
         }
         return inserted
+    }
+
+    /// A refused text, committed the way the overlay commits without a
+    /// route: keys, then Cmd+V, to the target the commit named when it
+    /// handed the text off (the overlay may have reset since). Under Secure
+    /// Keyboard Entry, or when no key lands, the text goes on the
+    /// clipboard: the panel is gone, and it may exist nowhere else.
+    ///
+    /// - Returns: whether keys put the text in.
+    private func typeUndeliveredOverlayText(_ text: String, preferredAppPID pid: pid_t?) -> Bool {
+        if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
+           textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
+            || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
+            Log.overlay.notice("overlay commit: relay refused; text inserted by keyboard")
+            return true
+        }
+        Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
+        #if DEBUG
+        // A test must never write the host's clipboard.
+        if TerminalTargetDetector.isRunningUnderXCTest {
+            lastError = StatusStrings.overlayCopiedToClipboard
+            return false
+        }
+        #endif
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        lastError = pasteboard.setString(text, forType: .string)
+            ? StatusStrings.overlayCopiedToClipboard
+            : "Unable to insert buffered text into the focused app."
+        return false
     }
 }
