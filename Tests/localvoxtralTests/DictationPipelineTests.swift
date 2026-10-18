@@ -440,6 +440,64 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(inserted.map(\.pid), [4242], "the app focused at the stop")
     }
 
+    /// Secure Keyboard Entry at commit: the real coordinator copies the text
+    /// instead of typing it, and History lists it as not inserted (#1872).
+    func testASecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(polish: nil, copies: Self.phrase)
+    }
+
+    func testAPolishedSecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(
+            polish: FakePolishingService { "<\($0.inputText)>" }, copies: "<\(Self.phrase)>")
+    }
+
+    private func assertSecureInputFallbackIsSavedAsNotInserted(
+        polish: FakePolishingService?, copies expected: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        var copied: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { copied.append($0); return true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, overlayCoordinator: overlay
+        )
+        let store = try XCTUnwrap(DictationSessionStore.inMemory(), file: file, line: line)
+        pipeline.viewModel.sessionStore = store
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        var typed: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating, file: file, line: line)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline, finalStatus: DictationViewModel.StatusStrings.overlayCopiedToClipboard,
+            file: file, line: line)
+
+        XCTAssertEqual(typed, [], "Secure Keyboard Entry would swallow the keys", file: file, line: line)
+        XCTAssertEqual(copied, [expected], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], file: file, line: line)
+        let notInserted = await store.entries(matching: DictationHistoryQuery(filter: .notInserted))
+        XCTAssertEqual(notInserted.map(\.rawText), [Self.phrase], file: file, line: line)
+    }
+
     /// A new microphone restarts the dictation while the stopped text still
     /// waits on its polish: that text is saved as not inserted, and the next
     /// dictation's stop commits (#1055).
