@@ -22,6 +22,11 @@ package final class ManualSessionClock: Sendable {
         let wait: BoundedWait
     }
 
+    private struct DeadlineWaiter {
+        let deadline: Date
+        let wait: BoundedWait
+    }
+
     private struct State {
         var now: Date
         var nextID: UInt64 = 0
@@ -31,6 +36,7 @@ package final class ManualSessionClock: Sendable {
         /// ids are never reused, so it can match nothing later.
         var cancelledBeforeSuspending: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
+        var deadlineWaiters: [DeadlineWaiter] = []
         /// What `waitForSleepers` reports when nothing ever arms the timer.
         var reportFailure: @Sendable (String, StaticString, UInt) -> Void = ManualSessionClock.xctFail
 
@@ -38,6 +44,12 @@ package final class ManualSessionClock: Sendable {
             let satisfied = countWaiters.filter { $0.count <= sleepers.count }
             countWaiters.removeAll { $0.count <= sleepers.count }
             return satisfied.map(\.wait)
+        }
+
+        mutating func takeDeadlineWaiters(matching deadline: Date) -> [BoundedWait] {
+            let matched = deadlineWaiters.filter { ManualSessionClock.same($0.deadline, deadline) }
+            deadlineWaiters.removeAll { ManualSessionClock.same($0.deadline, deadline) }
+            return matched.map(\.wait)
         }
     }
 
@@ -75,12 +87,9 @@ package final class ManualSessionClock: Sendable {
                     if state.cancelledBeforeSuspending.remove(id) != nil {
                         return (true, [BoundedWait]())
                     }
-                    state.sleepers.append(Sleeper(
-                        id: id,
-                        deadline: state.now.addingTimeInterval(seconds),
-                        continuation: continuation
-                    ))
-                    return (false, state.takeSatisfiedCountWaiters())
+                    let deadline = state.now.addingTimeInterval(seconds)
+                    state.sleepers.append(Sleeper(id: id, deadline: deadline, continuation: continuation))
+                    return (false, state.takeSatisfiedCountWaiters() + state.takeDeadlineWaiters(matching: deadline))
                 }
                 if cancelled { continuation.resume() }
                 satisfied.forEach { $0.resolve() }
@@ -138,6 +147,39 @@ package final class ManualSessionClock: Sendable {
             return state.reportFailure
         }
         report("no \(count) timer(s) were ever armed on the session clock", file, line)
+    }
+
+    /// Returns once a timer due `seconds` from now is armed: the one timer
+    /// the test means. A count of timers can be met by another of the
+    /// session's timers before that one registers, and an advance then never
+    /// reaches its deadline (#1378, #1863). Fails after `failAfter` seconds
+    /// of wall time, through the same reporter as `waitForSleepers`.
+    package func waitForSleeper(
+        dueIn seconds: TimeInterval,
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let armed = BoundedWait()
+        let ready = state.withLock { state -> Bool in
+            let deadline = state.now.addingTimeInterval(seconds)
+            if state.sleepers.contains(where: { Self.same($0.deadline, deadline) }) { return true }
+            state.deadlineWaiters.append(DeadlineWaiter(deadline: deadline, wait: armed))
+            return false
+        }
+        if ready { armed.resolve() }
+        if await armed.value(failAfter: failAfter) { return }
+        let report = state.withLock { state -> @Sendable (String, StaticString, UInt) -> Void in
+            state.deadlineWaiters.removeAll { $0.wait === armed }
+            return state.reportFailure
+        }
+        report("no timer due in \(seconds) s was ever armed on the session clock", file, line)
+    }
+
+    /// Two deadlines a nanosecond apart are the same, as in `advance`.
+    private static func same(_ a: Date, _ b: Date) -> Bool {
+        abs(a.timeIntervalSince(b)) < 1e-9
     }
 
     /// Replaces what `waitForSleepers` reports when nothing ever arms the

@@ -59,30 +59,14 @@ enum TerminalTargetDetector {
         case probeUnavailable
     }
 
-    /// Exact bundle IDs of known terminal emulators (verified against each
-    /// app's shipped Info.plist / build config). VS Code and Cursor are
-    /// deliberately absent: their editor surfaces are AX-writable, and their
-    /// integrated terminals are left to the AX heuristic.
-    private static let terminalBundleIDs: Set<String> = [
-        "com.apple.Terminal",       // Terminal.app
-        "com.googlecode.iterm2",    // iTerm2
-        "com.mitchellh.ghostty",    // Ghostty
-        "com.github.wez.wezterm",   // WezTerm
-        "net.kovidgoyal.kitty",     // kitty
-        "org.alacritty",            // Alacritty
-        "co.zeit.hyper",            // Hyper
-        "org.tabby",                // Tabby (electron-builder appId)
-        "com.raphaelamorim.rio",    // Rio (misc/osx Info.plist)
-        "com.cmuxterm.app",         // cmux (field-verified bundle id, 2026-07-07;
-                                    // its AX value reads writable, so the probe
-                                    // can never identify it — allowlist or bust)
-    ]
-
-    /// Prefix matches for apps that ship channel-suffixed bundle IDs.
-    /// Warp uses dev.warp.Warp-Stable / -Preview / -Dev per release channel.
-    private static let terminalBundleIDPrefixes: [String] = [
-        "dev.warp.Warp",
-    ]
+    /// The built-in terminals' bundle IDs, taken from the Settings catalog
+    /// so the two never disagree (#1855). VS Code and Cursor are deliberately
+    /// absent: their editor surfaces are AX-writable, and their integrated
+    /// terminals are left to the AX heuristic. cmux's AX value reads
+    /// writable, so for it the catalog entry is the only way in.
+    private static let terminalBundleIDs: Set<String> = Set(
+        TerminalAppCatalog.builtIn.flatMap(\.detectionBundleIDs)
+    )
 
     /// Apps whose prompt is a text field but whose AX probe cannot be trusted
     /// to say so. Claude Desktop (Electron) builds its accessibility tree only
@@ -94,11 +78,10 @@ enum TerminalTargetDetector {
         ClaudeDesktopAllowlist.bundleID,
     ]
 
-    /// Pure allowlist check: exact match first, then known channel prefixes.
+    /// Pure allowlist check against the built-in catalog's bundle IDs.
     static func isTerminalLikeBundleID(_ bundleID: String?) -> Bool {
-        guard let bundleID, !bundleID.isEmpty else { return false }
-        if terminalBundleIDs.contains(bundleID) { return true }
-        return terminalBundleIDPrefixes.contains { bundleID.hasPrefix($0) }
+        guard let bundleID else { return false }
+        return terminalBundleIDs.contains(bundleID)
     }
 
     /// Core decision: built-in allowlist first, then the user's

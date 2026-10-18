@@ -249,6 +249,35 @@ final class MistralAPIModeTests: XCTestCase {
         XCTAssertEqual(engines.mistralAPIKeyCheckState.statusLine, "Rejected (HTTP 401)")
     }
 
+    /// A verdict belongs to the key it checked (#1873): replacing the stored
+    /// key while its check runs drops that check's answer.
+    func testReplacingTheKeyDuringItsCheckDropsTheOldVerdict() async {
+        let (engines, settings, _) = makeEngines()
+        let verifier = GatedMistralAPIKeyVerifier(checks: 1)
+        engines.mistralAPIKeyVerifier = verifier
+        settings.mistralAPIKey = "mk-old"
+
+        engines.checkMistralAPIKey()
+        settings.mistralAPIKey = "mk-new"
+        verifier.answer(check: 0, with: .accepted)
+        await engines.mistralAPIKeyCheckTask?.value
+
+        XCTAssertEqual(engines.mistralAPIKeyCheckState, .idle)
+    }
+
+    func testReplacingTheKeyAfterItsCheckClearsTheVerdict() async {
+        let (engines, settings, _) = makeEngines()
+        engines.mistralAPIKeyVerifier = FakeMistralAPIKeyVerifier(result: .accepted)
+        settings.mistralAPIKey = "mk-old"
+        engines.checkMistralAPIKey()
+        await engines.mistralAPIKeyCheckTask?.value
+        XCTAssertEqual(engines.mistralAPIKeyCheckState, .finished(.accepted))
+
+        settings.mistralAPIKey = "mk-new"
+
+        XCTAssertEqual(engines.mistralAPIKeyCheckState, .idle)
+    }
+
     func testCheckKeyStateLinesStayOneLine() {
         XCTAssertNil(MistralAPIKeyCheckState.idle.statusLine)
         XCTAssertEqual(MistralAPIKeyCheckState.checking.statusLine, "Checking…")

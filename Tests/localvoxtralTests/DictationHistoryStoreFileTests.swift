@@ -28,12 +28,36 @@ final class DictationHistoryStoreFileTests: XCTestCase {
             commitSucceeded: true)
     }
 
-    /// A store at `url` holding `texts`, written and released so the next
-    /// open starts from the file.
+    /// A store at `url` holding `texts`, which no SwiftData connection ever
+    /// held. SwiftData releases a store's SQLite connection later, on its own
+    /// queue, and the last connection to close locks the file to fold its WAL
+    /// in: a raw write after seeding in place met that lock as SQLITE_BUSY
+    /// (#1862). So the store is seeded in a scratch file and copied by a raw
+    /// connection opened while it is still alive, which SwiftData's close
+    /// then never outlasts.
     private func seedStore(at url: URL, texts: [String]) async throws {
-        let store = try DictationSessionStore.open(url: url).get()
+        let scratch = url.deletingLastPathComponent()
+            .appendingPathComponent("seeding-\(UUID().uuidString).store")
+        let store = try DictationSessionStore.open(url: scratch).get()
         for text in texts { store.save(record(text)) }
         _ = await store.count()
+        let raw = RawStoreConnection(scratch)
+        _ = raw.copy(to: url)
+        withExtendedLifetime(store) {}
+    }
+
+    /// Opens `url` with `model`, as another program would, and copies the
+    /// result to `copy` while that container still holds the file (see
+    /// `seedStore`). Returns the copy's bytes.
+    private func migrate<Model: PersistentModel>(
+        _ url: URL, to model: Model.Type, copyingTo copy: URL
+    ) throws -> Data {
+        let container = try ModelContainer(
+            for: Schema([model]), configurations: [ModelConfiguration(schema: Schema([model]), url: url)])
+        _ = try ModelContext(container).fetch(FetchDescriptor<Model>())
+        let data = RawStoreConnection(url).copy(to: copy)
+        withExtendedLifetime(container) {}
+        return data
     }
 
     private func rawTexts<Model: PersistentModel>(
@@ -201,9 +225,8 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         let directory = makeDirectory()
         let legacy = directory.appendingPathComponent("default.store")
         let destination = directory.appendingPathComponent("localvoxtral/history.store")
-        let seeded = directory.appendingPathComponent("seed.store")
-        try await seedStore(at: seeded, texts: ["one", "two"])
-        let before = try copySettled(seeded, to: legacy)
+        try await seedStore(at: legacy, texts: ["one", "two"])
+        let before = try Data(contentsOf: legacy)
 
         XCTAssertEqual(
             DictationHistoryStoreFile.importLegacyStore(from: legacy, to: destination), .imported)
@@ -235,8 +258,7 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         let legacy = directory.appendingPathComponent("default.store")
         let seeded = directory.appendingPathComponent("seed.store")
         try await seedStore(at: seeded, texts: ["one"])
-        _ = try rawTexts(ForeignRequestModel.self, at: seeded, \.path)
-        let before = try copySettled(seeded, to: legacy)
+        let before = try migrate(seeded, to: ForeignRequestModel.self, copyingTo: legacy)
 
         let store = try DictationSessionStore.open(
             directory: directory.appendingPathComponent("localvoxtral"), legacyStore: legacy).get()
@@ -286,19 +308,6 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         XCTAssertEqual(DictationHistoryStoreFile.defaultDirectoryURL().lastPathComponent, "localvoxtral")
     }
 
-    /// Copies `seeded`, its WAL folded in, to `legacy`: no SwiftData
-    /// connection ever holds the copy, so only the code under test can
-    /// change it. SwiftData releases a seeding store, and may write to it,
-    /// at a moment the test does not control.
-    private func copySettled(_ seeded: URL, to legacy: URL) throws -> Data {
-        var db: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(seeded.path, &db), SQLITE_OK)
-        XCTAssertEqual(sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil), SQLITE_OK)
-        let data = try Data(contentsOf: seeded)
-        sqlite3_close(db)
-        try data.write(to: legacy)
-        return data
-    }
 
     /// Nothing was written to the file, nor to its WAL.
     private func assertUnchanged(_ url: URL, _ settled: Data, file: StaticString = #filePath, line: UInt = #line) throws {
@@ -471,5 +480,32 @@ enum HistoryBefore1792 {
             commitSucceeded = true
             self.polishPromptTokens = polishPromptTokens
         }
+    }
+}
+
+/// A plain SQLite connection to a store file, for what SwiftData cannot do
+/// to it.
+private final class RawStoreConnection {
+    private var db: OpaquePointer?
+
+    init(_ url: URL, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK, file: file, line: line)
+    }
+
+    deinit { sqlite3_close(db) }
+
+    /// A consistent copy at `destination`, in WAL mode like a Core Data
+    /// store, with no WAL left beside it. Reading needs no lock a live
+    /// SwiftData connection holds. Returns the copy's bytes.
+    func copy(to destination: URL, file: StaticString = #filePath, line: UInt = #line) -> Data {
+        XCTAssertEqual(
+            sqlite3_exec(db, "VACUUM INTO '\(destination.path)'", nil, nil, nil), SQLITE_OK,
+            String(cString: sqlite3_errmsg(db)), file: file, line: line)
+        var copy: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(destination.path, &copy), SQLITE_OK, file: file, line: line)
+        XCTAssertEqual(
+            sqlite3_exec(copy, "PRAGMA journal_mode=WAL", nil, nil, nil), SQLITE_OK, file: file, line: line)
+        sqlite3_close(copy)
+        return (try? Data(contentsOf: destination)) ?? Data()
     }
 }
