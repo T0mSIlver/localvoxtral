@@ -19,51 +19,17 @@ struct MistralModel: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// What a Mistral polish request says about reasoning. Mistral answers 400 for
-/// a value the model does not take, so this is per model, not a constant:
-/// measured 2026-09-18 against the live API.
-enum MistralReasoningEffort: String, Sendable {
-    /// `"none"`: reasoning switched off — Mistral's own reasoning models.
-    case off
-    /// GLM rejects `none` (it takes `low`/`high`/`max`) and reasons at length
-    /// when the field is absent; `low` answers a short polish with no trace.
-    case low
-    /// The field is not sent: a model without reasoning rejects it outright
-    /// ("reasoning_effort is not enabled for this model").
-    case omitted
-    /// For work nobody is waiting on (term suggestions). `/v1/models` only
-    /// says WHETHER a model reasons, not which levels it takes, but `"high"`
-    /// is the one value every reasoning model accepted (live API, 2026-09-19:
-    /// GLM takes low/high/max, Mistral's own models none/high) — one below
-    /// the top on GLM, the top elsewhere, and no per-model table.
-    case high
-
-    var wireValue: String? {
-        switch self {
-        case .off: return "none"
-        case .low: return "low"
-        case .omitted: return nil
-        case .high: return "high"
-        }
-    }
-
-    /// The effort for `modelID`. The catalog says whether the model reasons at
-    /// all; without it (no key yet, the eval harness) every model is assumed
-    /// to, which is what the default model does.
-    static func forModel(_ modelID: String, catalog: [MistralModel] = []) -> Self {
+extension MistralReasoningEffort {
+    /// The effort for `modelID`, when the catalog says whether the model
+    /// reasons at all; one it lists without reasoning gets no field.
+    static func forModel(_ modelID: String, catalog: [MistralModel]) -> Self {
         if let model = catalog.first(where: { $0.answers(to: modelID) }),
             !model.supportsReasoning
         {
             return .omitted
         }
-        return MistralModelCatalog.isGLM(modelID) ? .low : .off
+        return forModel(modelID)
     }
-}
-
-extension MistralReasoningEffort {
-    /// The effort for a request that asked to think hard: `high` wherever the
-    /// polish effort says the model reasons at all.
-    var deepened: Self { self == .omitted ? .omitted : .high }
 }
 
 /// One row of a Mistral model picker. `tag` is what Settings stores: empty for
@@ -85,11 +51,6 @@ enum MistralModelCatalog {
     enum Purpose: Sendable {
         case dictation
         case polishing
-    }
-
-    static func isGLM(_ modelID: String) -> Bool {
-        let tokens = modelID.lowercased().split(separator: "-")
-        return tokens.contains("glm")
     }
 
     // MARK: Parsing
@@ -216,7 +177,7 @@ enum MistralModelCatalog {
 
     static func section(for modelID: String) -> Section {
         let lowered = modelID.lowercased()
-        return isGLM(lowered) || lowered.hasPrefix("zai-") ? .zai : .mistral
+        return MistralReasoningEffort.isGLM(lowered) || lowered.hasPrefix("zai-") ? .zai : .mistral
     }
 
     /// A readable name from a model id: `mistral-medium-3-5` → "Mistral

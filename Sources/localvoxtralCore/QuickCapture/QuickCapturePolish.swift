@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// A capture's words after the one polish it gets before routing (#970).
 package struct QuickCapturePolish: Equatable, Sendable {
@@ -138,7 +135,7 @@ package struct QuickCapturePolishRequest: Equatable, Sendable {
     package let userPrompts: [String]
 
     /// The chat messages: the system prompt when there is one, then each
-    /// user message (`LLMPolishingService.requestBody`'s order).
+    /// user message, as a chat/completions body orders them.
     package var messages: [[String: String]] {
         (systemPrompt.isEmpty ? [] : [["role": "system", "content": systemPrompt]])
             + userPrompts.map { ["role": "user", "content": $0] }
@@ -168,75 +165,5 @@ extension QuickCapturePolishPrompt {
                 inputText: prepared.workingText, replacementDictionary: prepared.dictionarySection
             )
         )
-    }
-}
-
-/// Sends a capture's polish request to any `chat/completions` endpoint, for
-/// the replay (`scripts/linux/quick-capture-replay.sh --polish-url`). The app
-/// sends the same request through `LLMPolishingService`.
-@MainActor
-package final class QuickCaptureChatPolisher: QuickCapturePolishing {
-    package typealias Send = @Sendable (URLRequest) async throws -> (Data, URLResponse)
-
-    private let endpoint: URL
-    private let apiKey: String
-    private let model: String
-    private let extraBody: [String: any Sendable]
-    private let inputs: QuickCapturePolishInputs
-    private let send: Send
-    /// The last failure, for the replay to print.
-    package private(set) var lastError: (any Error)?
-
-    /// - Parameter extraBody: fields merged into the body last, e.g. a
-    ///   reasoning effort or sampling the endpoint needs.
-    package init(
-        endpoint: URL, apiKey: String, model: String, extraBody: [String: any Sendable] = [:],
-        inputs: QuickCapturePolishInputs,
-        send: @escaping Send = { try await SameOriginHTTP.shared.data(for: $0) }
-    ) {
-        self.endpoint = endpoint
-        self.apiKey = apiKey
-        self.model = model
-        self.extraBody = extraBody
-        self.inputs = inputs
-        self.send = send
-    }
-
-    /// The request's JSON body: the model, the messages, the app's default
-    /// temperature, then `extraBody`.
-    package static func body(
-        model: String, request: QuickCapturePolishRequest, extraBody: [String: any Sendable]
-    ) -> Data {
-        var body: [String: Any] = ["model": model, "messages": request.messages, "temperature": 0.3]
-        for (key, value) in extraBody { body[key] = value }
-        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
-    }
-
-    package func polish(_ text: String, vocabulary: [String]) async -> QuickCapturePolish? {
-        let request = QuickCapturePolishPrompt.request(transcript: text, vocabulary: vocabulary, inputs: inputs)
-        var urlRequest = URLRequest(url: endpoint, timeoutInterval: 60)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !apiKey.isEmpty { urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        urlRequest.httpBody = Self.body(model: model, request: request, extraBody: extraBody)
-        let clock = ContinuousClock()
-        let start = clock.now
-        do {
-            let (data, response) = try await send(urlRequest)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard (200..<300).contains(status) else { throw QuickCaptureChatRouting.Failure.http(status: status) }
-            guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]],
-                  let message = choices.first?["message"] as? [String: Any],
-                  let content = QuickCaptureChatRouting.text(ofContent: message["content"]),
-                  !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { throw QuickCaptureChatRouting.Failure.malformedResponse }
-            let elapsed = clock.now - start
-            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-            return QuickCapturePolish(text: content.trimmingCharacters(in: .whitespacesAndNewlines), durationSeconds: seconds)
-        } catch {
-            lastError = error
-            return nil
-        }
     }
 }

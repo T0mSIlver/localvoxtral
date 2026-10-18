@@ -243,7 +243,7 @@ def api_key(model: str, env: dict[str, str] = os.environ) -> str:
 
 
 def ask(model: str, content: str, secret: str) -> tuple[str, dict, float]:
-    """The body `LLMPolishingService.requestBody` sends for this request on
+    """The body `LLMPolishingConfiguration.body(for:)` sends for this request on
     the Mistral shape: one user message, temperature 0.3, high effort."""
     body = {"model": model, "messages": [{"role": "user", "content": content}],
             "temperature": 0.3, "reasoning_effort": "high"}

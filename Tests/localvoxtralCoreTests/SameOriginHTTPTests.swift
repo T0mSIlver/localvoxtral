@@ -37,10 +37,10 @@ final class SameOriginHTTPTests: XCTestCase {
 
     func testFirstDraftRedirectCannotCarryCaptureToAnotherOrigin() async throws {
         let (configured, _, hits) = try redirectPair()
-        let drafter = QuickCaptureFirstDrafter(
-            endpoint: URL(string: "http://127.0.0.1:\(configured.port)/v1/chat/completions")!,
+        let drafter = QuickCaptureFirstDrafter(configuration: LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:\(configured.port)/v1/chat/completions")!,
             apiKey: "", model: "m"
-        )
+        ))
 
         _ = await drafter.firstDraft(capture: "dictated text", projectName: "p", context: QuickCaptureContext())
 

@@ -55,8 +55,8 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
 
     /// The app sends the core builder's request byte for byte, as a
     /// dictation's polish assembles its own (`StopCommitCoordinator`'s
-    /// templates and replacement rules), and the replay's chat body carries
-    /// the same messages as `LLMPolishingService`'s.
+    /// templates and replacement rules), and the wire body carries its
+    /// messages in order.
     func testTheAppSendsTheCoreBuildersRequestByteForByte() async throws {
         let settings = configuredSettings()
         settings.replacementDictionaryEnabled = true
@@ -92,13 +92,9 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
 
         let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
         let appBody = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: LLMPolishingService.requestBody(request: sent, configuration: configuration))
-                as? [String: Any])
-        let replayBody = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: QuickCaptureChatPolisher.body(model: "m", request: core, extraBody: [:]))
+            JSONSerialization.jsonObject(with: configuration.body(for: sent.wire))
                 as? [String: Any])
         XCTAssertEqual(appBody["messages"] as? [[String: String]], core.messages)
-        XCTAssertEqual(replayBody["messages"] as? [[String: String]], core.messages)
     }
 
     func testAFailedRequestOrNoConfigurationGivesNothing() async throws {

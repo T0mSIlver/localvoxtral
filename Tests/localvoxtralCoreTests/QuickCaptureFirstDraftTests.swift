@@ -8,6 +8,9 @@ import localvoxtralTestSupport
 /// #918's first stage: the polishing model's answer, sorted by kind, and the
 /// context it reads.
 final class QuickCaptureFirstDraftTests: XCTestCase {
+    private static let openAI = LLMPolishingConfiguration(
+        endpointURL: URL(string: "http://127.0.0.1:8080")!, apiKey: "", model: "m")
+
     private func response(_ answer: String, finish: String = "stop") -> Data {
         let object: [String: Any] = [
             "choices": [["message": ["content": answer], "finish_reason": finish]],
@@ -19,7 +22,7 @@ final class QuickCaptureFirstDraftTests: XCTestCase {
     func testTheAnswerIsSortedByKindAndOnlyAnIssueRelatesToOne() throws {
         let issue = QuickCaptureFirstDraft.outcome(
             status: 200,
-            body: response(###"{"kind":"issue","title":"Show drafting progress","body":"## Problem\nx","relation":"extends","issue":909}"###),
+            reply: Self.openAI.reply(to: response(###"{"kind":"issue","title":"Show drafting progress","body":"## Problem\nx","relation":"extends","issue":909}"###)),
             openIssues: [909]
         )
         guard case .draft(let draft, let usage) = issue else { return XCTFail("\(issue)") }
@@ -32,7 +35,7 @@ final class QuickCaptureFirstDraftTests: XCTestCase {
 
         let question = QuickCaptureFirstDraft.outcome(
             status: 200,
-            body: response(#"<think>hm</think>{"kind":"Question","title":"Why does polish eat backticks?","body":"See #563.","relation":"extends","issue":909}"#),
+            reply: Self.openAI.reply(to: response(#"<think>hm</think>{"kind":"Question","title":"Why does polish eat backticks?","body":"See #563.","relation":"extends","issue":909}"#)),
             openIssues: [909]
         )
         guard case .draft(let answer, _) = question else { return XCTFail("\(question)") }
@@ -44,7 +47,7 @@ final class QuickCaptureFirstDraftTests: XCTestCase {
         for (raw, kind) in [("task", QuickCaptureKind.task), ("note", .note), ("idea", .issue), (nil, .issue)] {
             let field = raw.map { #""kind":"\#($0)","# } ?? ""
             let outcome = QuickCaptureFirstDraft.outcome(
-                status: 200, body: response(#"{\#(field)"title":"T","body":"B","relation":"none","issue":null}"#), openIssues: []
+                status: 200, reply: Self.openAI.reply(to: response(#"{\#(field)"title":"T","body":"B","relation":"none","issue":null}"#)), openIssues: []
             )
             guard case .draft(let draft, _) = outcome else { return XCTFail("\(outcome)") }
             XCTAssertEqual(draft.kind, kind, raw ?? "no kind: an issue, the kind the user reviews")
@@ -53,18 +56,18 @@ final class QuickCaptureFirstDraftTests: XCTestCase {
 
     func testAnHTTPErrorACutAnswerOrNoJSONFails() {
         XCTAssertEqual(
-            QuickCaptureFirstDraft.outcome(status: 403, body: Data(), openIssues: []), .failed(.agentError("http 403"))
+            QuickCaptureFirstDraft.outcome(status: 403, reply: Self.openAI.reply(to: Data()), openIssues: []), .failed(.agentError("http 403"))
         )
         XCTAssertEqual(
-            QuickCaptureFirstDraft.outcome(status: 200, body: response(#"{"kind":"issue","ti"#, finish: "length"), openIssues: []),
+            QuickCaptureFirstDraft.outcome(status: 200, reply: Self.openAI.reply(to: response(#"{"kind":"issue","ti"#, finish: "length")), openIssues: []),
             .failed(.outputTooLarge), "reasoning that ate the token cap"
         )
         XCTAssertEqual(
-            QuickCaptureFirstDraft.outcome(status: 200, body: response("no json"), openIssues: []), .failed(.malformedOutput)
+            QuickCaptureFirstDraft.outcome(status: 200, reply: Self.openAI.reply(to: response("no json")), openIssues: []), .failed(.malformedOutput)
         )
     }
 
-    func testTheRequestQuotesTheContextAndMergesTheEffortLast() throws {
+    func testTheRequestQuotesTheContextAtTheLeastEffort() throws {
         let context = QuickCaptureContext(
             readme: "# Quill\nQuill typesets Markdown.",
             issueRules: "## Proof\nA test per fix.",
@@ -73,13 +76,14 @@ final class QuickCaptureFirstDraftTests: XCTestCase {
             closedIssues: [.init(number: 9, title: "Old kerning")],
             mergedPullRequests: [.init(number: 11, title: "Kern table")]
         )
-        let data = QuickCaptureFirstDraft.requestBody(
-            model: "zai-glm-5-3", capture: "italic kerning is wrong", projectName: "quill", context: context,
-            extraBody: ["reasoning_effort": "low", "max_tokens": 5]
-        )
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "https://api.mistral.ai")!, apiKey: "k", model: "zai-glm-5-3",
+            requestShape: .mistral, mistralReasoningEffort: .high)
+        let data = try configuration.body(for: QuickCaptureFirstDraft.wireRequest(
+            capture: "italic kerning is wrong", projectName: "quill", context: context))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(body["reasoning_effort"] as? String, "low")
-        XCTAssertEqual(body["max_tokens"] as? Int, 5, "the configuration's fields win")
+        XCTAssertEqual(body["reasoning_effort"] as? String, "low", "the model's least, whatever polish uses")
+        XCTAssertEqual(body["max_tokens"] as? Int, QuickCaptureFirstDraft.maxTokens)
         let messages = try XCTUnwrap(body["messages"] as? [[String: String]])
         XCTAssertEqual(messages.first?["content"], QuickCaptureFirstDraft.systemPrompt)
         let user = try XCTUnwrap(messages.last?["content"])

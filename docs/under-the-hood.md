@@ -235,9 +235,10 @@ base URL.
 
 Polishing also runs on Anthropic's API: enter `https://api.anthropic.com` as
 the server URL, an Anthropic API key, and a model such as `claude-sonnet-5-5`.
-The app then speaks Anthropic's Messages API and asks for low effort, so the
-model thinks little before it answers. In this mode your transcripts reach
-Anthropic.
+The app then speaks Anthropic's Messages API for polish and for quick
+capture's routing and first drafts, and asks for low effort, so the model
+thinks little before it answers. In this mode your transcripts and quick
+captures reach Anthropic.
 
 For example, to serve Voxtral Realtime with vLLM on an NVIDIA GPU:
 

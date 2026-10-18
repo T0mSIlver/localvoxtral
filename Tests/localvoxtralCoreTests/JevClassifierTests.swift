@@ -111,6 +111,13 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
         QuickCaptureProject(key: "/w/localvoxtral", name: "localvoxtral", summary: nil, terms: [], userLine: nil),
     ])
 
+    /// A 200 read as the OpenAI-compatible shape reads it.
+    private func routed(_ body: Data) throws -> [String: Double] {
+        let reply = LLMPolishingConfiguration(endpointURL: URL(string: "http://127.0.0.1:8080")!, apiKey: "", model: "m")
+            .reply(to: body)
+        return try QuickCaptureChatRouting.probabilities(status: 200, answer: reply?.text, options: options)
+    }
+
     private func reply(_ content: String) -> Data {
         let object: [String: Any] = ["choices": [["message": ["role": "assistant", "content": content]]]]
         return try! JSONSerialization.data(withJSONObject: object)
@@ -123,7 +130,7 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
             "<think>Maybe {\"project\": \"inbox\"}</think>\n{\"project\": \"localvoxtral\", \"confidence\": 0.8}",
         ] {
             XCTAssertEqual(
-                try QuickCaptureChatRouting.probabilities(status: 200, body: reply(content), options: options),
+                try routed(reply(content)),
                 ["localvoxtral": 0.8], content
             )
         }
@@ -135,8 +142,7 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
             ["type": "text", "text": #"{"project": "localvoxtral", "confidence": 0.85}"#],
         ]]]]]
         XCTAssertEqual(
-            try QuickCaptureChatRouting.probabilities(
-                status: 200, body: JSONSerialization.data(withJSONObject: object), options: options),
+            try routed(JSONSerialization.data(withJSONObject: object)),
             ["localvoxtral": 0.85]
         )
     }
@@ -149,8 +155,7 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
             #"{"project": "localvoxtral", "confidence": null}"#,
             #"{"project": "localvoxtral", "confidence": "0.95"}"#,
         ] {
-            let probabilities = try QuickCaptureChatRouting.probabilities(
-                status: 200, body: reply(content), options: options)
+            let probabilities = try routed(reply(content))
             let answer = QuickCaptureRouting.answer(probabilities: probabilities, options: options, classifier: .chatModel)
             guard case .route(let route) = answer else { return XCTFail(content) }
             XCTAssertEqual(route.destination, .catchAll, content)
@@ -161,16 +166,15 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
 
     func testAnIdThatIsNoOptionIsAFailureNotAGuess() {
         XCTAssertThrowsError(
-            try QuickCaptureChatRouting.probabilities(
-                status: 200, body: reply(#"{"project": "vidtheque", "confidence": 1}"#), options: options)
+            try routed(reply(#"{"project": "vidtheque", "confidence": 1}"#))
         ) { XCTAssertEqual($0 as? QuickCaptureChatRouting.Failure, .unknownOption) }
     }
 
-    func testTheRequestCarriesThePolishConfigurationsExtraFields() throws {
-        let body = QuickCaptureChatRouting.requestBody(
-            model: "m", capture: "c", options: options,
-            extraBody: ["chat_template_kwargs": ["enable_thinking": false]]
-        )
+    func testTheRequestCarriesThePolishConfigurationsThinkingSwitch() throws {
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:8080")!, apiKey: "", model: "m",
+            chatTemplateArguments: ["enable_thinking": false])
+        let body = try configuration.body(for: QuickCaptureChatRouting.wireRequest(capture: "c", options: options))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(object["model"] as? String, "m")
         XCTAssertEqual((object["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"], false)

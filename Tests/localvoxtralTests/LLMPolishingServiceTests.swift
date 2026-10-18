@@ -97,10 +97,7 @@ final class LLMPolishingServiceTests: XCTestCase {
             model: "model",
             samplingDefaults: nil
         )
-        let bytes = try LLMPolishingService.requestBody(
-            request: request,
-            configuration: configuration
-        )
+        let bytes = try configuration.body(for: request.wire)
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(with: bytes) as? [String: Any]
         )
@@ -136,10 +133,7 @@ final class LLMPolishingServiceTests: XCTestCase {
             )
         )
 
-        let data = try LLMPolishingService.requestBody(
-            request: request,
-            configuration: configuration
-        )
+        let data = try configuration.body(for: request.wire)
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
@@ -170,10 +164,7 @@ final class LLMPolishingServiceTests: XCTestCase {
 
         let warmupJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: warmupRequest,
-                    configuration: configuration
-                )
+                with: configuration.body(for: warmupRequest.wire)
             ) as? [String: Any]
         )
         XCTAssertEqual(warmupJSON["max_tokens"] as? Int, 1)
@@ -182,10 +173,7 @@ final class LLMPolishingServiceTests: XCTestCase {
         // shape: no max_tokens key at all, the helper applies its default.
         let productionJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: request,
-                    configuration: configuration
-                )
+                with: configuration.body(for: request.wire)
             ) as? [String: Any]
         )
         XCTAssertNil(productionJSON["max_tokens"])
@@ -200,10 +188,7 @@ final class LLMPolishingServiceTests: XCTestCase {
             chatTemplateArguments: ["enable_thinking": false]
         )
 
-        let data = try LLMPolishingService.requestBody(
-            request: request,
-            configuration: configuration
-        )
+        let data = try configuration.body(for: request.wire)
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
@@ -312,7 +297,7 @@ final class LLMPolishingServiceTests: XCTestCase {
 
         for testCase in cases {
             let input = URL(string: testCase.input)!
-            let normalized = LLMPolishingService.normalizedChatCompletionsURL(input)
+            let normalized = LLMPolishingConfiguration.normalizedChatCompletionsURL(input)
             XCTAssertEqual(
                 normalized.absoluteString,
                 testCase.expected,
@@ -338,7 +323,7 @@ final class LLMPolishingServiceTests: XCTestCase {
         ]
         for input in cases {
             let url = URL(string: input)!
-            let normalized = LLMPolishingService.normalizedChatCompletionsURL(url)
+            let normalized = LLMPolishingConfiguration.normalizedChatCompletionsURL(url)
             XCTAssertEqual(normalized.host, url.host, "host changed for \(input)")
             XCTAssertEqual(normalized.port, url.port, "port changed for \(input)")
             XCTAssertEqual(normalized.scheme, url.scheme, "scheme changed for \(input)")
@@ -349,7 +334,7 @@ final class LLMPolishingServiceTests: XCTestCase {
     func testNormalizedChatCompletionsURLPreservesQuery() {
         let url = URL(string: "http://127.0.0.1:8080?tenant=acme")!
         XCTAssertEqual(
-            LLMPolishingService.normalizedChatCompletionsURL(url).absoluteString,
+            LLMPolishingConfiguration.normalizedChatCompletionsURL(url).absoluteString,
             "http://127.0.0.1:8080/v1/chat/completions?tenant=acme"
         )
     }
@@ -361,7 +346,7 @@ final class LLMPolishingServiceTests: XCTestCase {
     /// path-only and total.
     func testNormalizedChatCompletionsURLPreservesSchemeForOpaqueInput() {
         let opaque = URL(string: "mailto:polish@example.com")!
-        let normalized = LLMPolishingService.normalizedChatCompletionsURL(opaque)
+        let normalized = LLMPolishingConfiguration.normalizedChatCompletionsURL(opaque)
         XCTAssertEqual(normalized.scheme, "mailto")
     }
 

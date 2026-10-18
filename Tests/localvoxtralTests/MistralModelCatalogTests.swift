@@ -258,7 +258,10 @@ final class MistralModelCatalogTests: XCTestCase {
         func firstDraftEffort(_ model: String) throws -> String? {
             settings.mistralPolishingModel = model
             let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
-            return QuickCaptureInboxViewModel.firstDraftExtraBody(configuration)["reasoning_effort"] as? String
+            let wire = QuickCaptureFirstDraft.wireRequest(capture: "c", projectName: "p", context: QuickCaptureContext())
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: configuration.body(for: wire)) as? [String: Any])
+            return body["reasoning_effort"] as? String
         }
 
         XCTAssertNil(try firstDraftEffort("ministral-8b-2512"))
@@ -281,8 +284,7 @@ final class MistralModelCatalogTests: XCTestCase {
         )
         return try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: request, configuration: configuration)
+                with: configuration.body(for: request.wire)
             ) as? [String: Any]
         )
     }

@@ -87,10 +87,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
         settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
         let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
 
-        let data = try LLMPolishingService.requestBody(
-            request: SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: []),
-            configuration: configuration
-        )
+        let data = try configuration.body(for: SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: []).wire)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
 
@@ -110,7 +107,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
                 ? SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: [])
                 : LLMPolishingRequest(inputText: "a", systemPrompt: "s", userPrompts: ["a"])
             let json = try XCTUnwrap(JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(request: request, configuration: configuration)
+                with: configuration.body(for: request.wire)
             ) as? [String: Any])
             return json["reasoning_effort"] as? String
         }
@@ -128,10 +125,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
             apiKey: "", model: "local"
         )
         let json = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: LLMPolishingService.requestBody(
-                request: SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: []),
-                configuration: configuration
-            )
+            with: configuration.body(for: SpeakerTermSuggestions.request(dictations: [.init(raw: "a", final: "a")], terms: [], dismissed: []).wire)
         ) as? [String: Any])
         XCTAssertNil(json["reasoning_effort"])
     }

@@ -3,8 +3,8 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// The first stage of a quick capture's draft (#918): one OpenAI-compatible
-/// `chat/completions` call to the polishing model, with the context the app
+/// The first stage of a quick capture's draft (#918): one request to the
+/// polishing model, in its server's dialect, with the context the app
 /// gathered (`QuickCaptureContext`). It sorts the capture by kind and writes
 /// the title and body in 10 to 50 seconds, without reading code; an issue's
 /// draft is then checked against the code by the project's agent.
@@ -74,45 +74,34 @@ package enum QuickCaptureFirstDraft {
         return text
     }
 
-    /// - Parameter extraBody: fields the polishing configuration adds (a
-    ///   reasoning effort, chat template switches), merged last.
-    package static func requestBody(
-        model: String,
-        capture: String,
-        projectName: String,
-        context: QuickCaptureContext,
-        extraBody: [String: any Sendable] = [:]
-    ) -> Data {
-        var body: [String: Any] = [
-            "model": model,
-            "temperature": 0,
-            "max_tokens": maxTokens,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": userMessage(capture: capture, projectName: projectName, context: context)],
-            ],
-        ]
-        for (key, value) in extraBody { body[key] = value }
-        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+    /// At the least reasoning effort the model takes: its trace once used
+    /// the whole token cap (#918).
+    package static func wireRequest(capture: String, projectName: String, context: QuickCaptureContext) -> PolishWireRequest {
+        PolishWireRequest(
+            systemPrompt: systemPrompt,
+            userPrompts: [userMessage(capture: capture, projectName: projectName, context: context)],
+            maxTokens: maxTokens,
+            timeout: requestTimeout,
+            purpose: .quickCapture,
+            effort: .least
+        )
     }
 
     /// The model's answer read as a draft. The same untrusted-text rules as
     /// the agent's (`QuickCaptureDraft.draft(from:openIssues:)`).
-    package static func outcome(status: Int, body: Data, openIssues: [Int]) -> QuickCaptureDraft.Outcome {
+    /// - Parameter reply: nil when the body was not a JSON object.
+    package static func outcome(status: Int, reply: PolishWireReply?, openIssues: [Int]) -> QuickCaptureDraft.Outcome {
         guard (200..<300).contains(status) else { return .failed(.agentError("http \(status)")) }
-        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any]
-        else { return .failed(.malformedOutput) }
-        if choices.first?["finish_reason"] as? String == "length" { return .failed(.outputTooLarge) }
-        guard let content = QuickCaptureChatRouting.text(ofContent: message["content"]),
+        guard let reply else { return .failed(.malformedOutput) }
+        if reply.stoppedAtOutputLimit { return .failed(.outputTooLarge) }
+        guard !reply.refused,
+              let content = reply.text,
               let answer = QuickCaptureChatRouting.jsonObject(in: content),
               let draft = QuickCaptureDraft.draft(from: answer, openIssues: openIssues)
         else { return .failed(.malformedOutput) }
-        let usage = LLMTokenUsage(responseObject: json)
         return .draft(
             draft.keepingFiles(nil),
-            usage: usage.map {
+            usage: reply.usage.map {
                 ProjectTermProposal.Usage(
                     turns: 1, costUSD: nil, inputTokens: $0.promptTokens, cacheWriteTokens: nil,
                     cacheReadTokens: $0.cachedPromptTokens, outputTokens: $0.completionTokens
@@ -129,49 +118,29 @@ package protocol QuickCaptureFirstDrafting: Sendable {
 
 /// The polishing model's call.
 package struct QuickCaptureFirstDrafter: QuickCaptureFirstDrafting {
-    private let endpoint: URL
-    private let apiKey: String
-    private let model: String
-    private let extraBody: [String: any Sendable]
+    private let configuration: LLMPolishingConfiguration
     private let session: URLSession
-    private let usageBackend: UsageEntry.Backend
     private let usageRecorder: (any UsageRecording)?
     private let now: @Sendable () -> Date
 
-    /// - Parameter endpoint: the full `chat/completions` URL.
     package init(
-        endpoint: URL,
-        apiKey: String,
-        model: String,
-        extraBody: [String: any Sendable] = [:],
+        configuration: LLMPolishingConfiguration,
         session: URLSession = SameOriginHTTP.shared,
-        usageBackend: UsageEntry.Backend = .userServer,
         usageRecorder: (any UsageRecording)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.endpoint = endpoint
-        self.apiKey = apiKey
-        self.model = model
-        self.extraBody = extraBody
+        self.configuration = configuration
         self.session = session
-        self.usageBackend = usageBackend
         self.usageRecorder = usageRecorder
         self.now = now
     }
 
     package func firstDraft(capture: String, projectName: String, context: QuickCaptureContext) async -> QuickCaptureDraft.Outcome {
-        var request = URLRequest(url: endpoint, timeoutInterval: QuickCaptureFirstDraft.requestTimeout)
-        request.httpMethod = "POST"
-        if !apiKey.isEmpty {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = QuickCaptureFirstDraft.requestBody(
-            model: model, capture: capture, projectName: projectName, context: context, extraBody: extraBody
-        )
         let data: Data
         let response: URLResponse
         do {
+            let request = try configuration.urlRequest(
+                for: QuickCaptureFirstDraft.wireRequest(capture: capture, projectName: projectName, context: context))
             (data, response) = try await session.data(for: request)
         } catch {
             let timedOut = (error as? URLError)?.code == .timedOut
@@ -181,19 +150,19 @@ package struct QuickCaptureFirstDrafter: QuickCaptureFirstDrafting {
             return .failed(timedOut ? .timedOut : .launchFailed)
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let reply = configuration.reply(to: data)
         // A 2xx is billed whether or not its answer is usable.
         if (200..<300).contains(status), let usageRecorder {
-            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             usageRecorder.record(UsageEntry.chat(
                 date: now(),
                 feature: .quickCaptureDrafting,
-                backend: usageBackend,
-                requestedModel: model,
-                usage: json.flatMap(LLMTokenUsage.init(responseObject:))
+                backend: configuration.usageBackend,
+                requestedModel: configuration.model,
+                usage: reply?.usage
             ))
         }
         return QuickCaptureFirstDraft.outcome(
-            status: status, body: data, openIssues: context.openIssues?.map(\.number) ?? []
+            status: status, reply: reply, openIssues: context.openIssues?.map(\.number) ?? []
         )
     }
 }
