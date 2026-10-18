@@ -45,13 +45,13 @@ final class AudioCaptureHealthMonitor {
     static let startupBuiltinStabilizationSeconds: TimeInterval = 0.45
     static let startupExternalStabilizationSeconds: TimeInterval = 1.6
     static let maxCaptureRecoveryAttempts = 3
+    /// The popover error while the mic sends nothing; a silent-mic stop clears it.
+    static let noAudioFramesYetMessage = "No microphone audio frames captured yet."
+
     /// How long a mic that still sends no frames after the last recovery
     /// attempt keeps the dictation going. Past it the dictation stops and
     /// commits what it has (owner decision on #1865, reversing #314): the
     /// user would otherwise keep talking into nothing.
-    /// The popover error while the mic sends nothing; a silent-mic stop clears it.
-    static let noAudioFramesYetMessage = "No microphone audio frames captured yet."
-
     static let silentInputStopSeconds: TimeInterval = 10
     static let fastAudioChangeEvaluationDelayMilliseconds = 120
 
