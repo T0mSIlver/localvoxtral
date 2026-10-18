@@ -306,4 +306,47 @@ grep -q "shard output before the hang" "$TMP_DIR/term.log" || fail "partial shar
 [[ "$(grep -c '^==> Shard [12]: stopped by SIGTERM$' "$TMP_DIR/term.log")" == "2" ]] \
   || fail "the shards' signal is not logged: $(cat "$TMP_DIR/term.log")"
 
+# The shard's handler stops its swift process when `child` does not name it
+# yet: bash runs the trap between `lv_shard_swift … &` and `child=$!` when the
+# signal lands right after the fork (#1886). And a swift process still running
+# LV_SHARD_TERM_GRACE after the TERM is killed, and the log says so.
+#   $1  the fake swift   $2  "set" to record its subshell in `child`
+cat >"$TMP_DIR/stop-shard.sh" <<SCRIPT
+#!/usr/bin/env bash
+. "$ROOT_DIR/scripts/lib/unit-test-shards.sh"
+work="$TMP_DIR/stop-\$\$" index=1 child=""
+mkdir -p "\$work"
+: >"\$work/1.log"
+( "\$1" & echo "\$!" >"\$work/swift-pid"; wait ) &
+[[ "\$2" == "set" ]] && child=\$!
+until [[ -s "\$work/swift-pid" ]]; do sleep 0.1; done
+cat "\$work/swift-pid" >"$TMP_DIR/stop-swift-pid"
+LV_SHARD_TERM_GRACE=3 lv_stop_unit_shard TERM
+SCRIPT
+printf '#!/usr/bin/env bash\ntrap "" TERM\nexec sleep 30\n' >"$TMP_DIR/deaf-swift"
+chmod +x "$TMP_DIR/stop-shard.sh" "$TMP_DIR/deaf-swift"
+lv_test_stop_shard() {
+  local fake="$1" mode="$2" handler polls=0 pid status=0
+  rm -f "$TMP_DIR/stop-swift-pid"
+  "$TMP_DIR/stop-shard.sh" "$fake" "$mode" >"$TMP_DIR/stop.out" 2>&1 &
+  handler=$!
+  while kill -0 "$handler" 2>/dev/null && (( polls++ < 100 )); do sleep 0.1; done
+  if kill -0 "$handler" 2>/dev/null; then
+    pkill -KILL -P "$handler" 2>/dev/null
+    kill -KILL "$handler" 2>/dev/null
+  fi
+  wait "$handler" 2>/dev/null || status=$?
+  pid="$(cat "$TMP_DIR/stop-swift-pid" 2>/dev/null)"
+  [[ -n "$pid" ]] || fail "the fake swift ($fake, $mode) never started: $(cat "$TMP_DIR/stop.out")"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null
+    fail "a swift process ($fake, child $mode) outlived the shard's handler"
+  fi
+  [[ "$status" == "143" ]] || fail "the shard's handler ($fake, $mode) ended with $status"
+}
+lv_test_stop_shard "$TMP_DIR/fake-swift" unset
+lv_test_stop_shard "$TMP_DIR/deaf-swift" set
+grep -q "^==> Shard 1: process [0-9]* (.*) still ran 0.3 s after SIGTERM; killed it$" "$TMP_DIR"/stop-*/1.log \
+  || fail "the killed swift process is not logged: $(cat "$TMP_DIR"/stop-*/1.log)"
+
 echo "PASS: unit test shards"

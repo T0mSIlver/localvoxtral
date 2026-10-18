@@ -347,22 +347,60 @@ lv_run_one_unit_shard() {
 # locals: stop the swift process, keep what it printed, say
 # which signal ended the shard. It writes no exit status, so the shard fails.
 #
+# The swift process is found from this subshell's own children, not from
+# `child`: bash runs a trap between two commands, so a signal that lands
+# right after `lv_shard_swift … &` runs this before `child=$!` (#1886). The
+# handler then waits for that process itself, since `wait` on hosted macOS's
+# bash 3.2 can return before a child is gone (#1210), and kills it after
+# LV_SHARD_TERM_GRACE tenths of a second, short of the 5 s the run's own
+# handler waits for each shard.
+#
 # `set +e` first: callers run with errexit, and `wait` on the swift process it
 # just killed returns 143, which would end the handler before it logs.
 lv_stop_unit_shard() {
   set +e
-  local signal="$1"
-  if [[ -n "${child:-}" ]]; then
-    # Its swift process, then the subshell that runs it, which ends once that
-    # process does and has reaped it by then; the subshell itself only when
-    # it has no child to stop.
-    pkill -TERM -P "$child" 2>/dev/null || kill "$child" 2>/dev/null
-    wait "$child" 2>/dev/null
-    cat "$work/$index.attempt" >>"$work/$index.log" 2>/dev/null
+  local signal="$1" self kid grandkids targets="" pid polls=0
+  # bash 3.2 has no BASHPID: a child names this subshell as its parent.
+  # shellcheck disable=SC2016  # $PPID is the child's
+  sh -c 'echo $PPID' >"$work/$index.self" 2>/dev/null
+  self="$(cat "$work/$index.self" 2>/dev/null)"
+  for kid in $(pgrep -P "${self:-0}" 2>/dev/null); do
+    # The lv_shard_swift subshell's swift process, or the subshell itself
+    # when it has none yet.
+    grandkids="$(pgrep -P "$kid" 2>/dev/null | tr '\n' ' ')"
+    targets+=" ${grandkids:-$kid}"
+  done
+  if [[ -n "$targets" ]]; then
+    # shellcheck disable=SC2086  # a list of pids
+    kill -TERM $targets 2>/dev/null
+    # shellcheck disable=SC2086
+    while lv_shard_any_running $targets && (( polls < ${LV_SHARD_TERM_GRACE:-30} )); do
+      sleep 0.1
+      polls=$((polls + 1))
+    done
+    for pid in $targets; do
+      lv_shard_any_running "$pid" || continue
+      echo "==> Shard $index: process $pid ($(ps -o comm= -p "$pid" 2>/dev/null)) still ran $((polls / 10)).$((polls % 10)) s after SIGTERM; killed it" \
+        >>"$work/$index.log"
+      kill -KILL "$pid" 2>/dev/null
+    done
+    wait 2>/dev/null
   fi
+  cat "$work/$index.attempt" >>"$work/$index.log" 2>/dev/null
   echo "==> Shard $index: stopped by SIG$signal" >>"$work/$index.log"
   : >"$work/$index.ended"
   exit 143
+}
+
+# Exit 0 when any of the given pids is a process still running; a zombie has
+# ended.
+lv_shard_any_running() {
+  local pid stat
+  for pid in "$@"; do
+    stat="$(ps -o stat= -p "$pid" 2>/dev/null)"
+    [[ -n "$stat" && "$stat" != *Z* ]] && return 0
+  done
+  return 1
 }
 
 # Signal handler of lv_run_unit_shards: stop the shards, log what they printed,
