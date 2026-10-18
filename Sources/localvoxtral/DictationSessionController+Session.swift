@@ -936,6 +936,11 @@ extension DictationSessionController {
         Log.backends.error(
             "microphone sent no audio \(Int(AudioCaptureHealthMonitor.silentInputStopSeconds), privacy: .public)s after its last restart; stopping the dictation and committing its text"
         )
+        // The status line now says why; the monitor's "yet" error would
+        // otherwise stay under it until the next dictation.
+        if lastError == AudioCaptureHealthMonitor.noAudioFramesYetMessage {
+            lastError = nil
+        }
         stopOnItsOwn(reason: "microphone sent no audio", status: StatusStrings.microphoneSentNoAudio)
     }
 

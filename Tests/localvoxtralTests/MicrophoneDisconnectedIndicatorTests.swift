@@ -59,6 +59,19 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Ready", "the next stop ends on Ready again")
     }
 
+    /// The monitor's "no frames yet" error must not outlive the silent-mic
+    /// stop that answers it; the status line says why the dictation ended.
+    func testSilentMicStopClearsTheWaitingForAudioError() {
+        let viewModel = makeDictatingViewModel()
+        viewModel.lastError = AudioCaptureHealthMonitor.noAudioFramesYetMessage
+
+        viewModel.session.stopDictationForSilentMicrophone()
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(viewModel.statusText, "Mic sent no audio. Dictation stopped.")
+    }
+
     private func makeDictatingViewModel() -> DictationViewModel {
         let suiteName = "localvoxtral.MicrophoneDisconnectedIndicatorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

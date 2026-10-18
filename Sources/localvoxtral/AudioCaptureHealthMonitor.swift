@@ -49,6 +49,9 @@ final class AudioCaptureHealthMonitor {
     /// attempt keeps the dictation going. Past it the dictation stops and
     /// commits what it has (owner decision on #1865, reversing #314): the
     /// user would otherwise keep talking into nothing.
+    /// The popover error while the mic sends nothing; a silent-mic stop clears it.
+    static let noAudioFramesYetMessage = "No microphone audio frames captured yet."
+
     static let silentInputStopSeconds: TimeInterval = 10
     static let fastAudioChangeEvaluationDelayMilliseconds = 120
 
@@ -319,7 +322,7 @@ final class AudioCaptureHealthMonitor {
                 )
             }
             callbacks.setStatus("Listening... (waiting for microphone audio)")
-            callbacks.setError("No microphone audio frames captured yet.")
+            callbacks.setError(Self.noAudioFramesYetMessage)
             scheduleAudioChangeEvaluation(
                 delayMilliseconds: startupConfigurationChangeDetected
                     ? Self.fastAudioChangeEvaluationDelayMilliseconds
