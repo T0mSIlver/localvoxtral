@@ -499,6 +499,27 @@ final class RealtimeContextRolloverTests: XCTestCase {
         XCTAssertEqual(harness.transcribedBytes, 72 * Self.chunkBytes, "finals: \(harness.finals)")
     }
 
+    /// A reported stall that the retiring socket's `done` ends is logged as
+    /// resumed, though that `done` moves the session to the next socket (#1866).
+    func testTheRetiringSocketsDoneThatEndsAStallIsLoggedBeforeTheHandover() {
+        // A window wide enough to hold the 5 s a stall takes to report.
+        let harness = Harness(budget: RealtimeContextBudget(maxModelLen: 200))
+        harness.holdDones(true)
+        harness.speak(seconds: 0.1, talking: false)
+        harness.client.sendCommit(final: false)
+        harness.speak(seconds: 10.0, talking: false)
+        let before = harness.client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(before.filter { $0.hasPrefix("realtime server silent") }.count, 1, "\(before)")
+
+        harness.holdDones(false)
+        harness.pump()
+
+        XCTAssertEqual(harness.rollovers, 1)
+        let after = harness.client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(after.filter { $0.hasPrefix("realtime server resumed") }.count, 1, "\(after)")
+        XCTAssertTrue(after.last?.hasSuffix("(transcription.done)") ?? false, "\(after)")
+    }
+
     /// A stop during the rollover with nothing sent since: the retiring
     /// socket's `done` answers it, and no socket is opened.
     func testAStopDuringTheRolloverWithNothingCarriedFinalizesOnTheRetiringSocket() {

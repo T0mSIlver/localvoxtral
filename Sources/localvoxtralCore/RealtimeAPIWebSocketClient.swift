@@ -430,6 +430,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// is nil for the `done` that answers the rollover's final commit.
     private func finishRollover(retiring: RealtimeConnectionGeneration, cause: String?) {
         let now = clock.now()
+        // The `done` is the retiring socket's last event, and closing it drops
+        // its health: end a reported stall here, where `noteServerEvent` can
+        // no longer reach it.
+        var resumedAfter: TimeInterval?
         let end: RolloverEnd? = state.withLock { s in
             guard let rollover = s.rollover, rollover.retiring == retiring,
                   isCurrentConnectionLocked(s.base, retiring),
@@ -453,6 +457,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             }
 
             let usage = takeUsageLocked(&s)
+            if cause == nil {
+                resumedAfter = s.health?.serverEvent(at: now.timeIntervalSinceReferenceDate) ?? nil
+            }
             closeSocketLocked(&s, cancelTask: true)
             let next = RealtimeConnectionGeneration.next()
             s.base.connectionGeneration = next
@@ -510,6 +517,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             Log.backends.notice("realtime rollover ended by the stop, with no audio to carry")
             emit(.transcriptionFinalized, from: retiring)
         case .switched(let next, let dial, let usage, let carriedBytes):
+            if let resumedAfter {
+                logServerSilence(
+                    "realtime server resumed after \(String(format: "%.1f", resumedAfter))s of silence (transcription.done)")
+            }
             recordUsage(usage)
             if let cause {
                 Log.backends.error(
