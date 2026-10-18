@@ -398,7 +398,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
 
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
@@ -416,7 +416,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
 
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
@@ -434,7 +434,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
 
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
@@ -462,7 +462,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
         viewModel.session.sessionOutputMode = .overlayBuffer
@@ -492,7 +492,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
         viewModel.session.sessionOutputMode = .liveAutoPaste
@@ -516,7 +516,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
 
         await viewModel.session.beginDictationSession()
 
@@ -537,7 +537,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
         await viewModel.session.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
 
@@ -600,7 +600,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
         await viewModel.session.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
 
@@ -630,7 +630,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let coordinator = MockOverlayCoordinator()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, coordinator: coordinator)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
 
         await viewModel.session.beginDictationSession()
 
@@ -645,7 +645,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
 
         await viewModel.session.beginDictationSession()
 
@@ -668,7 +668,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
-        viewModel.session.secureInputWarningSound = {}
+        viewModel.session.warningSound = {}
         // A hold is Live Auto-Paste only with the Advanced toggle on (#840).
         viewModel.settings.modifierHoldLiveAutoPaste = true
 
@@ -698,7 +698,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
 
         viewModel.shortcuts.handleModifierOnlyTap(mode: .liveAutoPaste)
 
@@ -726,7 +726,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         retainForTestProcessLifetime(viewModel)
         var soundPlays = 0
-        viewModel.session.secureInputWarningSound = { soundPlays += 1 }
+        viewModel.session.warningSound = { soundPlays += 1 }
 
         viewModel.toggleDictation()
 
