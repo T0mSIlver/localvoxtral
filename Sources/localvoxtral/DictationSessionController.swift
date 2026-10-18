@@ -49,6 +49,10 @@ final class DictationSessionController {
     var transcript = TranscriptAccumulator()
     var statusText = StatusStrings.ready
     var lastError: String?
+    /// `lastError` says the dictation a new start interrupted went on the
+    /// clipboard (#1871); the stop of that start clears it.
+    @ObservationIgnored
+    var showsInterruptedTextCopiedNotice = false
     // Raw message from the most recent websocket .error event this session.
     // Kept separate from lastError, which holds user-facing UI state (e.g. the
     // Accessibility warning) that must never leak into connection-failure details.
@@ -903,10 +907,17 @@ final class DictationSessionController {
             statusText = StatusStrings.connectingRealtimeBackend
             return
         }
+        // The interrupted dictation went on the clipboard (#1871). This
+        // start replaces the status line at once, so the error line says so.
+        var interruptedTextCopied = false
         if isFinalizingStop {
             guard cancelPolishingForNewSessionIfNeeded() else {
                 statusText = StatusStrings.finalizingPreviousDictation
                 return
+            }
+            if statusText == StatusStrings.overlayCopiedToClipboard {
+                interruptedTextCopied = true
+                lastError = StatusStrings.overlayCopiedToClipboard
             }
         }
         guard !isAwaitingMicrophonePermission else {
@@ -935,7 +946,8 @@ final class DictationSessionController {
             debugLog("available inputs: \(inputs)")
             debugLog("selected input id=\(selectedInputDeviceID)")
         }
-        lastError = nil
+        if !interruptedTextCopied { lastError = nil }
+        showsInterruptedTextCopiedNotice = interruptedTextCopied
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
@@ -1029,6 +1041,10 @@ final class DictationSessionController {
     ) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
+        if showsInterruptedTextCopiedNotice, lastError == StatusStrings.overlayCopiedToClipboard {
+            lastError = nil
+        }
+        showsInterruptedTextCopiedNotice = false
         sessionStoppedAt = dependencies.clock.now()
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
