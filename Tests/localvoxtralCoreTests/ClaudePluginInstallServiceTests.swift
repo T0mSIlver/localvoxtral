@@ -463,6 +463,31 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertThrowsError(try runner(.init(arguments: ["-c", "sleep 30 & exit 0"])))
     }
 
+    /// Quit stops a `claude` run in flight, even one that ignores SIGTERM,
+    /// and the run returns before its own deadline (#1875).
+    func testQuitStopsARunningClaudeCLI() async throws {
+        let (registered, continuation) = AsyncStream.makeStream(of: pid_t.self)
+        let children = BoundedProcessChildren(onRegister: { continuation.yield($0) })
+        let runner = ClaudePluginInstallService.processRunner(
+            executableURL: URL(fileURLWithPath: "/bin/sh"), timeout: 10, children: children
+        )
+        let result = Task.detached { () -> Result<ClaudePluginInstallService.RunResult, any Error> in
+            defer { continuation.finish() }
+            return Result { try runner(.init(arguments: ["-c", "trap '' TERM; exec sleep 600"])) }
+        }
+        var iterator = registered.makeAsyncIterator()
+        let next = await iterator.next()
+        let pid = try XCTUnwrap(next, "the runner never registered its child")
+
+        children.terminateAll(grace: 0.2, within: 2)
+
+        if case .failure(let error) = await result.value,
+           case .commandTimedOut? = error as? ClaudePluginInstallService.ServiceError {
+            XCTFail("the deadline ended the run, not quit")
+        }
+        XCTAssertNotEqual(kill(pid, 0), 0, "the child outlived quit")
+    }
+
     func testProcessRunnerStdinIsNullSoAPromptCannotBlock() throws {
         let runner = ClaudePluginInstallService.processRunner(
             executableURL: URL(fileURLWithPath: "/bin/sh"),

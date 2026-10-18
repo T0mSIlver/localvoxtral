@@ -105,16 +105,8 @@ package enum BoundedProcess {
         }
         // The app owns the child until it is reaped (#1225): quit kills it,
         // and a child launched while the app quits is killed at once.
-        let pid = process.processIdentifier
+        let pid = children.adopt(process, label: label)
         defer { children.unregister(pid) }
-        if !children.register(pid), process.isRunning {
-            Log.polishing.info("\(label, privacy: .public): launched while quitting; killing")
-            kill(pid, SIGKILL)
-        } else if !process.isRunning {
-            // Reaped before it was registered: its termination handler's
-            // unregister already ran, so drop the pid the kernel may reuse.
-            children.unregister(pid)
-        }
 
         // The reader thread owns the pipe fd and only mutates the mutex-guarded
         // collector; the process handle is touched only from THIS thread, so no
