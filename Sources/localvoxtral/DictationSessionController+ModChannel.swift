@@ -69,6 +69,11 @@ extension DictationSessionController {
         submits: Bool,
         generation: UInt64
     ) async {
+        // A lone send phrase's empty send submitted the box (#1870): the
+        // landing of the fill before it no longer describes the prompt.
+        if text.isEmpty, outcome == .sent || outcome == .queued {
+            forgetOverlayCommitLanding(inSession: sessionID, committedBy: generation)
+        }
         switch outcome {
         case .filled, .sent:
             break
@@ -122,7 +127,9 @@ extension DictationSessionController {
             Log.dictation.notice("spoken send: Return does not submit in the target app; no Return")
             return
         }
-        _ = pressSpokenSendReturn(pid: terminalPID)
+        if pressSpokenSendReturn(pid: terminalPID) {
+            forgetOverlayCommitLanding(inSession: sessionID, committedBy: generation)
+        }
     }
 
     /// The text of a fill the mod did not confirm. One that may have landed

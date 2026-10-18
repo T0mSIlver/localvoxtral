@@ -120,9 +120,11 @@ extension DictationSessionController {
         }
         switch spokenSend {
         case .returnKey(let pid):
-            _ = pressSpokenSendReturn(pid: pid)
+            // The box is submitted: the next fill starts a fresh prompt.
+            if pressSpokenSendReturn(pid: pid) { lastOverlayCommitLanding = nil }
         case .promptRelaySubmit:
             textInsertion.promptRelaySink?.submit()
+            lastOverlayCommitLanding = nil
             Log.dictation.notice("spoken send: submit handed to the prompt relay")
         case .modSubmit:
             // The mod's committer submits, or presses Return itself after a

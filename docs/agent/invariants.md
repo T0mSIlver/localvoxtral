@@ -36,6 +36,11 @@ there is not.
   A route or mod refusal that answers late clears only the landing of the
   dictation that handed its text off, by its start generation: a later
   commit to the same session keeps its continuation space (#1660).
+  A lone send phrase commits nothing, so it clears the landing only once
+  its submit happened: the mod answered sent or queued, or its Return was
+  pressed. A refused one with no Return left the box as it was, and the
+  next commit still continues it; an unanswered one that did submit moves
+  the submit count, which clears the landing on its own (#1870).
   Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit. Where the joined
   session's mod read its prompt box at the stop (a polished commit into a
