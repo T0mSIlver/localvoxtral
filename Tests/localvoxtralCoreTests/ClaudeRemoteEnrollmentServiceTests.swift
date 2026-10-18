@@ -2825,7 +2825,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     /// a silent remote must not outlive it, even one that ignores SIGTERM,
     /// and the run returns. Its own deadline is far off: only quit ends it.
     func testQuitStopsARunningSetupSSH() async throws {
-        for script in ["exec sleep 600", "trap '' TERM; exec sleep 600"] {
+        for preamble in ["", "trap '' TERM; "] {
+            let ready = try ChildReadiness()
+            let script = "\(preamble)\(ready.signal); exec sleep 600"
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("lvx-quit-ssh-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -2845,12 +2847,18 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 timeout: Self.setupDeadline
             )
             let result = Task.detached { () -> Result<ClaudeRemoteEnrollmentService.RunResult, any Error> in
-                defer { continuation.finish() }
+                defer {
+                    continuation.finish()
+                    ready.releaseWaiter()
+                }
                 return Result { try run(invocation) }
             }
             var iterator = registered.makeAsyncIterator()
             let next = await iterator.next()
             let pid = try XCTUnwrap(next, "the runner never registered its ssh (\(script))")
+            // Quit must meet an ssh that already ignores SIGTERM in the second round.
+            let started = await ready.waitUntilReady()
+            XCTAssertTrue(started, "the ssh stand-in never got ready (\(script))")
 
             children.terminateAll(grace: 0.2, within: 2)
 

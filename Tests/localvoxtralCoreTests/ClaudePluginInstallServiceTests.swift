@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import XCTest
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 // MARK: - Install/uninstall goes through Claude Code's CLI
 
@@ -466,18 +467,25 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
     /// Quit stops a `claude` run in flight, even one that ignores SIGTERM,
     /// and the run returns before its own deadline (#1875).
     func testQuitStopsARunningClaudeCLI() async throws {
+        let ready = try ChildReadiness()
         let (registered, continuation) = AsyncStream.makeStream(of: pid_t.self)
         let children = BoundedProcessChildren(onRegister: { continuation.yield($0) })
         let runner = ClaudePluginInstallService.processRunner(
             executableURL: URL(fileURLWithPath: "/bin/sh"), timeout: 10, children: children
         )
         let result = Task.detached { () -> Result<ClaudePluginInstallService.RunResult, any Error> in
-            defer { continuation.finish() }
-            return Result { try runner(.init(arguments: ["-c", "trap '' TERM; exec sleep 600"])) }
+            defer {
+                continuation.finish()
+                ready.releaseWaiter()
+            }
+            return Result { try runner(.init(arguments: ["-c", "trap '' TERM; \(ready.signal); exec sleep 600"])) }
         }
         var iterator = registered.makeAsyncIterator()
         let next = await iterator.next()
         let pid = try XCTUnwrap(next, "the runner never registered its child")
+        // Quit must meet a child that already ignores SIGTERM.
+        let trapped = await ready.waitUntilReady()
+        XCTAssertTrue(trapped, "the child never installed its SIGTERM trap")
 
         children.terminateAll(grace: 0.2, within: 2)
 
