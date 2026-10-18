@@ -111,7 +111,7 @@ extension DictationSessionController {
     func sendOverlaySpokenSendIfNeeded(
         _ spokenSend: OverlaySpokenSend?,
         commit: StopCommitCoordinator.CommitResult,
-        committer: any OverlayTextCommitting
+        mod: ModChannelOverlayCommitter?
     ) {
         guard let spokenSend else { return }
         guard commit.outcome == .succeeded else {
@@ -131,9 +131,9 @@ extension DictationSessionController {
             // refusal it typed. A lone send phrase left no text, so the
             // commit never reached it: one empty send submits the box as it
             // stands (#1870).
-            guard let mod = ModChannelOverlayCommitter.underlying(committer), !mod.handedOff else { break }
+            guard let mod, !mod.handedOff else { break }
             Log.dictation.notice("spoken send: nothing to fill; the session's mod submits the prompt box")
-            _ = mod.insertTextPrioritizingKeyboard("", preferredAppPID: nil)
+            mod.handOff("", preferredAppPID: nil)
         }
     }
 
