@@ -5306,7 +5306,7 @@ final class DictationPipelineTests: XCTestCase {
         let runner = FakeQuickCaptureDraftRunner()
         let model = QuickCaptureFixture.model(fileURL: nil, answer: ["reach": 0.9], github: github, runner: runner)
         pipeline.viewModel.installDraftCue(for: model)
-        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        await awaitEnd(model.capture(text: "Add a dark mode", historyRecordID: nil))
         XCTAssertEqual(model.items.first?.isReadyDraft, true)
         if shown { pipeline.viewModel.agentAttention?.reachedBreak() }
         return (model, github, runner)
