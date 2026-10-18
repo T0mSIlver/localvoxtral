@@ -319,6 +319,28 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "History keeps it as not inserted")
     }
 
+    /// Review of #1879: with History off, the recovery copied the whole
+    /// Live transcript, words already typed included, over the clipboard.
+    func testANewDictationEndingALiveStopLeavesTheClipboardAloneWithHistoryOff() {
+        let harness = makeHarness()
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.partial("run the tests.")
+        harness.final("run the tests.")
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.viewModel.isDictating = false
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
+        XCTAssertTrue(harness.viewModel.isFinalizingStop, "the wait counts as finalizing")
+
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded())
+
+        XCTAssertEqual(harness.typedText, "run the tests.")
+        XCTAssertEqual(copied.values, [], "typed words are not copied again")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+    }
+
     func testAnAmbiguousNameTypesNothingAndSaysSo() async {
         let harness = makeHarness(sessions: [
             session("a", cwd: "/r/localvoxtral", tty: "/dev/ttys001"),
