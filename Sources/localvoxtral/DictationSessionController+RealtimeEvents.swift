@@ -297,15 +297,19 @@ extension DictationSessionController {
     }
 
     /// The backend stopped transcribing mid-dictation and said why in one short sentence
-    /// (#314). That sentence IS the status line: a generic "Realtime error." with "See
-    /// Console for details." would hide the only actionable part. The mic stays open, so
-    /// nothing later overwrites it until the user stops.
+    /// (#314). Every later word would be lost, so the dictation stops and commits what it
+    /// has (#1865, which reversed #314's open mic). The sentence is the status the stop
+    /// ends on: a generic "Realtime error." with "See Console for details." would hide the
+    /// only actionable part.
     private func handleTranscriptionStoppedEvent(_ message: String) {
-        Log.dictation.error(
-            "Realtime transcription stopped: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
+        Log.backends.error(
+            "realtime transcription stopped: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
         )
         guard acceptsRealtimeEvents, !isFinalizingStop else { return }
         statusText = message
+        guard isDictating else { return }
+        Log.backends.notice("the engine stopped transcribing; stopping the dictation and committing its text")
+        stopOnItsOwn(reason: "transcription stopped", status: message)
     }
 
     /// The client finished its server session before the context limit and

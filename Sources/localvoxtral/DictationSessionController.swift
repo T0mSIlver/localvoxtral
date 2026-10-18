@@ -450,6 +450,11 @@ final class DictationSessionController {
     /// final commit was to return may be lost, so the stop is not Ready.
     @ObservationIgnored
     var realtimeErrorDuringStop = false
+    /// Why the app stopped the dictation on its own (a mic that sends no
+    /// audio, an engine that stopped transcribing). The stop's end shows it
+    /// instead of Ready (#1865).
+    @ObservationIgnored
+    var stoppedOnItsOwnStatus: String?
     /// The stop sent, or will send, a final commit and waits for the
     /// backend's answer; cleared once `.transcriptionFinalized` brings it.
     /// Still set when the stop ends, it ended on the idle rule, the timeout

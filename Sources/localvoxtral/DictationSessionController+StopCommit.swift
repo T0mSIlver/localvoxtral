@@ -939,13 +939,14 @@ extension DictationSessionController {
         case .copiedToClipboard?:
             statusText = StatusStrings.overlayCopiedToClipboard
         default:
-            statusText = "Ready"
+            statusText = stoppedOnItsOwnStatus ?? "Ready"
             if realtimeErrorDuringStop {
                 statusText = StatusStrings.dictationEndMayBeMissing
                 lastError = StatusStrings.dictationEndMayBeMissing
             }
         }
         realtimeErrorDuringStop = false
+        stoppedOnItsOwnStatus = nil
         sessionBackendSendsFinals = false
 
         textInsertion.stopInsertionRetryTask()
