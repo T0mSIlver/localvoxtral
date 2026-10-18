@@ -469,6 +469,12 @@ final class ViewSnapshotTests: XCTestCase {
                 $0.isFinalizingStop = true
                 $0.statusText = DictationViewModel.StatusStrings.polishing
             }),
+            // A new dictation interrupted a polish with History off (#1871).
+            ("dictating-interrupted-text-copied", {
+                $0.isDictating = true
+                $0.statusText = "Listening"
+                $0.lastError = DictationViewModel.StatusStrings.overlayCopiedToClipboard
+            }),
             ("connection-refused", {
                 $0.statusText = "Connection refused."
                 $0.lastError = "Connection refused."
