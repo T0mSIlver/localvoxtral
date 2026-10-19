@@ -192,6 +192,13 @@ def parse_args() -> argparse.Namespace:
         "app's /v1/messages body (no sampling, effort from --reasoning-effort, "
         "default low)",
     )
+    parser.add_argument(
+        "--repair-guide",
+        choices=("auto", "off"),
+        default="auto",
+        help="auto adds PolishRepairGuide to Anthropic requests, as the app does; "
+        "off leaves it out, the baseline for judging it",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument(
         "--reasoning-effort",
@@ -453,9 +460,24 @@ def reference_guide() -> str:
 BUNDLED_CONFIG = ROOT / "Sources/localvoxtral/Resources/Config"
 
 
-def production_system_prompt(name: str, directory: Path = BUNDLED_CONFIG) -> str:
-    """A bundled system prompt as the app sends it: with the reference guide."""
-    return f"{bundled_prompt_content(name, directory)}\n\n{reference_guide()}\n"
+def repair_guide() -> str:
+    """PolishRepairGuide.systemSection, rendered from the Swift source."""
+    source = (ROOT / "Sources/localvoxtralCore/PolishRepairGuide.swift").read_text(encoding="utf-8")
+    match = re.search(r'static let systemSection = (""".*?\n\s*""")', source, flags=re.S)
+    if match is None:
+        raise ValueError("no systemSection in PolishRepairGuide.swift")
+    return _swift_multiline(match.group(1))
+
+
+def production_system_prompt(
+    name: str, directory: Path = BUNDLED_CONFIG, repair: bool = False
+) -> str:
+    """A bundled system prompt as the app sends it: the profile's rules, the
+    repair guide when the request goes to Anthropic, then the reference guide."""
+    content = bundled_prompt_content(name, directory)
+    if repair:
+        content = f"{content}\n\n{repair_guide()}\n"
+    return f"{content}\n\n{reference_guide()}\n"
 
 
 def bundled_prompt_content(name: str, directory: Path = BUNDLED_CONFIG) -> str:
@@ -1908,15 +1930,16 @@ def main() -> int:
         ]
     baseline_arm = next(iter(arms)) if args.prompt_arm else None
     current_prompts: dict[str, Any] = {}
+    repair = args.request_shape == "anthropic" and args.repair_guide == "auto"
     if any(variant.startswith("current-production") for variant in variants):
         current_prompts = {
             arm: {
                 "standard": (
-                    production_system_prompt("llm_system_prompt.toml", directory),
+                    production_system_prompt("llm_system_prompt.toml", directory, repair),
                     bundled_prompt_content("llm_user_prompt.toml", directory),
                 ),
                 "agent": (
-                    production_system_prompt("llm_system_prompt_agent.toml", directory),
+                    production_system_prompt("llm_system_prompt_agent.toml", directory, repair),
                     bundled_prompt_content("llm_user_prompt_agent.toml", directory),
                 ),
             }
