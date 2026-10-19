@@ -71,6 +71,7 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         case .managedLocal: settings.resolvedManagedLLMPolishingModel
         case .mistralAPI: settings.resolvedMistralPolishingModel
         case .externalURL: settings.llmPolishingModel
+        case .anthropicAPI: settings.resolvedAnthropicPolishingModel
         }
         return AgentCLIStatus(
             running: true,
@@ -112,10 +113,14 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             settings.ensureSecretsLoaded([.mistralAPIKey])
             return !settings.mistralAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
+        func anthropicKeySet() -> Bool {
+            settings.ensureSecretsLoaded([.anthropicAPIKey])
+            return !settings.trimmedAnthropicAPIKey.isEmpty
+        }
         let speech: AgentCLIDoctorFacts.Engine = switch settings.dictationBackendMode {
         case .managedLocal: .managed(backends.speechdStatus)
         case .mistralAPI: .mistralAPI(keySet: mistralKeySet())
-        case .externalURL: .externalURL
+        case .externalURL, .anthropicAPI: .externalURL
         }
         let polish: AgentCLIDoctorFacts.Engine = if !settings.llmPolishingEnabled {
             .off
@@ -124,6 +129,7 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             case .managedLocal: .managed(backends.polishdStatus)
             case .mistralAPI: .mistralAPI(keySet: mistralKeySet())
             case .externalURL: .externalURL
+            case .anthropicAPI: .anthropicAPI(keySet: anthropicKeySet())
             }
         }
         var facts = AgentCLIDoctorFacts(

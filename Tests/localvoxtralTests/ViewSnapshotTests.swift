@@ -306,6 +306,44 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Polishing on the Anthropic API (#1895): the fourth mode with no key,
+    /// with a key on the default model, with Sonnet chosen, and an External
+    /// URL setup on api.anthropic.com before and after switching to the mode,
+    /// which keeps its key and model. Made-up keys.
+    func testEnginesAnthropicPolishing() async throws {
+        let states: [(String, (DictationViewModel) -> Void)] = [
+            ("no-key", { $0.settings.polishingBackendMode = .anthropicAPI }),
+            ("key-set", {
+                $0.settings.polishingBackendMode = .anthropicAPI
+                $0.settings.anthropicAPIKey = "sk-ant-example"
+            }),
+            ("sonnet", {
+                $0.settings.polishingBackendMode = .anthropicAPI
+                $0.settings.anthropicAPIKey = "sk-ant-example"
+                $0.settings.anthropicPolishingModel = "claude-sonnet-5-5"
+            }),
+            ("external-before", Self.externalAnthropicSetup),
+            ("external-after", {
+                Self.externalAnthropicSetup($0)
+                $0.engines.applyPolishingBackendModeChange(.anthropicAPI)
+            }),
+        ]
+        for (name, configure) in states {
+            try await recordSettings(pane: .endpoints, name: "settings-endpoints-anthropic-\(name)", setUp: false) {
+                viewModel in
+                viewModel.settings.llmPolishingEnabled = true
+                configure(viewModel)
+            }
+        }
+    }
+
+    private static func externalAnthropicSetup(_ viewModel: DictationViewModel) {
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.settings.llmPolishingEndpointURL = "https://api.anthropic.com"
+        viewModel.settings.llmPolishingAPIKey = "sk-ant-example"
+        viewModel.settings.llmPolishingModel = "claude-haiku-5-5"
+    }
+
     /// The polish prompt's sizes (#1007): Global terms with a count and
     /// tokens, and the instructions under Advanced for both profiles, at the
     /// ratio twenty measured Mistral requests give.

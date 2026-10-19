@@ -185,15 +185,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--request-shape",
-        choices=("llamacpp", "mistral"),
+        choices=("llamacpp", "mistral", "anthropic"),
         default="llamacpp",
         help="llamacpp sends greedy sampling and llama.cpp extras; mistral sends "
-        "only the fields Mistral's closed schema accepts",
+        "only the fields Mistral's closed schema accepts; anthropic sends the "
+        "app's /v1/messages body (no sampling, effort from --reasoning-effort, "
+        "default low)",
+    )
+    parser.add_argument(
+        "--repair-guide",
+        choices=("auto", "off"),
+        default="auto",
+        help="auto adds PolishRepairGuide to Anthropic requests, as the app does; "
+        "off leaves it out, the baseline for judging it",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument(
         "--reasoning-effort",
-        help="Mistral reasoning_effort (GLM 5.3 takes low/high/max; none is a 400)",
+        help="Mistral reasoning_effort (GLM 5.3 takes low/high/max; none is a 400), "
+        "or Anthropic output_config.effort",
     )
     parser.add_argument(
         "--api-key-file",
@@ -450,9 +460,24 @@ def reference_guide() -> str:
 BUNDLED_CONFIG = ROOT / "Sources/localvoxtral/Resources/Config"
 
 
-def production_system_prompt(name: str, directory: Path = BUNDLED_CONFIG) -> str:
-    """A bundled system prompt as the app sends it: with the reference guide."""
-    return f"{bundled_prompt_content(name, directory)}\n\n{reference_guide()}\n"
+def repair_guide() -> str:
+    """PolishRepairGuide.systemSection, rendered from the Swift source."""
+    source = (ROOT / "Sources/localvoxtralCore/PolishRepairGuide.swift").read_text(encoding="utf-8")
+    match = re.search(r'static let systemSection = (""".*?\n\s*""")', source, flags=re.S)
+    if match is None:
+        raise ValueError("no systemSection in PolishRepairGuide.swift")
+    return _swift_multiline(match.group(1))
+
+
+def production_system_prompt(
+    name: str, directory: Path = BUNDLED_CONFIG, repair: bool = False
+) -> str:
+    """A bundled system prompt as the app sends it: the profile's rules, the
+    repair guide when the request goes to Anthropic, then the reference guide."""
+    content = bundled_prompt_content(name, directory)
+    if repair:
+        content = f"{content}\n\n{repair_guide()}\n"
+    return f"{content}\n\n{reference_guide()}\n"
 
 
 def bundled_prompt_content(name: str, directory: Path = BUNDLED_CONFIG) -> str:
@@ -1064,6 +1089,8 @@ def messages_for(
 def request_payload(
     model: str, messages: list[dict[str, str]], options: RequestOptions = RequestOptions()
 ) -> dict[str, Any]:
+    if options.shape == "anthropic":
+        return anthropic_payload(model, messages, options)
     if options.shape == "mistral":
         # Mistral rejects top_k, min_p and chat_template_kwargs.
         payload: dict[str, Any] = {
@@ -1086,6 +1113,32 @@ def request_payload(
         "max_tokens": 2048,
         "chat_template_kwargs": {"enable_thinking": False},
     }
+
+
+def anthropic_payload(
+    model: str, messages: list[dict[str, str]], options: RequestOptions
+) -> dict[str, Any]:
+    """Mirrors `LLMPolishingConfiguration.anthropicBody`: one user turn of
+    text blocks, a cache breakpoint on the block before the working text (or
+    on the system prompt when there is one block), and no sampling field."""
+    system = [m["content"] for m in messages if m["role"] == "system" and m["content"]]
+    blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": m["content"]} for m in messages if m["role"] == "user"
+    ]
+    system_blocks: list[dict[str, Any]] = [{"type": "text", "text": text} for text in system]
+    if len(blocks) > 1:
+        blocks[-2]["cache_control"] = {"type": "ephemeral"}
+    elif system_blocks:
+        system_blocks[0]["cache_control"] = {"type": "ephemeral"}
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 16000,
+        "messages": [{"role": "user", "content": blocks}],
+        "output_config": {"effort": options.reasoning_effort or "low"},
+    }
+    if system_blocks:
+        payload["system"] = system_blocks
+    return payload
 
 
 def experiment_hash(
@@ -1265,7 +1318,11 @@ def request_experiment(
     # must not silently change the ablation when another model is loaded.
     payload = request_payload(experiment.model, experiment.messages, options)
     headers = {"Content-Type": "application/json"}
-    if options.api_key:
+    if options.shape == "anthropic":
+        headers["anthropic-version"] = "2023-06-01"
+        if options.api_key:
+            headers["x-api-key"] = options.api_key
+    elif options.api_key:
         headers["Authorization"] = f"Bearer {options.api_key}"
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     error: Exception | None = None
@@ -1280,7 +1337,10 @@ def request_experiment(
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 decoded = json.loads(response.read())
-            content = response_text(decoded["choices"][0]["message"]["content"])
+            if options.shape == "anthropic":
+                content = response_text(decoded["content"])
+            else:
+                content = response_text(decoded["choices"][0]["message"]["content"])
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("empty model output")
             return {
@@ -1870,15 +1930,16 @@ def main() -> int:
         ]
     baseline_arm = next(iter(arms)) if args.prompt_arm else None
     current_prompts: dict[str, Any] = {}
+    repair = args.request_shape == "anthropic" and args.repair_guide == "auto"
     if any(variant.startswith("current-production") for variant in variants):
         current_prompts = {
             arm: {
                 "standard": (
-                    production_system_prompt("llm_system_prompt.toml", directory),
+                    production_system_prompt("llm_system_prompt.toml", directory, repair),
                     bundled_prompt_content("llm_user_prompt.toml", directory),
                 ),
                 "agent": (
-                    production_system_prompt("llm_system_prompt_agent.toml", directory),
+                    production_system_prompt("llm_system_prompt_agent.toml", directory, repair),
                     bundled_prompt_content("llm_user_prompt_agent.toml", directory),
                 ),
             }

@@ -219,6 +219,24 @@ reports back is wrong. It reported 2 seconds for clips from 4.6 to 30.7
 seconds long. For the billed figure, see the usage page in Mistral's admin
 console.
 
+## Anthropic API
+
+Polishing can run on Anthropic's API: switch Polishing to **Anthropic API**
+in **Settings → Engines**, pick a model (Claude Haiku 5.5 by default, the
+fastest; or Claude Sonnet 5.5) and paste an Anthropic API key. Anthropic
+serves no speech-to-text, so Dictation never offers this mode. The app speaks
+Anthropic's Messages API and asks for low effort, so the model thinks little
+before it answers. Your transcripts and quick captures reach Anthropic.
+
+Claude models follow the polish rules more literally than GLM does, and left
+misheard words in place. Requests to Anthropic carry one extra rule: repair
+a word that makes no sense where it stands with what you most plausibly said,
+drop false starts and repeated words, and fix where sentences break, while
+keeping your words, order and hedges.
+
+An External URL server at `https://api.anthropic.com` works the same way.
+Switching that setup to Anthropic API mode keeps its key and model.
+
 ## Terms from your coding agent
 
 The opt-in project-terms run runs Claude Code on the pinned sonnet model
@@ -238,13 +256,6 @@ Realtime-compatible server, and polishing with any chat-completions server.
 For polishing, enter either a base URL such as `http://127.0.0.1:8080` or
 the full chat completions URL; the app appends `/v1/chat/completions` to a
 base URL.
-
-Polishing also runs on Anthropic's API: enter `https://api.anthropic.com` as
-the server URL, an Anthropic API key, and a model such as `claude-sonnet-5-5`.
-The app then speaks Anthropic's Messages API for polish and for quick
-capture's routing and first drafts, and asks for low effort, so the model
-thinks little before it answers. In this mode your transcripts and quick
-captures reach Anthropic.
 
 For example, to serve Voxtral Realtime with vLLM on an NVIDIA GPU:
 

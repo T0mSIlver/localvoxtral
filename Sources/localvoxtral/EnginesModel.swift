@@ -165,6 +165,9 @@ final class EnginesModel {
 
     func applyPolishingBackendModeChange(_ mode: BackendMode) {
         let previousMode = settings.polishingBackendMode
+        if mode == .anthropicAPI {
+            settings.adoptExternalAnthropicPolishingIfNeeded()
+        }
         settings.polishingBackendMode = mode
 
         if mode == .externalURL {

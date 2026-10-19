@@ -1026,9 +1026,11 @@ final class SettingsStoreTests: XCTestCase {
     func testMistralAPIModeRawValueAndOrder() {
         XCTAssertEqual(BackendMode.mistralAPI.rawValue, "mistral_api")
         XCTAssertEqual(BackendMode.mistralAPI.displayName, "Mistral API")
-        // The pickers render `allCases` in order: the local default first, the
-        // two hosted options after it.
-        XCTAssertEqual(BackendMode.allCases, [.managedLocal, .externalURL, .mistralAPI])
+        XCTAssertEqual(BackendMode.anthropicAPI.rawValue, "anthropic_api")
+        // The pickers render their lists in order: the local default first,
+        // the hosted options after it. Anthropic polishes but never dictates.
+        XCTAssertEqual(BackendMode.dictationModes, [.managedLocal, .externalURL, .mistralAPI])
+        XCTAssertEqual(BackendMode.polishingModes, [.managedLocal, .externalURL, .mistralAPI, .anthropicAPI])
     }
 
     func testUnknownStoredBackendModeStillFallsBackToManaged() {

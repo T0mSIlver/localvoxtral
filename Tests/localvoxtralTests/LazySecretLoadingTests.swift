@@ -321,6 +321,7 @@ final class LazySecretLoadingTests: XCTestCase {
             "one Mistral account key, shared by both engines")
         XCTAssertEqual(
             secrets(.externalURL, .externalURL), [.realtimeAPIKey, .llmPolishingAPIKey])
+        XCTAssertEqual(secrets(.managedLocal, .anthropicAPI), [.anthropicAPIKey])
         XCTAssertEqual(
             secrets(.externalURL, .mistralAPI, false), [.realtimeAPIKey],
             "polishing off means its key is nobody's business")

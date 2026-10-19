@@ -34,6 +34,17 @@ extension SettingsStore {
                 )
             )
         }
+        if polishingBackendMode == .anthropicAPI {
+            // Same rule as Mistral: no key, no request.
+            let key = trimmedAnthropicAPIKey
+            guard !key.isEmpty else { return nil }
+            return LLMPolishingConfiguration(
+                endpointURL: AnthropicPolishDefaults.endpoint,
+                apiKey: key,
+                model: resolvedAnthropicPolishingModel,
+                requestShape: .anthropic
+            )
+        }
         let trimmedEndpoint = llmPolishingEndpointURL.trimmed
         guard !trimmedEndpoint.isEmpty, let url = URL(string: trimmedEndpoint) else { return nil }
         guard
@@ -52,6 +63,27 @@ extension SettingsStore {
                 : llmPolishingModel.trimmed,
             requestShape: .forExternalEndpoint(url)
         )
+    }
+
+    /// Carries an External URL setup that already pointed at
+    /// `api.anthropic.com` (#1849) into Anthropic API mode, so switching
+    /// modes does not ask for the same key twice. Only into an empty key: a
+    /// key typed for Anthropic API mode always wins.
+    func adoptExternalAnthropicPolishingIfNeeded() {
+        ensureSecretsLoaded([.anthropicAPIKey])
+        guard trimmedAnthropicAPIKey.isEmpty,
+              let url = URL(string: llmPolishingEndpointURL.trimmed),
+              LLMPolishingRequestShape.forExternalEndpoint(url) == .anthropic
+        else { return }
+        ensureSecretsLoaded([.llmPolishingAPIKey])
+        let key = llmPolishingAPIKey.trimmed
+        guard !key.isEmpty else { return }
+        anthropicAPIKey = key
+        let model = llmPolishingModel.trimmed
+        if anthropicPolishingModel.trimmed.isEmpty, model.hasPrefix("claude-") {
+            anthropicPolishingModel = model
+        }
+        Log.backends.info("anthropic polishing adopted the external URL key and model")
     }
 
     /// The managed picker's stored selection, hardened against an empty env

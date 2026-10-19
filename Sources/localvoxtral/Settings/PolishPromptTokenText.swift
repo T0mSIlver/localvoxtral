@@ -22,7 +22,7 @@ struct PolishPromptTokenCounter: Sendable {
         let backend: UsageEntry.Backend = switch settings.polishingBackendMode {
         case .managedLocal: .bundledHelper
         case .mistralAPI: .mistral
-        case .externalURL: .userServer
+        case .externalURL, .anthropicAPI: .userServer
         }
         ratio = PolishPromptTokenRatio(entries: ledger?.entries() ?? [], backend: backend)
         helperTokenizeURL = backend == .bundledHelper

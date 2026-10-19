@@ -18,6 +18,7 @@ extension SettingsStore {
         case .realtimeAPIKey: return Keys.apiKey
         case .llmPolishingAPIKey: return Keys.llmPolishingAPIKey
         case .mistralAPIKey: return Keys.mistralAPIKey
+        case .anthropicAPIKey: return Keys.anthropicAPIKeyNeverStored
         // Never stored in UserDefaults; the name only has to be unused.
         case .jevAPIKey: return Keys.jevAPIKeyNeverStored
         }
@@ -145,12 +146,14 @@ extension SettingsStore {
         case .managedLocal: break
         case .externalURL: keys.insert(.realtimeAPIKey)
         case .mistralAPI: keys.insert(.mistralAPIKey)
+        case .anthropicAPI: break
         }
         guard polishingEnabled else { return keys }
         switch polishingMode {
         case .managedLocal: break
         case .externalURL: keys.insert(.llmPolishingAPIKey)
         case .mistralAPI: keys.insert(.mistralAPIKey)
+        case .anthropicAPI: keys.insert(.anthropicAPIKey)
         }
         return keys
     }
@@ -196,6 +199,7 @@ extension SettingsStore {
         case .realtimeAPIKey: apiKey = stored
         case .llmPolishingAPIKey: llmPolishingAPIKey = stored
         case .mistralAPIKey: mistralAPIKey = stored
+        case .anthropicAPIKey: anthropicAPIKey = stored
         case .jevAPIKey: jevAPIKey = stored
         }
     }

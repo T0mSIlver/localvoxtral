@@ -228,6 +228,8 @@ package struct EnginesWidgetContent: Equatable, Sendable {
                 )
             case .externalURL:
                 return Row(role: role, title: title(role), status: "External URL")
+            case .anthropicAPI:
+                return Row(role: role, title: title(role), status: "Anthropic API")
             case .mistralAPI:
                 let mistral = engines.mistral
                 let today = role == .speech ? mistral.speechTodayEUR : mistral.polishTodayEUR
