@@ -306,6 +306,17 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Polishing on the Anthropic API (#1895): the fourth mode, its model
+    /// picker and key field. Made-up key.
+    func testEnginesAnthropicPolishing() async throws {
+        try await recordSettings(pane: .endpoints, name: "settings-endpoints-anthropic", setUp: false) {
+            viewModel in
+            viewModel.settings.llmPolishingEnabled = true
+            viewModel.settings.polishingBackendMode = .anthropicAPI
+            viewModel.settings.anthropicAPIKey = "sk-ant-example"
+        }
+    }
+
     /// The polish prompt's sizes (#1007): Global terms with a count and
     /// tokens, and the instructions under Advanced for both profiles, at the
     /// ratio twenty measured Mistral requests give.
