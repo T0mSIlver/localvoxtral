@@ -79,8 +79,8 @@ enum SpeakerTermSuggestions {
         return sections
     }
 
-    /// ONE user message and no system message: see `LLMPolishingService
-    /// .requestBody` — this keeps the request out of polishd's prompt cache.
+    /// ONE user message and no system message: see `LLMPolishingConfiguration
+    /// .body(for:)` — this keeps the request out of polishd's prompt cache.
     static func request(
         dictations: [TermSuggestionScreen.Dictation], terms: [String], dismissed: [String]
     ) -> LLMPolishingRequest {

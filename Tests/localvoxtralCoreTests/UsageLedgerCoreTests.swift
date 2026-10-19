@@ -292,9 +292,10 @@ final class UsageLedgerCoreTests: XCTestCase {
     func testTheChatRouterRecordsEveryAnswerWithItsUsage() async throws {
         let ledger = UsageLedger(fileURL: nil)
         let classifier = QuickCaptureChatClassifier(
-            endpoint: URL(string: "https://\(StubHTTPProtocol.host)/v1/chat/completions")!,
-            apiKey: "k", model: "zai-glm-5-3", session: StubHTTPProtocol.session(),
-            usageBackend: .mistral, usageRecorder: ledger, now: { [moment] in moment })
+            configuration: LLMPolishingConfiguration(
+                endpointURL: URL(string: "https://\(StubHTTPProtocol.host)")!,
+                apiKey: "k", model: "zai-glm-5-3", requestShape: .mistral),
+            session: StubHTTPProtocol.session(), usageRecorder: ledger, now: { [moment] in moment })
 
         StubHTTPProtocol.reply.withLock {
             $0 = .http(200, #"""

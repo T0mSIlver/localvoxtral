@@ -1,0 +1,585 @@
+{
+  "polish-external" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "fix the local vox trawl docs",
+          "role" : "user"
+        }
+      ],
+      "min_p" : 0.050000000000000003,
+      "model" : "qwen3",
+      "presence_penalty" : 0.5,
+      "temperature" : 0.20000000000000001,
+      "thinking_budget_tokens" : 0,
+      "top_k" : 40,
+      "top_p" : 0.90000000000000002
+    },
+    "headers" : {
+      "Authorization" : "Bearer sk-external",
+      "Content-Type" : "application/json",
+      "x-bf-passthrough-extra-params" : "true"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.350000000000001,
+    "url" : "https://llm.example/proxy/v1/chat/completions"
+  },
+  "polish-external-bare" : {
+    "body" : {
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "fix the local vox trawl docs",
+          "role" : "user"
+        }
+      ],
+      "model" : "local-model",
+      "temperature" : 0.29999999999999999
+    },
+    "headers" : {
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.350000000000001,
+    "url" : "http://192.168.1.20:8080/v1/chat/completions"
+  },
+  "polish-external-term-suggestions" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "max_tokens" : 2000,
+      "messages" : [
+        {
+          "content" : "Suggest terms from: weeks of dictations",
+          "role" : "user"
+        }
+      ],
+      "min_p" : 0.050000000000000003,
+      "model" : "qwen3",
+      "presence_penalty" : 0.5,
+      "temperature" : 0.20000000000000001,
+      "thinking_budget_tokens" : 0,
+      "top_k" : 40,
+      "top_p" : 0.90000000000000002
+    },
+    "headers" : {
+      "Authorization" : "Bearer sk-external",
+      "Content-Type" : "application/json",
+      "x-bf-passthrough-extra-params" : "true"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 600,
+    "url" : "https://llm.example/proxy/v1/chat/completions"
+  },
+  "polish-managed" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "fix the local vox trawl docs",
+          "role" : "user"
+        }
+      ],
+      "min_p" : 0,
+      "model" : "mlx-community/Qwen3.5-4B-4bit",
+      "presence_penalty" : 1.5,
+      "temperature" : 0.69999999999999996,
+      "top_k" : 20,
+      "top_p" : 0.80000000000000004
+    },
+    "headers" : {
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.350000000000001,
+    "url" : "http://127.0.0.1:8090/v1/chat/completions"
+  },
+  "polish-managed-warmup" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "max_tokens" : 1,
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "warm",
+          "role" : "user"
+        }
+      ],
+      "min_p" : 0,
+      "model" : "mlx-community/Qwen3.5-4B-4bit",
+      "presence_penalty" : 1.5,
+      "temperature" : 0.69999999999999996,
+      "top_k" : 20,
+      "top_p" : 0.80000000000000004
+    },
+    "headers" : {
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.049999999999997,
+    "url" : "http://127.0.0.1:8090/v1/chat/completions"
+  },
+  "polish-mistral" : {
+    "body" : {
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "fix the local vox trawl docs",
+          "role" : "user"
+        }
+      ],
+      "model" : "mistral-medium-3-5",
+      "prompt_cache_key" : "<hmac of the fixed start>",
+      "reasoning_effort" : "none",
+      "temperature" : 0.29999999999999999
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.350000000000001,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "polish-mistral-glm" : {
+    "body" : {
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "fix the local vox trawl docs",
+          "role" : "user"
+        }
+      ],
+      "model" : "zai-glm-5-3",
+      "presence_penalty" : 1,
+      "prompt_cache_key" : "<hmac of the fixed start>",
+      "reasoning_effort" : "low",
+      "temperature" : 0.59999999999999998,
+      "top_p" : 0.94999999999999996
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.350000000000001,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "polish-mistral-glm-term-suggestions" : {
+    "body" : {
+      "max_tokens" : 2000,
+      "messages" : [
+        {
+          "content" : "Suggest terms from: weeks of dictations",
+          "role" : "user"
+        }
+      ],
+      "model" : "zai-glm-5-3",
+      "presence_penalty" : 1,
+      "reasoning_effort" : "high",
+      "temperature" : 0.59999999999999998,
+      "top_p" : 0.94999999999999996
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 600,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "polish-mistral-without-reasoning" : {
+    "body" : {
+      "messages" : [
+        {
+          "content" : "You polish dictated text.",
+          "role" : "system"
+        },
+        {
+          "content" : "[Reference]\nlocalvoxtral",
+          "role" : "user"
+        },
+        {
+          "content" : "fix the local vox trawl docs",
+          "role" : "user"
+        }
+      ],
+      "model" : "mistral-small-latest",
+      "prompt_cache_key" : "<hmac of the fixed start>",
+      "temperature" : 0.29999999999999999
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 40.350000000000001,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "quick-capture-first-draft-external" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "max_tokens" : 16384,
+      "messages" : [
+        {
+          "content" : "You sort and draft a developer's dictated notes about one of their software projects. A note is a quick brain dump, and speech recognition may have misheard a few words. First decide what the note is:\n- \"issue\": a change to the project: a feature, a bug, a refactor, docs.\n- \"question\": the developer asks something about the project.\n- \"task\": something the developer means to do themselves, such as a reminder to check or try something, that is not a change to the project.\n- \"note\": anything else worth keeping: a thought or an observation.\nFor an issue: The body is Markdown with these sections: Problem (one to three sentences as the owner sees it, quoting the idea), Scope (what changes and what does not), Constraints (the repository's own rules that apply: tests, lanes, UI rules), Proof (the test or command its pull request must show), Links (the issue it duplicates or extends, related closed issues and pull requests) and Open questions (anything the idea did not say; never invent it). The title is under 70 characters, in the owner's words. You have not read the code: name files, types and functions only as they appear in the search hits, and put what you would need to read under Open questions. Link only numbers from the lists given.\nFor a question: the body answers it in a few sentences from the context, citing issue and pull request numbers or files, and says what the context cannot tell.\nFor a task or a note: the body restates it plainly in the developer's words, in one to three sentences.\nEvery kind gets a title under 70 characters, in the developer's words.\nReply with JSON only: {\"kind\": \"issue\" | \"question\" | \"task\" | \"note\", \"title\": \"...\", \"body\": \"...\", \"relation\": \"none\" | \"duplicate\" | \"extends\", \"issue\": <an open issue's number or null>}. Relation and issue name the open issue an issue duplicates or extends; they are \"none\" and null for every other kind.",
+          "role" : "system"
+        },
+        {
+          "content" : "Project: quill\n\n<search-hits>\n(none)\n</search-hits>\n\n<open-issues>\n(could not be listed; do not claim a duplicate)\n</open-issues>\n\n<note>\nmake the quill export faster\n</note>",
+          "role" : "user"
+        }
+      ],
+      "model" : "qwen3",
+      "temperature" : 0,
+      "thinking_budget_tokens" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer sk-external",
+      "Content-Length" : "2334",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 120,
+    "url" : "https://llm.example/proxy/v1/chat/completions"
+  },
+  "quick-capture-first-draft-external-bare" : {
+    "body" : {
+      "max_tokens" : 16384,
+      "messages" : [
+        {
+          "content" : "You sort and draft a developer's dictated notes about one of their software projects. A note is a quick brain dump, and speech recognition may have misheard a few words. First decide what the note is:\n- \"issue\": a change to the project: a feature, a bug, a refactor, docs.\n- \"question\": the developer asks something about the project.\n- \"task\": something the developer means to do themselves, such as a reminder to check or try something, that is not a change to the project.\n- \"note\": anything else worth keeping: a thought or an observation.\nFor an issue: The body is Markdown with these sections: Problem (one to three sentences as the owner sees it, quoting the idea), Scope (what changes and what does not), Constraints (the repository's own rules that apply: tests, lanes, UI rules), Proof (the test or command its pull request must show), Links (the issue it duplicates or extends, related closed issues and pull requests) and Open questions (anything the idea did not say; never invent it). The title is under 70 characters, in the owner's words. You have not read the code: name files, types and functions only as they appear in the search hits, and put what you would need to read under Open questions. Link only numbers from the lists given.\nFor a question: the body answers it in a few sentences from the context, citing issue and pull request numbers or files, and says what the context cannot tell.\nFor a task or a note: the body restates it plainly in the developer's words, in one to three sentences.\nEvery kind gets a title under 70 characters, in the developer's words.\nReply with JSON only: {\"kind\": \"issue\" | \"question\" | \"task\" | \"note\", \"title\": \"...\", \"body\": \"...\", \"relation\": \"none\" | \"duplicate\" | \"extends\", \"issue\": <an open issue's number or null>}. Relation and issue name the open issue an issue duplicates or extends; they are \"none\" and null for every other kind.",
+          "role" : "system"
+        },
+        {
+          "content" : "Project: quill\n\n<search-hits>\n(none)\n</search-hits>\n\n<open-issues>\n(could not be listed; do not claim a duplicate)\n</open-issues>\n\n<note>\nmake the quill export faster\n</note>",
+          "role" : "user"
+        }
+      ],
+      "model" : "local-model",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Content-Length" : "2264",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 120,
+    "url" : "http://192.168.1.20:8080/v1/chat/completions"
+  },
+  "quick-capture-first-draft-managed" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "max_tokens" : 16384,
+      "messages" : [
+        {
+          "content" : "You sort and draft a developer's dictated notes about one of their software projects. A note is a quick brain dump, and speech recognition may have misheard a few words. First decide what the note is:\n- \"issue\": a change to the project: a feature, a bug, a refactor, docs.\n- \"question\": the developer asks something about the project.\n- \"task\": something the developer means to do themselves, such as a reminder to check or try something, that is not a change to the project.\n- \"note\": anything else worth keeping: a thought or an observation.\nFor an issue: The body is Markdown with these sections: Problem (one to three sentences as the owner sees it, quoting the idea), Scope (what changes and what does not), Constraints (the repository's own rules that apply: tests, lanes, UI rules), Proof (the test or command its pull request must show), Links (the issue it duplicates or extends, related closed issues and pull requests) and Open questions (anything the idea did not say; never invent it). The title is under 70 characters, in the owner's words. You have not read the code: name files, types and functions only as they appear in the search hits, and put what you would need to read under Open questions. Link only numbers from the lists given.\nFor a question: the body answers it in a few sentences from the context, citing issue and pull request numbers or files, and says what the context cannot tell.\nFor a task or a note: the body restates it plainly in the developer's words, in one to three sentences.\nEvery kind gets a title under 70 characters, in the developer's words.\nReply with JSON only: {\"kind\": \"issue\" | \"question\" | \"task\" | \"note\", \"title\": \"...\", \"body\": \"...\", \"relation\": \"none\" | \"duplicate\" | \"extends\", \"issue\": <an open issue's number or null>}. Relation and issue name the open issue an issue duplicates or extends; they are \"none\" and null for every other kind.",
+          "role" : "system"
+        },
+        {
+          "content" : "Project: quill\n\n<search-hits>\n(none)\n</search-hits>\n\n<open-issues>\n(could not be listed; do not claim a duplicate)\n</open-issues>\n\n<note>\nmake the quill export faster\n</note>",
+          "role" : "user"
+        }
+      ],
+      "model" : "mlx-community/Qwen3.5-4B-4bit",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Content-Length" : "2332",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 120,
+    "url" : "http://127.0.0.1:8090/v1/chat/completions"
+  },
+  "quick-capture-first-draft-mistral" : {
+    "body" : {
+      "max_tokens" : 16384,
+      "messages" : [
+        {
+          "content" : "You sort and draft a developer's dictated notes about one of their software projects. A note is a quick brain dump, and speech recognition may have misheard a few words. First decide what the note is:\n- \"issue\": a change to the project: a feature, a bug, a refactor, docs.\n- \"question\": the developer asks something about the project.\n- \"task\": something the developer means to do themselves, such as a reminder to check or try something, that is not a change to the project.\n- \"note\": anything else worth keeping: a thought or an observation.\nFor an issue: The body is Markdown with these sections: Problem (one to three sentences as the owner sees it, quoting the idea), Scope (what changes and what does not), Constraints (the repository's own rules that apply: tests, lanes, UI rules), Proof (the test or command its pull request must show), Links (the issue it duplicates or extends, related closed issues and pull requests) and Open questions (anything the idea did not say; never invent it). The title is under 70 characters, in the owner's words. You have not read the code: name files, types and functions only as they appear in the search hits, and put what you would need to read under Open questions. Link only numbers from the lists given.\nFor a question: the body answers it in a few sentences from the context, citing issue and pull request numbers or files, and says what the context cannot tell.\nFor a task or a note: the body restates it plainly in the developer's words, in one to three sentences.\nEvery kind gets a title under 70 characters, in the developer's words.\nReply with JSON only: {\"kind\": \"issue\" | \"question\" | \"task\" | \"note\", \"title\": \"...\", \"body\": \"...\", \"relation\": \"none\" | \"duplicate\" | \"extends\", \"issue\": <an open issue's number or null>}. Relation and issue name the open issue an issue duplicates or extends; they are \"none\" and null for every other kind.",
+          "role" : "system"
+        },
+        {
+          "content" : "Project: quill\n\n<search-hits>\n(none)\n</search-hits>\n\n<open-issues>\n(could not be listed; do not claim a duplicate)\n</open-issues>\n\n<note>\nmake the quill export faster\n</note>",
+          "role" : "user"
+        }
+      ],
+      "model" : "mistral-medium-3-5",
+      "reasoning_effort" : "none",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Length" : "2297",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 120,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "quick-capture-first-draft-mistral-glm" : {
+    "body" : {
+      "max_tokens" : 16384,
+      "messages" : [
+        {
+          "content" : "You sort and draft a developer's dictated notes about one of their software projects. A note is a quick brain dump, and speech recognition may have misheard a few words. First decide what the note is:\n- \"issue\": a change to the project: a feature, a bug, a refactor, docs.\n- \"question\": the developer asks something about the project.\n- \"task\": something the developer means to do themselves, such as a reminder to check or try something, that is not a change to the project.\n- \"note\": anything else worth keeping: a thought or an observation.\nFor an issue: The body is Markdown with these sections: Problem (one to three sentences as the owner sees it, quoting the idea), Scope (what changes and what does not), Constraints (the repository's own rules that apply: tests, lanes, UI rules), Proof (the test or command its pull request must show), Links (the issue it duplicates or extends, related closed issues and pull requests) and Open questions (anything the idea did not say; never invent it). The title is under 70 characters, in the owner's words. You have not read the code: name files, types and functions only as they appear in the search hits, and put what you would need to read under Open questions. Link only numbers from the lists given.\nFor a question: the body answers it in a few sentences from the context, citing issue and pull request numbers or files, and says what the context cannot tell.\nFor a task or a note: the body restates it plainly in the developer's words, in one to three sentences.\nEvery kind gets a title under 70 characters, in the developer's words.\nReply with JSON only: {\"kind\": \"issue\" | \"question\" | \"task\" | \"note\", \"title\": \"...\", \"body\": \"...\", \"relation\": \"none\" | \"duplicate\" | \"extends\", \"issue\": <an open issue's number or null>}. Relation and issue name the open issue an issue duplicates or extends; they are \"none\" and null for every other kind.",
+          "role" : "system"
+        },
+        {
+          "content" : "Project: quill\n\n<search-hits>\n(none)\n</search-hits>\n\n<open-issues>\n(could not be listed; do not claim a duplicate)\n</open-issues>\n\n<note>\nmake the quill export faster\n</note>",
+          "role" : "user"
+        }
+      ],
+      "model" : "zai-glm-5-3",
+      "reasoning_effort" : "low",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Length" : "2289",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 120,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "quick-capture-first-draft-mistral-without-reasoning" : {
+    "body" : {
+      "max_tokens" : 16384,
+      "messages" : [
+        {
+          "content" : "You sort and draft a developer's dictated notes about one of their software projects. A note is a quick brain dump, and speech recognition may have misheard a few words. First decide what the note is:\n- \"issue\": a change to the project: a feature, a bug, a refactor, docs.\n- \"question\": the developer asks something about the project.\n- \"task\": something the developer means to do themselves, such as a reminder to check or try something, that is not a change to the project.\n- \"note\": anything else worth keeping: a thought or an observation.\nFor an issue: The body is Markdown with these sections: Problem (one to three sentences as the owner sees it, quoting the idea), Scope (what changes and what does not), Constraints (the repository's own rules that apply: tests, lanes, UI rules), Proof (the test or command its pull request must show), Links (the issue it duplicates or extends, related closed issues and pull requests) and Open questions (anything the idea did not say; never invent it). The title is under 70 characters, in the owner's words. You have not read the code: name files, types and functions only as they appear in the search hits, and put what you would need to read under Open questions. Link only numbers from the lists given.\nFor a question: the body answers it in a few sentences from the context, citing issue and pull request numbers or files, and says what the context cannot tell.\nFor a task or a note: the body restates it plainly in the developer's words, in one to three sentences.\nEvery kind gets a title under 70 characters, in the developer's words.\nReply with JSON only: {\"kind\": \"issue\" | \"question\" | \"task\" | \"note\", \"title\": \"...\", \"body\": \"...\", \"relation\": \"none\" | \"duplicate\" | \"extends\", \"issue\": <an open issue's number or null>}. Relation and issue name the open issue an issue duplicates or extends; they are \"none\" and null for every other kind.",
+          "role" : "system"
+        },
+        {
+          "content" : "Project: quill\n\n<search-hits>\n(none)\n</search-hits>\n\n<open-issues>\n(could not be listed; do not claim a duplicate)\n</open-issues>\n\n<note>\nmake the quill export faster\n</note>",
+          "role" : "user"
+        }
+      ],
+      "model" : "mistral-small-latest",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Length" : "2273",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 120,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "quick-capture-route-external" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "max_tokens" : 4096,
+      "messages" : [
+        {
+          "content" : "You route a spoken note to one of the speaker's software projects. Read the note and the project descriptions, then pick the one project the note is about. Pick \"inbox\" when it fits none of them, when two fit equally, or when you would be guessing. Reply with JSON only: {\"project\": \"<id>\", \"confidence\": <0 to 1>}. Confidence: 0.95 when the note names the project or can only be about it; 0.5 or less when you are guessing.",
+          "role" : "system"
+        },
+        {
+          "content" : "Projects:\n- quill: Project quill.\n- inbox: Anything else.\n\nNote:\nmake the quill export faster",
+          "role" : "user"
+        }
+      ],
+      "model" : "qwen3",
+      "temperature" : 0,
+      "thinking_budget_tokens" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer sk-external",
+      "Content-Length" : "730",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 20,
+    "url" : "https://llm.example/proxy/v1/chat/completions"
+  },
+  "quick-capture-route-external-bare" : {
+    "body" : {
+      "max_tokens" : 4096,
+      "messages" : [
+        {
+          "content" : "You route a spoken note to one of the speaker's software projects. Read the note and the project descriptions, then pick the one project the note is about. Pick \"inbox\" when it fits none of them, when two fit equally, or when you would be guessing. Reply with JSON only: {\"project\": \"<id>\", \"confidence\": <0 to 1>}. Confidence: 0.95 when the note names the project or can only be about it; 0.5 or less when you are guessing.",
+          "role" : "system"
+        },
+        {
+          "content" : "Projects:\n- quill: Project quill.\n- inbox: Anything else.\n\nNote:\nmake the quill export faster",
+          "role" : "user"
+        }
+      ],
+      "model" : "local-model",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Content-Length" : "660",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 20,
+    "url" : "http://192.168.1.20:8080/v1/chat/completions"
+  },
+  "quick-capture-route-managed" : {
+    "body" : {
+      "chat_template_kwargs" : {
+        "enable_thinking" : false
+      },
+      "max_tokens" : 4096,
+      "messages" : [
+        {
+          "content" : "You route a spoken note to one of the speaker's software projects. Read the note and the project descriptions, then pick the one project the note is about. Pick \"inbox\" when it fits none of them, when two fit equally, or when you would be guessing. Reply with JSON only: {\"project\": \"<id>\", \"confidence\": <0 to 1>}. Confidence: 0.95 when the note names the project or can only be about it; 0.5 or less when you are guessing.",
+          "role" : "system"
+        },
+        {
+          "content" : "Projects:\n- quill: Project quill.\n- inbox: Anything else.\n\nNote:\nmake the quill export faster",
+          "role" : "user"
+        }
+      ],
+      "model" : "mlx-community/Qwen3.5-4B-4bit",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Content-Length" : "728",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 20,
+    "url" : "http://127.0.0.1:8090/v1/chat/completions"
+  },
+  "quick-capture-route-mistral" : {
+    "body" : {
+      "max_tokens" : 4096,
+      "messages" : [
+        {
+          "content" : "You route a spoken note to one of the speaker's software projects. Read the note and the project descriptions, then pick the one project the note is about. Pick \"inbox\" when it fits none of them, when two fit equally, or when you would be guessing. Reply with JSON only: {\"project\": \"<id>\", \"confidence\": <0 to 1>}. Confidence: 0.95 when the note names the project or can only be about it; 0.5 or less when you are guessing.",
+          "role" : "system"
+        },
+        {
+          "content" : "Projects:\n- quill: Project quill.\n- inbox: Anything else.\n\nNote:\nmake the quill export faster",
+          "role" : "user"
+        }
+      ],
+      "model" : "mistral-medium-3-5",
+      "reasoning_effort" : "none",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Length" : "693",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 20,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "quick-capture-route-mistral-glm" : {
+    "body" : {
+      "max_tokens" : 4096,
+      "messages" : [
+        {
+          "content" : "You route a spoken note to one of the speaker's software projects. Read the note and the project descriptions, then pick the one project the note is about. Pick \"inbox\" when it fits none of them, when two fit equally, or when you would be guessing. Reply with JSON only: {\"project\": \"<id>\", \"confidence\": <0 to 1>}. Confidence: 0.95 when the note names the project or can only be about it; 0.5 or less when you are guessing.",
+          "role" : "system"
+        },
+        {
+          "content" : "Projects:\n- quill: Project quill.\n- inbox: Anything else.\n\nNote:\nmake the quill export faster",
+          "role" : "user"
+        }
+      ],
+      "model" : "zai-glm-5-3",
+      "reasoning_effort" : "low",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Length" : "685",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 20,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  },
+  "quick-capture-route-mistral-without-reasoning" : {
+    "body" : {
+      "max_tokens" : 4096,
+      "messages" : [
+        {
+          "content" : "You route a spoken note to one of the speaker's software projects. Read the note and the project descriptions, then pick the one project the note is about. Pick \"inbox\" when it fits none of them, when two fit equally, or when you would be guessing. Reply with JSON only: {\"project\": \"<id>\", \"confidence\": <0 to 1>}. Confidence: 0.95 when the note names the project or can only be about it; 0.5 or less when you are guessing.",
+          "role" : "system"
+        },
+        {
+          "content" : "Projects:\n- quill: Project quill.\n- inbox: Anything else.\n\nNote:\nmake the quill export faster",
+          "role" : "user"
+        }
+      ],
+      "model" : "mistral-small-latest",
+      "temperature" : 0
+    },
+    "headers" : {
+      "Authorization" : "Bearer mistral-key",
+      "Content-Length" : "669",
+      "Content-Type" : "application/json"
+    },
+    "method" : "POST",
+    "timeoutSeconds" : 20,
+    "url" : "https://api.mistral.ai/v1/chat/completions"
+  }
+}

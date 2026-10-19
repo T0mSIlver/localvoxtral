@@ -21,7 +21,7 @@ final class LLMPolishingAnthropicShapeTests: XCTestCase {
     private func body(_ request: LLMPolishingRequest) throws -> [String: Any] {
         try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(request: request, configuration: configuration)
+                with: configuration.body(for: request.wire)
             ) as? [String: Any])
     }
 

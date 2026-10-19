@@ -208,66 +208,40 @@ final class QuickCaptureInboxViewModel {
                 host: jevHost(forKey: jevKey), apiKey: jevKey, usageRecorder: usageRecorder))
         }
         if let polishing = settings.llmPolishingConfiguration {
-            classifiers.append(QuickCaptureChatClassifier(
-                endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
-                apiKey: polishing.apiKey,
-                model: polishing.model,
-                extraBody: chatExtraBody(polishing),
-                usageBackend: polishing.usageBackend,
-                usageRecorder: usageRecorder
-            ))
+            classifiers.append(chatClassifier(polishing: polishing, usageRecorder: usageRecorder))
         }
         return classifiers
     }
 
-    /// The first draft's writer (#918): the polishing model, at low
-    /// reasoning effort on the Mistral shape. Nil without a polishing
-    /// configuration; the agent then drafts alone.
+    /// The polishing model asked to route.
+    static func chatClassifier(
+        polishing: LLMPolishingConfiguration,
+        usageRecorder: (any UsageRecording)? = nil,
+        session: URLSession = SameOriginHTTP.shared
+    ) -> QuickCaptureChatClassifier {
+        QuickCaptureChatClassifier(configuration: polishing, session: session, usageRecorder: usageRecorder)
+    }
+
+    /// The first draft's writer (#918): the polishing model, at the least
+    /// reasoning effort it takes. Nil without a polishing configuration; the
+    /// agent then drafts alone.
     static func firstDrafter(
         settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
     ) -> (any QuickCaptureFirstDrafting)? {
         guard let polishing = settings.llmPolishingConfiguration else { return nil }
-        return QuickCaptureFirstDrafter(
-            endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
-            apiKey: polishing.apiKey,
-            model: polishing.model,
-            extraBody: firstDraftExtraBody(polishing),
-            usageBackend: polishing.usageBackend,
-            usageRecorder: usageRecorder
-        )
+        return firstDrafter(polishing: polishing, usageRecorder: usageRecorder)
     }
 
-    /// The model's lowest reasoning effort on the Mistral shape, whatever
-    /// polish uses: GLM's `low`, Mistral's own `none` (it rejects `low`).
-    /// At a higher effort GLM 5.3's reasoning once used the whole token cap
-    /// (#918). A model the catalog lists without reasoning gets no field: it
-    /// rejects even `none` (#1365). A self-hosted server keeps its polish
-    /// switches.
-    static func firstDraftExtraBody(_ configuration: LLMPolishingConfiguration) -> [String: any Sendable] {
-        guard configuration.requestShape == .mistral else { return chatExtraBody(configuration) }
-        guard configuration.mistralReasoningEffort != .omitted,
-              let wireValue = MistralReasoningEffort.forModel(configuration.model).wireValue
-        else { return [:] }
-        return ["reasoning_effort": wireValue]
+    static func firstDrafter(
+        polishing: LLMPolishingConfiguration,
+        usageRecorder: (any UsageRecording)? = nil,
+        session: URLSession = SameOriginHTTP.shared
+    ) -> QuickCaptureFirstDrafter {
+        QuickCaptureFirstDrafter(configuration: polishing, session: session, usageRecorder: usageRecorder)
     }
 
     /// Vercel AI Gateway keys start `vck_`; any other key is TypeSafe's.
     static func jevHost(forKey key: String) -> Jev.Host {
         key.hasPrefix("vck_") ? .vercelGateway : .typesafe
-    }
-
-    /// The fields the polish request adds that change whether a reasoning
-    /// model answers quickly: the Mistral shape's reasoning effort, or a
-    /// self-hosted server's chat template switches and thinking budget.
-    static func chatExtraBody(_ configuration: LLMPolishingConfiguration) -> [String: any Sendable] {
-        if configuration.requestShape == .mistral {
-            let effort = configuration.mistralReasoningEffort ?? MistralReasoningEffort.forModel(configuration.model)
-            guard let wireValue = effort.wireValue else { return [:] }
-            return ["reasoning_effort": wireValue]
-        }
-        var extra: [String: any Sendable] = [:]
-        if let arguments = configuration.chatTemplateArguments { extra["chat_template_kwargs"] = arguments }
-        if let budget = configuration.thinkingBudgetTokens { extra["thinking_budget_tokens"] = budget }
-        return extra
     }
 }

@@ -21,7 +21,8 @@ import XCTest
 ///   checkout, and `hostReadme` is the README a remote project's host would
 ///   report (#745), summarized as the Mac summarizes that report.
 /// - `QC_JEV_HOST` + `QC_JEV_KEY_FILE`, and/or `QC_CHAT_URL` + `QC_CHAT_MODEL`
-///   (+ `QC_CHAT_KEY_FILE`, `QC_CHAT_EXTRA` as a JSON object), in router order.
+///   (+ `QC_CHAT_KEY_FILE`, `QC_CHAT_EXTRA` as a JSON object of settings,
+///   `LLMPolishingConfiguration.replay`), in router order.
 /// - `QC_FOLLOW_UPS=1` (#965): the captures are one stream, in file order,
 ///   as the Inbox sees them within the hour: each earlier capture not joined
 ///   to another is open (the last five are offered), a capture that says
@@ -30,7 +31,7 @@ import XCTest
 ///   it continues; without it, joining anything is wrong.
 /// - `QC_POLISH_URL` + `QC_POLISH_MODEL` (+ `QC_POLISH_KEY_FILE`,
 ///   `QC_POLISH_EXTRA`) (#970): each capture is first polished through the
-///   core builder at that endpoint, as the app polishes it, and routed and
+///   core builder in that server's dialect, as the app polishes it, and routed and
 ///   joined from the polished words. The vocabulary is every project's name
 ///   and its `terms`, which in an exported project file may hold proposals.
 ///   `QC POLISH` counts the captures where a project's name appears in the
@@ -135,14 +136,8 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             classifiers.append(JevClassifier(host: host, apiKey: key))
         }
         if let url = environment["QC_CHAT_URL"].flatMap(URL.init(string:)), let model = environment["QC_CHAT_MODEL"] {
-            let extra = environment["QC_CHAT_EXTRA"]
-                .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? [:]
-            classifiers.append(QuickCaptureChatClassifier(
-                endpoint: url,
-                apiKey: key("QC_CHAT_KEY_FILE"),
-                model: model,
-                extraBody: extra.mapValues { $0 as! any Sendable }
-            ))
+            classifiers.append(QuickCaptureChatClassifier(configuration: try .replay(
+                url: url, apiKey: key("QC_CHAT_KEY_FILE"), model: model, extra: environment["QC_CHAT_EXTRA"])))
         }
         XCTAssertFalse(classifiers.isEmpty, "no classifier configured")
 

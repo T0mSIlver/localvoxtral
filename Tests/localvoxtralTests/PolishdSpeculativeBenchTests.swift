@@ -265,7 +265,7 @@ final class TimedPolishingService: LLMPolishingServicing, @unchecked Sendable {
         configuration: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
         var body = try JSONSerialization.jsonObject(
-            with: LLMPolishingService.requestBody(request: request, configuration: configuration)
+            with: configuration.body(for: request.wire)
         ) as? [String: Any] ?? [:]
         if let temperature {
             body["temperature"] = temperature

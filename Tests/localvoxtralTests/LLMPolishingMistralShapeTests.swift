@@ -33,10 +33,7 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
 
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: request,
-                    configuration: configuration
-                )
+                with: configuration.body(for: request.wire)
             ) as? [String: Any]
         )
 
@@ -78,10 +75,7 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
 
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: request,
-                    configuration: configuration
-                )
+                with: configuration.body(for: request.wire)
             ) as? [String: Any]
         )
 
@@ -111,20 +105,14 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
 
         let warmupJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: warmup,
-                    configuration: configuration
-                )
+                with: configuration.body(for: warmup.wire)
             ) as? [String: Any]
         )
         XCTAssertEqual(warmupJSON["max_tokens"] as? Int, 1)
 
         let productionJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(
-                    request: request,
-                    configuration: configuration
-                )
+                with: configuration.body(for: request.wire)
             ) as? [String: Any]
         )
         XCTAssertNil(productionJSON["max_tokens"])
@@ -220,7 +208,7 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
     /// the wire as the documented `/v1/chat/completions` path.
     func testMistralBaseURLNormalizesToChatCompletions() throws {
         XCTAssertEqual(
-            LLMPolishingService.normalizedChatCompletionsURL(MistralPolishDefaults.endpoint)
+            LLMPolishingConfiguration.normalizedChatCompletionsURL(MistralPolishDefaults.endpoint)
                 .absoluteString,
             "https://api.mistral.ai/v1/chat/completions"
         )
@@ -241,99 +229,14 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
         )
     }
 
-    // MARK: - Response content extraction
-
-    /// The shape every OpenAI-compatible server returns, and Mistral's own
-    /// when reasoning is off: `content` is a plain string.
-    func testAssistantTextReadsPlainStringContent() {
-        let json: [String: Any] = [
-            "choices": [["message": ["role": "assistant", "content": "Où est la gare ?"]]]
-        ]
-        XCTAssertEqual(
-            LLMPolishingService.assistantText(inResponseObject: json),
-            "Où est la gare ?"
-        )
-    }
-
-    /// A reasoning-capable Mistral model that reasons anyway returns a LIST of
-    /// chunks. Only the `text` chunks are the answer; the `thinking` chunk is
-    /// the trace and must never reach the user's document.
-    func testAssistantTextKeepsTextChunksAndDropsThinking() {
-        let json: [String: Any] = [
-            "choices": [[
-                "message": [
-                    "role": "assistant",
-                    "content": [
-                        [
-                            "type": "thinking",
-                            "thinking": [["type": "text", "text": "The user wants French spacing."]],
-                        ],
-                        ["type": "text", "text": "Où est la gare ?"],
-                    ],
-                ],
-            ]]
-        ]
-        XCTAssertEqual(
-            LLMPolishingService.assistantText(inResponseObject: json),
-            "Où est la gare ?"
-        )
-    }
-
-    /// Several text chunks concatenate in order, with unknown chunk types
-    /// ignored rather than treated as an error (forward compatibility).
-    func testAssistantTextConcatenatesMultipleTextChunksInOrder() {
-        let json: [String: Any] = [
-            "choices": [[
-                "message": [
-                    "content": [
-                        ["type": "text", "text": "Are you coming"],
-                        ["type": "something_new", "text": "IGNORED"],
-                        ["type": "text", "text": " tomorrow?"],
-                    ]
-                ],
-            ]]
-        ]
-        XCTAssertEqual(
-            LLMPolishingService.assistantText(inResponseObject: json),
-            "Are you coming tomorrow?"
-        )
-    }
-
-    /// A chunk list with no text chunk (a trace and nothing else) has no
-    /// answer in it — nil, which the caller maps to `invalidResponse` exactly
-    /// as it always has for a missing `content`.
-    func testAssistantTextReturnsNilWhenChunksCarryNoText() {
-        let thinkingOnly: [String: Any] = [
-            "choices": [[
-                "message": [
-                    "content": [
-                        ["type": "thinking", "thinking": [["type": "text", "text": "hmm"]]]
-                    ]
-                ],
-            ]]
-        ]
-        XCTAssertNil(LLMPolishingService.assistantText(inResponseObject: thinkingOnly))
-
-        let emptyList: [String: Any] = [
-            "choices": [["message": ["content": [] as [Any]]]]
-        ]
-        XCTAssertNil(LLMPolishingService.assistantText(inResponseObject: emptyList))
-
-        let noChoices: [String: Any] = ["choices": [] as [Any]]
-        XCTAssertNil(LLMPolishingService.assistantText(inResponseObject: noChoices))
-
-        let noContent: [String: Any] = ["choices": [["message": ["role": "assistant"]]]]
-        XCTAssertNil(LLMPolishingService.assistantText(inResponseObject: noContent))
-    }
-
     /// `prompt_cache_key` names the fixed start of the prompt and nothing
     /// else: requests that differ only in the transcript share a key, a
     /// different system prompt gets another, and the key carries no prompt
     /// text. A one-message request has no fixed start and sends no key.
     func testMistralPromptCacheKeyFollowsTheFixedStartOnly() throws {
         func key(_ system: String, _ prompts: [String]) -> String? {
-            LLMPolishingService.mistralPromptCacheKey(
-                for: LLMPolishingRequest(inputText: "x", systemPrompt: system, userPrompts: prompts)
+            LLMPolishingConfiguration.mistralPromptCacheKey(
+                for: LLMPolishingRequest(inputText: "x", systemPrompt: system, userPrompts: prompts).wire
             )
         }
         let first = try XCTUnwrap(key("system", ["fixed", "transcript one"]))
@@ -356,7 +259,7 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
         )
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(
-                with: LLMPolishingService.requestBody(request: request, configuration: configuration)
+                with: configuration.body(for: request.wire)
             ) as? [String: Any]
         )
         XCTAssertNil(json["prompt_cache_key"])

@@ -64,6 +64,11 @@ AppKit:
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- the polishing server's wire dialect (`PolishWire.swift`, #1851):
+  `LLMPolishingConfiguration` builds the URL, headers and body of every
+  request to the polishing model, polish and quick capture alike, and reads
+  its reply, in the OpenAI-compatible, Mistral or Anthropic shape;
+  `LLMPolishingService` stays in the app
 - which app an insertion targets (`PreferredTextInsertionTargetPolicy`);
   `TextInsertionService` stays in the app
 - a managed backend's status (`ManagedBackendStatus`, `ModelDownloadProgress`)
@@ -336,7 +341,8 @@ Key subsystems:
     through ProxyJump and ControlMaster alike, and the arm needs no socket at
     all. [agent/invariants.md](agent/invariants.md) lists what is deliberately
     not wired up yet.
-- LLM polish: `LLMPolishingService` (chat/completions client). In managed
+- LLM polish: `LLMPolishingService`, which sends each polish in the
+  configured server's dialect (`PolishWire.swift` in core). In managed
   mode it talks to the bundled `localvoxtral-polishd` helper (`PolishHelper/`
   package: MLX Swift inference + a minimal loopback OpenAI server +
   parent-pid watchdog), supervised like any managed backend on port 8472. It

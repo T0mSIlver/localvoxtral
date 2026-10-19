@@ -91,7 +91,7 @@ final class QuickCaptureDraftLiveTests: XCTestCase {
 ///
 /// `QC_ROOT` is the checkout, `QC_CAPTURES` a JSON list of captures,
 /// `QC_ENDPOINT`, `QC_MODEL` and `QC_KEY_FILE` the first draft's
-/// chat/completions endpoint, model and key, `QC_OUT` the output directory.
+/// polishing server, model and key, `QC_OUT` the output directory.
 final class QuickCaptureTwoStageLiveTests: XCTestCase {
     func testTwoStageDrafts() async throws {
         let environment = ProcessInfo.processInfo.environment
@@ -111,9 +111,8 @@ final class QuickCaptureTwoStageLiveTests: XCTestCase {
         let usage = UsageLedger(fileURL: nil)
         let github = QuickCaptureGHClient(environment: child)
         let firstDrafter = QuickCaptureFirstDrafter(
-            endpoint: URL(string: try XCTUnwrap(environment["QC_ENDPOINT"]))!,
-            apiKey: key, model: model, extraBody: ["reasoning_effort": "low"],
-            usageBackend: .mistral, usageRecorder: usage
+            configuration: try .replay(url: try XCTUnwrap(URL(string: XCTUnwrap(environment["QC_ENDPOINT"]))), apiKey: key, model: model),
+            usageRecorder: usage
         )
         let home = FileManager.default.homeDirectoryForCurrentUser
         let drafter = QuickCaptureDrafter(

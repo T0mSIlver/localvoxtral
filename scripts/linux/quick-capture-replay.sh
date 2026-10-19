@@ -21,6 +21,11 @@
 # `QC POLISH` line count the captures where a project's name appears in the
 # raw and in the polished words; no capture text is printed.
 #
+# --chat-extra and --polish-extra are a JSON object of the server's polish
+# settings: chat_template_kwargs, thinking_budget_tokens, reasoning_effort.
+# The URL's host picks the dialect, as in the app: api.mistral.ai is
+# Mistral's, api.anthropic.com Anthropic's, any other OpenAI-compatible.
+#
 # --dry-run builds every polish request and prints counts, then stops before
 # any request: no router, no polish, no key needed.
 #

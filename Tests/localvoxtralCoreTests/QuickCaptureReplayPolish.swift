@@ -29,21 +29,16 @@ enum QuickCaptureReplayPolish {
     static func polisher(
         environment: [String: String],
         key: (String) -> String,
-        send: QuickCaptureChatPolisher.Send? = nil
-    ) throws -> QuickCaptureChatPolisher? {
+        send: QuickCaptureReplayPolisher.Send? = nil
+    ) throws -> QuickCaptureReplayPolisher? {
         guard let url = environment["QC_POLISH_URL"].flatMap({ $0.isEmpty ? nil : URL(string: $0) }) else { return nil }
         let model = try XCTUnwrap(environment["QC_POLISH_MODEL"].flatMap { $0.isEmpty ? nil : $0 }, "--polish-model")
-        let extra = environment["QC_POLISH_EXTRA"]
-            .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? [:]
-        let extraBody = extra.mapValues { $0 as! any Sendable }
-        let inputs = try inputs()
+        let configuration = try LLMPolishingConfiguration.replay(
+            url: url, apiKey: key("QC_POLISH_KEY_FILE"), model: model, extra: environment["QC_POLISH_EXTRA"])
         if let send {
-            return QuickCaptureChatPolisher(
-                endpoint: url, apiKey: key("QC_POLISH_KEY_FILE"), model: model, extraBody: extraBody,
-                inputs: inputs, send: send)
+            return QuickCaptureReplayPolisher(configuration: configuration, inputs: try inputs(), send: send)
         }
-        return QuickCaptureChatPolisher(
-            endpoint: url, apiKey: key("QC_POLISH_KEY_FILE"), model: model, extraBody: extraBody, inputs: inputs)
+        return QuickCaptureReplayPolisher(configuration: configuration, inputs: try inputs())
     }
 
     /// Whether one of `names` appears in `text` as a word, ignoring case.
@@ -85,6 +80,55 @@ enum QuickCaptureReplayPolish {
     }
 }
 
+/// Polishes a capture as the app's `QuickCaptureLLMPolisher` does through
+/// `LLMPolishingService`: the core builder's request, in the polishing
+/// server's dialect.
+@MainActor
+final class QuickCaptureReplayPolisher: QuickCapturePolishing {
+    typealias Send = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    private let configuration: LLMPolishingConfiguration
+    private let inputs: QuickCapturePolishInputs
+    private let send: Send
+    /// The last failure, for the replay to print.
+    private(set) var lastError: (any Error)?
+
+    init(
+        configuration: LLMPolishingConfiguration, inputs: QuickCapturePolishInputs,
+        send: @escaping Send = { try await SameOriginHTTP.shared.data(for: $0) }
+    ) {
+        self.configuration = configuration
+        self.inputs = inputs
+        self.send = send
+    }
+
+    func polish(_ text: String, vocabulary: [String]) async -> QuickCapturePolish? {
+        let request = QuickCapturePolishPrompt.request(transcript: text, vocabulary: vocabulary, inputs: inputs)
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let urlRequest = try configuration.urlRequest(for: PolishWireRequest(
+                systemPrompt: request.systemPrompt,
+                userPrompts: request.userPrompts,
+                timeout: PolishRequestTimeout.seconds(forInputCharacters: request.inputText.count),
+                purpose: .polish
+            ))
+            let (data, response) = try await send(urlRequest)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { throw QuickCaptureChatRouting.Failure.http(status: status) }
+            guard let polished = configuration.reply(to: data)?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !polished.isEmpty
+            else { throw QuickCaptureChatRouting.Failure.malformedResponse }
+            let elapsed = clock.now - start
+            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            return QuickCapturePolish(text: polished, durationSeconds: seconds)
+        } catch {
+            lastError = error
+            return nil
+        }
+    }
+}
+
 /// The replay's polish step against an injected endpoint: no network.
 @MainActor
 final class QuickCaptureReplayPolishTests: XCTestCase {
@@ -93,14 +137,14 @@ final class QuickCaptureReplayPolishTests: XCTestCase {
         var authorization: [String?] = []
     }
 
-    func testTheReplayPolishesThroughTheCoreBuilderAndCountsNames() async throws {
+    func testTheReplayPolishesInTheServersDialectAndCountsNames() async throws {
         let keyFile = FileManager.default.temporaryDirectory.appendingPathComponent("qc-key-\(UUID().uuidString)")
         try Data("sk-test\n".utf8).write(to: keyFile)
         defer { try? FileManager.default.removeItem(at: keyFile) }
         let recorder = Recorder()
         let polisher = try XCTUnwrap(QuickCaptureReplayPolish.polisher(
             environment: [
-                "QC_POLISH_URL": "http://stub.invalid/v1/chat/completions", "QC_POLISH_MODEL": "stub-model",
+                "QC_POLISH_URL": "https://api.mistral.ai", "QC_POLISH_MODEL": "stub-model",
                 "QC_POLISH_KEY_FILE": keyFile.path, "QC_POLISH_EXTRA": #"{"reasoning_effort":"none"}"#,
             ],
             key: { variable in
@@ -142,8 +186,9 @@ final class QuickCaptureReplayPolishTests: XCTestCase {
     }
 
     func testAnEndpointErrorGivesNoPolish() async throws {
-        let polisher = QuickCaptureChatPolisher(
-            endpoint: URL(string: "http://stub.invalid/v1/chat/completions")!, apiKey: "", model: "m",
+        let polisher = QuickCaptureReplayPolisher(
+            configuration: LLMPolishingConfiguration(
+                endpointURL: URL(string: "http://stub.invalid/v1/chat/completions")!, apiKey: "", model: "m"),
             inputs: try QuickCaptureReplayPolish.inputs(),
             send: { request in
                 (Data(), HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!)
