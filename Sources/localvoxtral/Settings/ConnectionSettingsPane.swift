@@ -119,7 +119,7 @@ struct ConnectionSettingsPane: View {
                             Text(mode.displayName).tag(mode)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .labelsHidden()
                 }
 
@@ -193,7 +193,7 @@ struct ConnectionSettingsPane: View {
                             Text(mode.displayName).tag(mode)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .labelsHidden()
                 }
 
