@@ -288,6 +288,27 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
     }
 
+    /// The bundled helper stops transcribing mid-dictation (its utterance
+    /// limit) and says so. The mic used to stay open into an engine that would
+    /// transcribe nothing more (#314). The dictation now stops on it: the final
+    /// commit goes out, the text so far commits, and the stop ends on the
+    /// helper's sentence instead of Ready (#1865).
+    func testTranscriptionStoppedStopsTheDictationAndCommitsItsText() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let head = "hello from localvoxtral."
+        let message = "10-minute limit reached; start again."
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, head)
+        pipeline.server.send(["type": "error", "code": "transcription_stopped", "message": message])
+
+        await finishStoppedSession(pipeline, finalText: head, finalStatus: message)
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.microphone.deliver(Self.speech(seed: 3)), "the microphone is off")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [head])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [head])
+    }
+
     /// Without a network, a dictation to a loopback speech server needs none:
     /// the idle status does not report the loss, and the start goes ahead.
     func testWithoutANetworkADictationToALoopbackServerStarts() async throws {
@@ -438,6 +459,168 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(inserted.map(\.text), [Self.phrase])
         XCTAssertEqual(inserted.map(\.pid), [4242], "the app focused at the stop")
+    }
+
+    /// Secure Keyboard Entry at commit: the real coordinator copies the text
+    /// instead of typing it, and History lists it as not inserted (#1872).
+    func testASecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(polish: nil, copies: Self.phrase)
+    }
+
+    func testAPolishedSecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(
+            polish: FakePolishingService { "<\($0.inputText)>" }, copies: "<\(Self.phrase)>")
+    }
+
+    private func assertSecureInputFallbackIsSavedAsNotInserted(
+        polish: FakePolishingService?, copies expected: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        var copied: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { copied.append($0); return true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, overlayCoordinator: overlay
+        )
+        let store = try XCTUnwrap(DictationSessionStore.inMemory(), file: file, line: line)
+        pipeline.viewModel.sessionStore = store
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        var typed: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating, file: file, line: line)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline, finalStatus: DictationViewModel.StatusStrings.overlayCopiedToClipboard,
+            file: file, line: line)
+
+        XCTAssertEqual(typed, [], "Secure Keyboard Entry would swallow the keys", file: file, line: line)
+        XCTAssertEqual(copied, [expected], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], file: file, line: line)
+        let notInserted = await store.entries(matching: DictationHistoryQuery(filter: .notInserted))
+        XCTAssertEqual(notInserted.map(\.rawText), [Self.phrase], file: file, line: line)
+    }
+
+    /// A clipboard fallback reached no app, so it teaches nothing: no learned
+    /// term, no correction watch, no project-term proposal (#1872). The same
+    /// joined dictation inserted normally does all three.
+    func testAClipboardFallbackLearnsNothingAndAsksNothing() async throws {
+        let effects = try await dictateJoinedPolishedCommit(secureInput: true)
+        XCTAssertEqual(effects.typed, [], "precondition: nothing reached the app")
+        XCTAssertEqual(effects.learnedTerms, 0)
+        XCTAssertEqual(effects.watchedSessions, [])
+        XCTAssertEqual(effects.proposalRuns, 0)
+    }
+
+    func testAnInsertedJoinedDictationLearnsWatchesAndAsks() async throws {
+        let effects = try await dictateJoinedPolishedCommit(secureInput: false)
+        XCTAssertEqual(
+            effects.typed, ["<\(Self.phrase.replacingOccurrences(of: "localvoxtral", with: "LocalVoxtral"))>"],
+            "precondition: the text reached the app"
+        )
+        XCTAssertGreaterThan(effects.learnedTerms, 0)
+        XCTAssertEqual(effects.watchedSessions, ["s1"])
+        XCTAssertEqual(effects.proposalRuns, 1)
+    }
+
+    private struct CommitEffects {
+        var typed: [String]
+        var learnedTerms: Int
+        var watchedSessions: [String]
+        var proposalRuns: Int
+    }
+
+    /// One polished Overlay Buffer dictation joined to a session, through the
+    /// real overlay coordinator, then what its commit taught.
+    private func dictateJoinedPolishedCommit(secureInput: Bool) async throws -> CommitEffects {
+        var typed: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: FakePolishingService { "<\($0.inputText)>" },
+            earlyPolish: false, overlayCoordinator: overlay
+        )
+        let viewModel = pipeline.viewModel
+        viewModel.settings.repoVocabularyEnabled = true
+        viewModel.settings.projectTermProposalsEnabled = true
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            outcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])],
+                isFallbackOnly: false
+            )
+        )
+        let store = LearnedTermStore(fileURL: nil)
+        viewModel.learnedTermStore = store
+        let correctionLearning = CorrectionLearning(store: store, knownTerms: { [] })
+        viewModel.session.correctionLearning = correctionLearning
+        let runner = RecordingProjectTermRunner()
+        viewModel.session.projectTermProposer = ProjectTermProposer(
+            store: store, runner: runner, now: { Date(timeIntervalSince1970: 0) },
+            trackedFiles: { _ in ["README.md"] }
+        )
+        TerminalTargetDetector.debugSecureEventInputOverride = { secureInput }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline)
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: "/nonexistent-1872/acme", origin: origin)
+        viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline,
+            finalStatus: secureInput ? DictationViewModel.StatusStrings.overlayCopiedToClipboard
+                : DictationViewModel.StatusStrings.ready
+        )
+        await viewModel.session.projectTermProposalTask?.value
+        store.waitForPendingWrites()
+
+        return CommitEffects(
+            typed: typed,
+            learnedTerms: store.snapshot().termCount,
+            watchedSessions: correctionLearning.pending.keys.sorted(),
+            proposalRuns: runner.all.count
+        )
     }
 
     /// A new microphone restarts the dictation while the stopped text still
@@ -695,6 +878,51 @@ final class DictationPipelineTests: XCTestCase {
 
         await stopAndFinalize(pipeline)
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
+    }
+
+    /// With History off, a dictation whose polish a quick capture interrupts
+    /// goes on the clipboard: Copy last dictation alone would lose it to the
+    /// capture (#1871).
+    func testWithHistoryOffAPolishTheQuickCaptureKeyInterruptsGoesOnTheClipboard() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        var warnings = 0
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline) { $0.session.toggleQuickCapture() }
+        XCTAssertEqual(copied.values, [Self.phrase], "the interrupted dictation is on the clipboard")
+        XCTAssertEqual(warnings, 1, "the capture's start replaces the notice, so a sound says it (#1887)")
+        await polish.releaseHeldRequest()
+
+        pipeline.viewModel.session.toggleQuickCapture()
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await pipeline.server.awaitFrame("the capture's final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": "a note for later"])
+        let filed = await pipeline.records.waitForCount(2)
+        XCTAssertTrue(filed, "the capture was never filed")
+
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded).first, false)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reached the focused app")
+        XCTAssertEqual(copied.values, [Self.phrase], "the capture leaves the clipboard alone")
+        XCTAssertEqual(warnings, 1, "the capture's own stop copies nothing")
+        XCTAssertEqual(
+            pipeline.viewModel.session.lastDictation?.textToCopy, "a note for later",
+            "Copy last dictation still copies the newest dictation")
     }
 
     /// Quit while the stopped dictation waits on its polish: it reaches the
@@ -1541,6 +1769,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.dictationHistoryRetention = .off
         pipeline.viewModel.settings.autoCopyEnabled = false
         let copied = pipeline.viewModel.recordPasteboardWrites()
+        var warnings = 0
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
@@ -1552,6 +1784,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["run the tests."])
         XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
         XCTAssertEqual(copied.values, ["run the tests."])
+        XCTAssertEqual(warnings, 1, "the popover shows this notice as an error pointing at the Console (#1887)")
 
         // The next dictation goes in by keys: the mod is gone.
         pipeline.viewModel.context.claudeModChannels = nil
@@ -1589,6 +1822,189 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["run the tests"])
         XCTAssertEqual(returns, [], "no Return key")
         XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// "Send it" said alone, with words already in the prompt box: the mod
+    /// is asked to submit the box as it stands, with one empty-text send,
+    /// and no key is posted (#1870). Against the real overlay coordinator,
+    /// which commits nothing for an empty buffer.
+    func testALoneSpokenSendThroughTheModSubmitsTheDraftInTheBox() async throws {
+        let overlay = realOverlayCoordinator(focusedPID: 4343)
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.sent], drafts: [(text: "run the tests", cursor: 13)],
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: overlay
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        // Nothing is left to save once the phrase is cut, so no record.
+        await dictateCommand(pipeline, "Send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done, "the mod was asked to submit")
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(fills.texts, [""])
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// Review of #1877: the lone send submitted the box, but the landing of
+    /// the commit before it stayed, so the next dictation into the emptied
+    /// box started with a space until the session's submit count moved, and
+    /// `/compact` became text (#802).
+    func testAfterALoneSpokenSendTheNextFillTakesNoLeadingSpace() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(
+            answers: [.fill, .sent, .fill],
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        pipeline.server.forgetFrames()
+        await dictateCommand(pipeline, "send it")
+        _ = await settled.wait(for: 2)
+        await dictate(pipeline, "/compact")
+        let all = await settled.wait(for: 3)
+
+        XCTAssertTrue(all)
+        XCTAssertEqual(fills.kinds, [.fill, .send, .fill])
+        XCTAssertEqual(fills.texts, ["run the tests.", "", "/compact"])
+    }
+
+    /// The mod refused the lone send (a dialog): nothing is typed, and
+    /// Return submits the box, once, since the session's pane is in front.
+    func testALoneSpokenSendTheModRefusesIsReturnedOnceWithNothingTyped() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse],
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictateCommand(pipeline, "send it")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(returns, [4343])
+        XCTAssertEqual(copied.values, [], "the clipboard is left alone")
+    }
+
+    /// The mod refused the lone send while another tab of the terminal was
+    /// in front: no key goes anywhere, the box still holds the fill before
+    /// it, and the next dictation continues that prompt with a space
+    /// (review of #1877).
+    func testALoneSpokenSendRefusedWithThePaneAwayPressesNothingAndTheNextFillContinues() async throws {
+        let focus = FocusedPane("/dev/ttys042")
+        let answered = EventCount()
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.fill, .refuse, .fill],
+            focus: focus,
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343),
+            beforeAnswer: {
+                // The user is in another tab when the mod answers the send.
+                answered.increment()
+                if answered.value == 2 { focus.tty = "/dev/ttys099" }
+            }
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        pipeline.server.forgetFrames()
+        await dictateCommand(pipeline, "send it")
+        _ = await settled.wait(for: 2)
+        focus.tty = "/dev/ttys042"
+        await dictate(pipeline, "and lint.")
+        let all = await settled.wait(for: 3)
+
+        XCTAssertTrue(all)
+        XCTAssertEqual(fills.kinds, [.fill, .send, .fill])
+        XCTAssertEqual(fills.texts, ["run the tests.", "", " and lint."])
+        XCTAssertEqual(returns, [], "no Return into the other tab")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// The mod never answered the lone send: it may have submitted, so no
+    /// Return follows, and nothing is typed (#1870).
+    func testALoneSpokenSendTheModNeverAnswersPressesNothing() async throws {
+        let answered = BoundedWait()
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.silent],
+            answerGate: answered,
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictateCommand(pipeline, "send it")
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(settled.outcomes, [false])
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(returns, [], "no Return after a send that may have submitted")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    private func realOverlayCoordinator(focusedPID: pid_t) -> OverlayBufferSessionCoordinator {
+        let focus = MockOverlayAnchorResolver()
+        focus.focusedPID = focusedPID
+        return OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: focus,
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
     }
 
     /// The session is mid-turn: the mod's submit waits for it, and the
@@ -2216,9 +2632,10 @@ final class DictationPipelineTests: XCTestCase {
         drafts: [(text: String, cursor: Int)] = [],
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
         remote: Bool = false,
+        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, overlayCoordinator: overlayCoordinator)
         pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
@@ -3194,6 +3611,58 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "the late text is typed nowhere")
     }
 
+    /// An Overlay Buffer commit the relay refuses while its dictation is
+    /// still the current one: the relay says keys reach the same prompt, so
+    /// the text is typed instead.
+    func testAnOverlayCommitTheRelayRefusesIsTypedInstead() async throws {
+        // The answer waits for the test, so it arrives after the stop settled.
+        let release = BoundedWait()
+        let route = ScriptedPromptRoute { _ in
+            _ = await release.value(failAfter: 10)
+            return .typeInstead
+        }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        let typed = recordTypedText(pipeline)
+
+        var sink: AgentPromptSink?
+        await dictate(pipeline, "Refused.") {
+            armPromptRoute(pipeline, route)
+            sink = pipeline.viewModel.textInsertion.promptRelaySink
+        }
+        release.resolve()
+        await sink?.waitUntilIdle()
+
+        XCTAssertEqual(route.calls, [.append("Refused.")])
+        XCTAssertEqual(typed.text, "Refused.")
+    }
+
+    /// One the relay cannot tell landed is kept (on the clipboard, History
+    /// being off) and typed nowhere: typing it could put it in twice.
+    func testAnOverlayCommitTheRelayMayHaveLandedIsKeptNotTyped() async throws {
+        let release = BoundedWait()
+        let route = ScriptedPromptRoute { _ in
+            _ = await release.value(failAfter: 10)
+            return .keepInHistory
+        }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copiedOnce = BoundedWait()
+        let copied = pipeline.viewModel.recordPasteboardWrites { copiedOnce.resolve() }
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "Maybe landed.") { armPromptRoute(pipeline, route) }
+        release.resolve()
+        let kept = await copiedOnce.value(failAfter: 10)
+
+        XCTAssertTrue(kept, "the text is kept")
+        XCTAssertEqual(route.calls, [.append("Maybe landed.")])
+        XCTAssertEqual(copied.values, ["Maybe landed."])
+        XCTAssertEqual(typed.text, "")
+    }
+
     /// An Overlay Buffer commit's own relay fallback: dictation 1's append
     /// is refused after dictation 2 started. The text is kept (on the
     /// clipboard, History being off) and typed nowhere (#1657).
@@ -4019,6 +4488,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.dictationHistoryRetention = .off
         pipeline.viewModel.settings.autoCopyEnabled = false
         let copied = pipeline.viewModel.recordPasteboardWrites()
+        var warnings = 0
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         joinCmuxSurface(pipeline, cmux: cmux)
         let typed = recordTypedText(pipeline)
 
@@ -4030,6 +4503,7 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.viewModel.textInsertion.promptRelaySink?.waitUntilIdle()
         await stopAndFinalize(pipeline, expectedError: DictationViewModel.StatusStrings.overlayCopiedToClipboard)
         XCTAssertEqual(copied.values.last, Self.phrase, "both appends, not the last one alone")
+        XCTAssertEqual(warnings, 1, "one sound for the dictation, though each append copied (#1887)")
         let copiesAfterFirst = copied.values.count
 
         // The next dictation goes to a plain terminal, by keys.
@@ -4999,6 +5473,43 @@ final class DictationPipelineTests: XCTestCase {
             }
         }
         return events
+    }
+
+    // MARK: - A server that goes quiet mid-dictation (#1866)
+
+    /// The server stops answering while the dictation's audio still goes
+    /// out over the real socket: the realtime client logs it once, the
+    /// dictation goes on, and the next event logs the silence's end.
+    func testAServerThatGoesQuietWhileDictatingIsLoggedOnceAndItsEnd() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let client = pipeline.viewModel.session.realtimeAPIClient
+        await startAndSpeak(pipeline)
+
+        // Seven seconds of speech, one second per send, and nothing back.
+        for seed in UInt8(10)..<17 {
+            let spoken = Self.speech(seed: seed)
+            XCTAssertTrue(pipeline.microphone.deliver(spoken))
+            pipeline.clock.advance(by: 1)
+            await pipeline.server.awaitFrame("audio \(seed)") { $0.audio == spoken }
+            await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+        }
+        let silent = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(silent.count, 1, "\(silent)")
+        XCTAssertTrue(
+            silent.first?.hasPrefix("realtime server silent: no server event for ") ?? false, "\(silent)")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a log line, not a stop")
+        XCTAssertNil(pipeline.viewModel.lastError)
+
+        // The receive loop handles the partials before the stop's final, so
+        // once the dictation is recorded their resume line is in.
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        let log = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(log.count, 2, "\(log)")
+        XCTAssertTrue(log.last?.hasPrefix("realtime server resumed after ") ?? false, "\(log)")
+        XCTAssertTrue(log.last?.hasSuffix("s of silence (transcription.delta)") ?? false, "\(log)")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
     }
 
     // MARK: - The two halves every scenario shares

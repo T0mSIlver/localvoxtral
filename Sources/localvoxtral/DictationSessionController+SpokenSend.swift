@@ -110,7 +110,8 @@ extension DictationSessionController {
     /// queues behind its append, and is dropped if that append fails.
     func sendOverlaySpokenSendIfNeeded(
         _ spokenSend: OverlaySpokenSend?,
-        commit: StopCommitCoordinator.CommitResult
+        commit: StopCommitCoordinator.CommitResult,
+        mod: ModChannelOverlayCommitter?
     ) {
         guard let spokenSend else { return }
         guard commit.outcome == .succeeded else {
@@ -119,14 +120,20 @@ extension DictationSessionController {
         }
         switch spokenSend {
         case .returnKey(let pid):
-            _ = pressSpokenSendReturn(pid: pid)
+            // The box is submitted: the next fill starts a fresh prompt.
+            if pressSpokenSendReturn(pid: pid) { lastOverlayCommitLanding = nil }
         case .promptRelaySubmit:
             textInsertion.promptRelaySink?.submit()
+            lastOverlayCommitLanding = nil
             Log.dictation.notice("spoken send: submit handed to the prompt relay")
         case .modSubmit:
             // The mod's committer submits, or presses Return itself after a
-            // refusal it typed.
-            break
+            // refusal it typed. A lone send phrase left no text, so the
+            // commit never reached it: one empty send submits the box as it
+            // stands (#1870).
+            guard let mod, !mod.handedOff else { break }
+            Log.dictation.notice("spoken send: nothing to fill; the session's mod submits the prompt box")
+            handOffOverlayCommit("", to: mod, preferredAppPID: nil)
         }
     }
 

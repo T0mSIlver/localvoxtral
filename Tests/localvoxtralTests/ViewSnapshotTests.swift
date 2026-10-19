@@ -353,6 +353,28 @@ final class ViewSnapshotTests: XCTestCase {
             width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
     }
 
+    /// A dictation that went to the clipboard instead of the app, listed under
+    /// the Not inserted filter with its label (#1872). Made-up words.
+    func testHistoryNotInsertedRow() async throws {
+        let (settings, viewModel) = makeViewModel()
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        let dictation = DictationSessionRecord(
+            startedAt: Date().addingTimeInterval(-120), finishedAt: Date().addingTimeInterval(-110),
+            rawText: "open the quarterly notes and add the new heading",
+            polishedText: nil, polishingDurationSeconds: nil, provider: "mistral", model: "voxtral",
+            outputMode: "overlay_buffer", targetAppBundleID: "com.mitchellh.ghostty", status: .completed,
+            commitSucceeded: false, polishProfile: PolishPromptProfile.agent.rawValue)
+        await store.save(dictation).value
+        viewModel.sessionStore = store
+        let model = DictationHistoryModel(store: { store })
+        model.filter = .notInserted
+        await model.reload()
+        try record(
+            HistorySettingsPane(settings: settings, viewModel: viewModel, model: model),
+            name: "settings-history-not-inserted",
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+    }
+
     private func projectsLearnedTerms() -> LearnedTerms {
         let now = Date()
         func term(_ spelling: String, _ dictations: Int, sources: [String] = ["repo"], pinned: Bool? = nil) -> LearnedTerm {
@@ -468,6 +490,10 @@ final class ViewSnapshotTests: XCTestCase {
             ("finalizing", {
                 $0.isFinalizingStop = true
                 $0.statusText = DictationViewModel.StatusStrings.polishing
+            }),
+            // The mic sent no audio, so the app stopped the dictation (#1865).
+            ("silent-mic-stopped", {
+                $0.statusText = DictationViewModel.StatusStrings.microphoneSentNoAudio
             }),
             ("connection-refused", {
                 $0.statusText = "Connection refused."
@@ -624,6 +650,14 @@ final class ViewSnapshotTests: XCTestCase {
             ("finalizing", DictationOverlayView(
                 phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics)),
+            // The stop's second pass missed its deadline (#1867); the header
+            // keeps saying so while polish runs.
+            ("second-pass-missed", DictationOverlayView(
+                phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, secondPassMissed: true)),
+            ("second-pass-missed-polishing", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, secondPassMissed: true, motion: .frozen)),
             ("polishing", DictationOverlayView(
                 phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, polishing: true, motion: .frozen)),

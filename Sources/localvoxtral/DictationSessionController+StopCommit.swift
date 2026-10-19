@@ -335,12 +335,14 @@ extension DictationSessionController {
                 )
             }
             let addressedText = transcript.currentDictationEventText
+            let generation = sessionStartGeneration
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self,
                       let addressed = await self.commitOverlayAddressed(to: addressedTo),
                       self.claimAddressedCommitSave(addressed)
                 else { return }
-                self.finishAddressedCommit(addressed, text: addressedText, sessionMode: sessionMode)
+                self.finishAddressedCommit(
+                    addressed, text: addressedText, generation: generation, sessionMode: sessionMode)
                 self.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
                     rawText: originalText,
@@ -439,9 +441,10 @@ extension DictationSessionController {
         let llmConfigurationFailure = preparation.configurationFailure
         let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
         let commitSpokenSend = spokenSendForCommit(spokenSend, join: commitJoin)
+        let mod = overlayCommitMod(join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend)
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend),
+            into: overlayCommitDestination(join: commitJoin, targetPID: commitTargetPID, mod: mod),
             autoCopyEnabled: settings.autoCopyEnabled
         )
         noteOverlayCommit(
@@ -457,7 +460,7 @@ extension DictationSessionController {
             )
             proposeProjectTermsIfNew(join: commitJoin, inserted: displayWorkingText)
         }
-        sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
+        sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit, mod: mod)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -613,11 +616,14 @@ extension DictationSessionController {
         let insertedText = self.transcript.currentDictationEventText
         let overlayCommit: StopCommitCoordinator.CommitResult
         if let addressedTo {
+            // Taken before the commit awaits: a new dictation may start then.
+            let generation = sessionStartGeneration
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo),
                   self.claimAddressedCommitSave(addressed)
             else { return }
-            self.finishAddressedCommit(addressed, text: insertedText, sessionMode: sessionMode)
+            self.finishAddressedCommit(
+                addressed, text: insertedText, generation: generation, sessionMode: sessionMode)
             if addressed.inserted {
                 self.recordLearnedTerms(of: outcome)
             }
@@ -677,10 +683,13 @@ extension DictationSessionController {
         self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
         let commitSpokenSend = self.spokenSendForCommit(spokenSend, join: capture.claudeJoin)
+        let mod = self.overlayCommitMod(
+            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend
+        )
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.overlayCommitter(
-                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend,
+            into: self.overlayCommitDestination(
+                join: capture.claudeJoin, targetPID: commitTargetPID, mod: mod,
                 draft: outcome.material.promptDraft
             ),
             autoCopyEnabled: self.settings.autoCopyEnabled
@@ -702,7 +711,7 @@ extension DictationSessionController {
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
-        self.sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
+        self.sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit, mod: mod)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -937,13 +946,14 @@ extension DictationSessionController {
         case .copiedToClipboard?:
             statusText = StatusStrings.overlayCopiedToClipboard
         default:
-            statusText = "Ready"
+            statusText = stoppedOnItsOwnStatus ?? "Ready"
             if realtimeErrorDuringStop {
                 statusText = StatusStrings.dictationEndMayBeMissing
                 lastError = StatusStrings.dictationEndMayBeMissing
             }
         }
         realtimeErrorDuringStop = false
+        stoppedOnItsOwnStatus = nil
         sessionBackendSendsFinals = false
 
         textInsertion.stopInsertionRetryTask()
@@ -980,7 +990,9 @@ extension DictationSessionController {
             default:
                 // Held from the polished text's arrival, which is also the
                 // insertion's, so a longer hold never delays the text.
-                dismissVisibility = overlayBufferCoordinator.showsPolishChange
+                dismissVisibility = overlayBufferCoordinator.showsSecondPassMiss
+                    ? TimingConstants.overlaySecondPassMissVisibility
+                    : overlayBufferCoordinator.showsPolishChange
                     ? TimingConstants.overlayPolishedVisibility
                     : TimingConstants.overlayFinalWordVisibilityMinimum
             }
@@ -1392,6 +1404,12 @@ extension DictationSessionController {
         return true
     }
 
+    /// For the log: an upload rate in Mbit/s, or why there is none.
+    nonisolated static func describeUploadRate(_ bytesPerSecond: Double?) -> String {
+        guard let bytesPerSecond else { return "not measured" }
+        return String(format: "%.1f Mbit/s", bytesPerSecond * 8 / 1_000_000)
+    }
+
     /// For the log: whether a root was found, never the path.
     static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
         switch root {
@@ -1430,7 +1448,13 @@ extension DictationSessionController {
                 joined: historyJoin
             )
         }
-        let deadline = StopSecondPass.deadline(audioSeconds: request.audioSeconds)
+        let uploadRates = secondPassUploadRates
+        let measuredRate = uploadRates.rate(for: request.endpoint)
+        let deadline = StopSecondPass.deadline(
+            audioSeconds: request.audioSeconds,
+            uploadBytes: request.wav.count,
+            measuredUploadBytesPerSecond: measuredRate
+        )
         let transcriber = dependencies.batchTranscriber
         let sleep = dependencies.clock.sleep
         let usageRecorder = secondPassUsageRecorder
@@ -1438,7 +1462,7 @@ extension DictationSessionController {
             guard let terms = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
             else { return }
             Log.backends.info(
-                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public)"
+                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public), last upload rate \(Self.describeUploadRate(measuredRate), privacy: .public)"
             )
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
                 // Here, off the main actor: the ledger appends to its file
@@ -1458,7 +1482,13 @@ extension DictationSessionController {
                     language: nil,
                     contextBias: terms.contextBias,
                     apiKey: request.apiKey,
-                    endpoint: request.endpoint
+                    endpoint: request.endpoint,
+                    onUpload: { measurement in
+                        uploadRates.record(measurement, for: request.endpoint)
+                        Log.backends.info(
+                            "second pass upload: \(measurement.bytes, privacy: .public) bytes in \(String(format: "%.2f", measurement.seconds), privacy: .public)s, rate \(Self.describeUploadRate(measurement.bytesPerSecond), privacy: .public)"
+                        )
+                    }
                 ).text
                 return MistralBatchTranscription.restoringPhrases(
                     in: text, candidates: terms.candidates)
@@ -1495,6 +1525,7 @@ extension DictationSessionController {
             Log.backends.notice("second pass answered with no text; realtime text kept")
         case .deadlinePassed:
             Log.backends.notice("second pass missed its deadline; realtime text kept")
+            overlayBufferCoordinator.markSecondPassMissed()
         case .failed(let reason):
             Log.backends.error("second pass failed; realtime text kept: \(reason, privacy: .public)")
         case .cancelled:

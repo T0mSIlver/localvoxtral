@@ -156,11 +156,17 @@ final class DictationSessionController {
         }
     }
 
-    /// Played once at session start when Secure Keyboard Entry is detected.
-    /// The popover is closed while dictating, so an audible cue is the only
-    /// immediate signal that keystrokes will be swallowed (#89). Test seam.
+    /// Played once at session start when Secure Keyboard Entry is detected:
+    /// the popover is closed while dictating, so an audible cue is the only
+    /// immediate signal that keystrokes will be swallowed (#89). Also played
+    /// once per dictation when its text goes on the clipboard and the
+    /// popover cannot say so (#1887). Test seam.
     @ObservationIgnored
-    var secureInputWarningSound: () -> Void = { NSSound(named: "Basso")?.play() }
+    var warningSound: () -> Void = { NSSound(named: "Basso")?.play() }
+
+    /// The dictations whose unseen copy already played `warningSound`.
+    @ObservationIgnored
+    var unseenCopyWarnedGenerations: Set<UInt64> = []
 
     /// Runs on every dictation start request, before any gate can refuse it.
     /// The view model points it at the prompt-cache warmup, which must see
@@ -450,6 +456,11 @@ final class DictationSessionController {
     /// final commit was to return may be lost, so the stop is not Ready.
     @ObservationIgnored
     var realtimeErrorDuringStop = false
+    /// Why the app stopped the dictation on its own (a mic that sends no
+    /// audio, an engine that stopped transcribing). The stop's end shows it
+    /// instead of Ready (#1865).
+    @ObservationIgnored
+    var stoppedOnItsOwnStatus: String?
     /// The stop sent, or will send, a final commit and waits for the
     /// backend's answer; cleared once `.transcriptionFinalized` brings it.
     /// Still set when the stop ends, it ended on the idle rule, the timeout
@@ -611,6 +622,10 @@ final class DictationSessionController {
     /// the polishing service hold the same ledger.
     @ObservationIgnored
     var secondPassUsageRecorder: (any UsageRecording)?
+    /// The upload rate each backend's last second pass measured, which
+    /// sizes the next one's deadline (#1867).
+    @ObservationIgnored
+    let secondPassUploadRates = StopSecondPass.UploadRates()
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {
@@ -904,7 +919,8 @@ final class DictationSessionController {
             return
         }
         if isFinalizingStop {
-            guard cancelPolishingForNewSessionIfNeeded() else {
+            // This start's status replaces a copy's notice at once.
+            guard cancelPolishingForNewSessionIfNeeded(warnsOfCopy: true) else {
                 statusText = StatusStrings.finalizingPreviousDictation
                 return
             }
@@ -1207,6 +1223,26 @@ final class DictationSessionController {
         lastDictationIsInHistory = isInHistory
     }
 
+    /// Runs `save`, which records a dictation as not inserted, and copies
+    /// what it recorded when History did not keep it: Copy last dictation
+    /// alone would lose it to the next dictation (#1871). A Live Auto-Paste
+    /// record holds words already typed, so only the words its stop had
+    /// not typed yet are copied (#1882).
+    ///
+    /// - Returns: whether the text went on the clipboard.
+    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+        let generation = lastDictationGeneration
+        save()
+        guard lastDictationGeneration != generation, !lastDictationIsInHistory else { return false }
+        let text = lastDictation?.outputMode == DictationOutputMode.liveAutoPaste.rawValue
+            ? drainUntypedLiveTail()
+            : lastDictation?.textToCopy ?? ""
+        guard !text.isEmpty else { return false }
+        Log.dictation.notice("text not inserted and History is off; text copied")
+        _ = copyUntypedText(text)
+        return true
+    }
+
     private func writeToPasteboard(_ text: String) {
         dependencies.pasteboardWriter(text)
     }
@@ -1261,7 +1297,7 @@ final class DictationSessionController {
             }
             // Audible regardless of which warning owns the popover line: the
             // session that just started will type nothing either way.
-            secureInputWarningSound()
+            warningSound()
             Log.target.warning(
                 "Secure Keyboard Entry is enabled at session start; synthetic keyboard events may be blocked."
             )

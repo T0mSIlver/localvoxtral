@@ -1,4 +1,6 @@
 import Foundation
+import localvoxtralTestSupport
+import Synchronization
 import XCTest
 @testable import localvoxtralCore
 
@@ -122,4 +124,28 @@ final class MistralBatchTranscriptionTests: XCTestCase {
             XCTAssertEqual($0 as? MistralBatchTranscription.Failure, .malformedResponse)
         }
     }
+
+    // MARK: - Upload measurement (#1867)
+
+    #if !canImport(FoundationNetworking)
+    /// The client reports how much of the body went out, which sizes the next
+    /// pass's deadline. Linux's Foundation sends no body progress.
+    func testTheClientMeasuresTheBodyItUploaded() async throws {
+        let server = try FakeOpencodePromptRelay()
+        addTeardownBlock { server.stop() }
+        let wav = Data(repeating: 1, count: 1_000_000)
+        let measurements = Mutex<[MistralBatchTranscription.UploadMeasurement]>([])
+
+        _ = try? await MistralBatchTranscriptionClient().transcribe(
+            wav: wav, language: nil, contextBias: [], apiKey: "k",
+            endpoint: URL(string: "http://127.0.0.1:\(server.port)/v1/audio/transcriptions")!,
+            onUpload: { measurement in measurements.withLock { $0.append(measurement) } }
+        )
+
+        let measured = measurements.withLock { $0 }
+        XCTAssertEqual(measured.count, 1)
+        XCTAssertGreaterThan(measured.first?.bytes ?? 0, Int64(wav.count), "the multipart body holds the WAV")
+        XCTAssertNotNil(measured.first?.bytesPerSecond)
+    }
+    #endif
 }

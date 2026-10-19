@@ -1,4 +1,5 @@
 import Foundation
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtral
 
@@ -63,6 +64,49 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         XCTAssertEqual(state.restartedInputs, ["usb-mic"])
     }
 
+    /// A mic that stays listed but sends no frames used to leave the dictation
+    /// "Listening..." forever after the last restart, the user talking into
+    /// nothing (#1865). It now stops once, `silentInputStopSeconds` after the
+    /// last restart, and not before.
+    func testMicThatNeverSendsAudioStopsTheDictationAfterTheLastRestart() async throws {
+        let clock = ManualSessionClock()
+        let microphone = FakeMicrophoneCaptureService()
+        try microphone.start(preferredDeviceID: nil, preferredInputChannel: 0) { _ in }
+        microphone.isSilent = true
+        let state = FakeAudioState(selected: "usb-mic", available: ["usb-mic"])
+        state.now = { clock.now }
+        let stopped = BoundedWait()
+        state.onStop = { stopped.resolve() }
+        let monitor = AudioCaptureHealthMonitor()
+        monitor.start(microphone: microphone, callbacks: state.callbacks(), clock: clock.clock)
+        addTeardownBlock { @MainActor in monitor.stop() }
+
+        await clock.waitForSleepers(1)
+        let attempts = AudioCaptureHealthMonitor.maxCaptureRecoveryAttempts
+        for _ in 0..<200 where state.restartedAt.count < attempts {
+            guard await advanceToNextTimer(clock) else { break }
+        }
+        let lastRestart = try XCTUnwrap(state.restartedAt.last)
+        XCTAssertEqual(state.restartedAt.count, attempts)
+
+        // The stop timer, the health poll and the pending evaluation.
+        await clock.waitForSleepers(3)
+        let bound = lastRestart.addingTimeInterval(AudioCaptureHealthMonitor.silentInputStopSeconds)
+        clock.advance(by: bound.timeIntervalSince(clock.now) - 0.01)
+        await clock.waitForSleepers(3)
+        XCTAssertEqual(state.stopReasons, [], "still dictating short of the bound")
+
+        clock.advance(by: 0.01)
+        let didStop = await stopped.value(failAfter: 10)
+        XCTAssertTrue(didStop)
+        XCTAssertEqual(state.stopReasons, ["silent input"])
+
+        clock.advance(by: 60)
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(state.stopReasons, ["silent input"], "the stop fires once")
+        XCTAssertEqual(state.restartedAt.count, attempts)
+    }
+
     private func makeMonitor(state: FakeAudioState) -> AudioCaptureHealthMonitor {
         let microphone = MicrophoneCaptureService()
         Self.retainedMicrophones.append(microphone)
@@ -94,6 +138,9 @@ private final class FakeAudioState {
     var available: [String]
     private(set) var stopReasons: [String] = []
     private(set) var restartedInputs: [String?] = []
+    private(set) var restartedAt: [Date] = []
+    var now: () -> Date = { .distantPast }
+    var onStop: () -> Void = {}
 
     init(selected: String, available: [String]) {
         self.selected = selected
@@ -107,7 +154,10 @@ private final class FakeAudioState {
                     selected = first
                 }
             },
-            stopDictation: { [unowned self] reason in stopReasons.append(reason) },
+            stopForSilentInput: { [unowned self] in
+                stopReasons.append("silent input")
+                onStop()
+            },
             stopForUnavailableInput: { [unowned self] in stopReasons.append("input unavailable") },
             isDictating: { [unowned self] in stopReasons.isEmpty },
             selectedInputDeviceID: { [unowned self] in selected },
@@ -116,7 +166,10 @@ private final class FakeAudioState {
             },
             setStatus: { _ in },
             setError: { _ in },
-            restartMicrophone: { [unowned self] inputID in restartedInputs.append(inputID) }
+            restartMicrophone: { [unowned self] inputID in
+                restartedInputs.append(inputID)
+                restartedAt.append(now())
+            }
         )
     }
 }

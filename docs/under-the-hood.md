@@ -161,7 +161,13 @@ The terms come from:
 If the answer comes back within 2.5 seconds plus one second per minute of
 audio, its text replaces the realtime text and polishing runs on it. When
 it left out a stretch of four or more words the realtime text had, that
-stretch is put back. A later answer leaves the realtime text as it is.
+stretch is put back. A later answer leaves the realtime text as it is, and
+the overlay's header says "Transcribing again timed out".
+
+That allowance fits an upload of about 15 Mbit/s. Each pass measures its
+upload rate, and the app keeps it in memory for that backend. When the last
+rate was slower, the next pass gets the extra upload time, plus half again
+as margin, up to 30 seconds in all.
 
 The app writes the audio to disk only if History keeps audio.
 

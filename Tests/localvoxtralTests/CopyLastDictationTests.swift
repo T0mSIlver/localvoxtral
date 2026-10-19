@@ -10,6 +10,29 @@ import XCTest
 final class CopyLastDictationTests: XCTestCase {
     // MARK: - What gets copied
 
+    /// Review of #1890: a late keep from an earlier dictation used up the
+    /// running one's warning, and warned again for its own dictation. The
+    /// sound plays once per dictation the text came from (#1887).
+    func testAnUnseenCopyWarnsOncePerDictationTheTextCameFrom() {
+        let (viewModel, written) = makeViewModel(polishing: nil)
+        viewModel.settings.dictationHistoryRetention = .off
+        var warnings = 0
+        viewModel.session.warningSound = { warnings += 1 }
+        viewModel.session.sessionStartGeneration = 5
+
+        viewModel.session.settleUndeliveredOverlayText(
+            "from four", outcome: .refused, keysReachPrompt: true, sessionID: nil, generation: 4, preferredAppPID: nil
+        )
+        XCTAssertEqual(warnings, 1, "the earlier dictation's copy")
+        _ = viewModel.session.keepUndeliveredAgentText("from five")
+        XCTAssertEqual(warnings, 2, "the running dictation's own copy still warns")
+        viewModel.session.settleUndeliveredOverlayText(
+            "more from four", outcome: .refused, keysReachPrompt: true, sessionID: nil, generation: 4, preferredAppPID: nil
+        )
+        XCTAssertEqual(warnings, 2, "the earlier dictation already warned")
+        XCTAssertEqual(written.values, ["from four", "from five", "more from four"])
+    }
+
     func testAPolishedDictationCopiesThePolishedText() async {
         let (viewModel, written) = makeViewModel(polishing: FakePolishingService(returning: "Hello world."))
 
@@ -110,9 +133,11 @@ final class CopyLastDictationTests: XCTestCase {
     /// Starting a new dictation while the last one is still polishing cancels
     /// that polish. The cancelled dictation used to reach neither the target
     /// app nor History.
-    func testANewDictationOverAPolishKeepsThePolishedOneAsNotInserted() async {
+    func testANewDictationOverAPolishKeepsThePolishedOneAsNotInserted() async throws {
         let polishing = BlockingMockLLMPolishingService()
         let (viewModel, written) = makeViewModel(polishing: polishing)
+        // History on: with it off the cancel also copies the text (#1871).
+        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         var records: [DictationSessionRecord] = []
         viewModel.dependencies.onSessionRecord = { records.append($0) }
 

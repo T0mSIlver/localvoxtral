@@ -33,18 +33,22 @@ extension DictationSessionController {
     ) -> ModChannelOverlayCommitter? {
         guard let hub = context.claudeModChannels, let sessionID = modChannelSessionID(join: join) else { return nil }
         Log.overlay.info("overlay commit: through the session's mod submits=\(submits, privacy: .public)")
-        let generation = sessionStartGeneration
         return ModChannelOverlayCommitter(
-            hub: hub,
-            sessionID: sessionID,
-            submits: submits,
-            settled: { [weak self] text, pid, outcome in
-                await self?.modChannelCommitSettled(
-                    outcome, text: text, preferredAppPID: pid, sessionID: sessionID, terminalPID: targetPID,
-                    submits: submits, generation: generation
-                )
-            }
+            hub: hub, sessionID: sessionID, terminalPID: targetPID, submits: submits, generation: sessionStartGeneration
         )
+    }
+
+    /// Hands `text` to `mod` and acts on its answer once it comes: the
+    /// commit itself ends at the hand-off.
+    func handOffOverlayCommit(_ text: String, to mod: ModChannelOverlayCommitter, preferredAppPID pid: pid_t?) {
+        mod.handedOff = true
+        Task { @MainActor [weak self] in
+            let outcome = await mod.deliver(text)
+            await self?.modChannelCommitSettled(outcome, text: text, preferredAppPID: pid, mod: mod)
+            #if DEBUG
+            ModChannelOverlayCommitter.debugFillSettled?(outcome.isDelivered)
+            #endif
+        }
     }
 
     /// The joined session whose mod takes the commit, or nil: no mod
@@ -60,33 +64,42 @@ extension DictationSessionController {
     }
 
     /// What the app does once the mod answered, or did not.
-    func modChannelCommitSettled(
-        _ outcome: ModChannelCommitOutcome,
+    private func modChannelCommitSettled(
+        _ outcome: PromptDeliveryOutcome,
         text: String,
         preferredAppPID pid: pid_t?,
-        sessionID: String,
-        terminalPID: pid_t?,
-        submits: Bool,
-        generation: UInt64
+        mod: ModChannelOverlayCommitter
     ) async {
         switch outcome {
-        case .filled, .sent:
-            break
-        case .queued:
-            lastError = ModChannelStatus.queued
-        case .filledNotSent:
-            lastError = ModChannelStatus.filledNotSent
-        case .notRestored:
-            lastError = ModChannelStatus.notRestored
-        case .refused, .unanswered:
-            let typed = await commitOverlayTextTheModDidNotFill(
-                text, preferredAppPID: pid, sessionID: sessionID, terminalPID: terminalPID,
-                mayHaveLanded: outcome == .unanswered, generation: generation
+        case .delivered(let submitted, let status):
+            // A lone send phrase's empty send submitted the box (#1870): the
+            // landing of the fill before it no longer describes the prompt.
+            if text.isEmpty, submitted {
+                forgetOverlayCommitLanding(inSession: mod.sessionID, committedBy: mod.generation)
+            }
+            if let status {
+                lastError = status
+            }
+        case .refused where text.isEmpty, .mayHaveLanded where text.isEmpty:
+            await submitTheDraftTheModDidNotSend(
+                outcome, sessionID: mod.sessionID, terminalPID: mod.terminalPID, generation: mod.generation
+            )
+        case .refused, .mayHaveLanded:
+            // A fill that surely did not land is typed only while the
+            // commit's terminal is frontmost and its focused pane still
+            // shows the session: a pid cannot tell two tabs apart, and the
+            // user may have switched since the stop.
+            let keysReach = outcome == .refused
+                ? await keysReachModSession(mod.sessionID, terminalPID: mod.terminalPID)
+                : false
+            let typed = settleUndeliveredOverlayText(
+                text, outcome: outcome, keysReachPrompt: keysReach,
+                sessionID: mod.sessionID, generation: mod.generation, preferredAppPID: pid
             )
             // The keys went in while the session's pane was in front, with
             // nothing awaited since: Return follows under the spoken send's
             // own gates.
-            guard submits, typed, let terminalPID else { return }
+            guard mod.submits, typed, let terminalPID = mod.terminalPID else { return }
             guard returnSubmitsPrompt(inPID: terminalPID) else {
                 Log.dictation.notice("spoken send: Return does not submit in the target app; no Return")
                 return
@@ -95,50 +108,32 @@ extension DictationSessionController {
         }
     }
 
-    /// The text of a fill the mod did not confirm. One that may have landed
-    /// is kept (`keepUndeliveredAgentText`) rather than going in twice. One
-    /// that surely did not is typed, but only while the commit's terminal is
-    /// frontmost and its focused pane still shows the session: a pid cannot
-    /// tell two tabs apart, and the user may have switched since the stop.
-    /// Unless keys put the text in the prompt, the next commit does not
-    /// continue it.
-    ///
-    /// - Returns: whether keys put the text in.
-    @discardableResult
-    func commitOverlayTextTheModDidNotFill(
-        _ text: String,
-        preferredAppPID pid: pid_t?,
-        sessionID: String,
-        terminalPID: pid_t?,
-        mayHaveLanded: Bool,
-        generation: UInt64
-    ) async -> Bool {
-        var inserted = false
-        if sessionStartGeneration != generation {
-            keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
-            return false
+    /// A lone send phrase the mod did not submit (#1870): there is no text
+    /// to type or keep. A refusal changed nothing in the box, so Return
+    /// submits it under the spoken send's gates, only while keys would reach
+    /// the session's prompt. An unanswered send may have submitted, so no
+    /// Return.
+    private func submitTheDraftTheModDidNotSend(
+        _ outcome: PromptDeliveryOutcome, sessionID: String, terminalPID: pid_t?, generation: UInt64
+    ) async {
+        guard outcome == .refused else {
+            Log.dictation.notice("spoken send: the mod did not answer the submit; no Return")
+            return
         }
-        if mayHaveLanded {
-            lastError = keepUndeliveredAgentText(text)
-        } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
-            // The read-back awaited: the next dictation may have started.
-            guard sessionStartGeneration == generation else {
-                keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
-                return false
-            }
-            inserted = commitOverlayTextThePromptRelayRefused(
-                text, preferredAppPID: pid, sessionID: sessionID, generation: generation
-            )
-        } else {
-            Log.overlay.notice(
-                "overlay commit: the mod did not fill and the session's pane is not in front; text kept"
-            )
-            lastError = keepUndeliveredAgentText(text)
+        guard sessionStartGeneration == generation, let terminalPID,
+              await keysReachModSession(sessionID, terminalPID: terminalPID),
+              sessionStartGeneration == generation
+        else {
+            Log.dictation.notice("spoken send: the mod refused the submit and the session's pane is not in front; no Return")
+            return
         }
-        if !inserted {
-            forgetLanding(ofSession: sessionID, generation: generation)
+        guard returnSubmitsPrompt(inPID: terminalPID) else {
+            Log.dictation.notice("spoken send: Return does not submit in the target app; no Return")
+            return
         }
-        return inserted
+        if pressSpokenSendReturn(pid: terminalPID) {
+            forgetOverlayCommitLanding(inSession: sessionID, committedBy: generation)
+        }
     }
 
     /// Whether a key typed now would reach `sessionID`'s prompt: `terminalPID`
@@ -175,83 +170,74 @@ enum ModChannelCommitOutcome: Equatable {
     case unanswered
 }
 
-/// Commits the overlay by asking the session's mod to fill its prompt box,
-/// and with `submits` to submit it (#1644). The request is handed off, not
-/// awaited. A refusal, or a request the mod never got, settles as surely
-/// not landed. A request the mod got and did not answer may still have
-/// filled the box, and settles as maybe landed (`docs/agent/invariants.md`,
-/// as for the opencode relay). Secure Keyboard Entry does not stop it,
-/// since no key is posted.
+/// One overlay commit through the session's mod: `fill` puts the text at
+/// the cursor, and with `submits` `send` submits it too (#1644). A refusal,
+/// or a request the mod never got, is surely not landed. A request the mod
+/// got and did not answer may still have filled the box
+/// (`docs/agent/invariants.md`, as for the opencode relay). Secure Keyboard
+/// Entry does not stop it, since no key is posted.
 @MainActor
-final class ModChannelOverlayCommitter: OverlayTextCommitting {
+final class ModChannelOverlayCommitter {
     private let hub: ClaudeModChannelHub
-    private let sessionID: String
-    private let submits: Bool
-    /// The text, the pid the commit named, and how it ended.
-    private let settled: @MainActor (String, pid_t?, ModChannelCommitOutcome) async -> Void
+    let sessionID: String
+    /// The terminal the commit named: where a refused text may be typed.
+    let terminalPID: pid_t?
+    let submits: Bool
+    /// The start generation of the dictation that commits: an answer that
+    /// comes after the next dictation started is judged as this one's.
+    let generation: UInt64
+    /// Whether the commit handed this committer its text. The overlay
+    /// commits nothing for an empty buffer, so a lone send phrase never does.
+    var handedOff = false
 
-    init(
-        hub: ClaudeModChannelHub,
-        sessionID: String,
-        submits: Bool = false,
-        settled: @escaping @MainActor (String, pid_t?, ModChannelCommitOutcome) async -> Void
-    ) {
+    init(hub: ClaudeModChannelHub, sessionID: String, terminalPID: pid_t?, submits: Bool, generation: UInt64) {
         self.hub = hub
         self.sessionID = sessionID
+        self.terminalPID = terminalPID
         self.submits = submits
-        self.settled = settled
+        self.generation = generation
     }
 
     #if DEBUG
-    /// Test seam: called once a fill settles, with whether the mod filled.
+    /// Test seam: called once a fill settled, with whether the mod filled.
     static var debugFillSettled: (@MainActor (Bool) -> Void)?
     #endif
 
-    var isAccessibilityTrusted: Bool { true }
-    var postsNoKeys: Bool { true }
-
-    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
-        let hub = hub
-        let sessionID = sessionID
-        let submits = submits
-        let settled = settled
-        Task { @MainActor in
-            let exchange = await hub.exchange(
-                .init(kind: submits ? .send : .fill, text: text),
-                with: sessionID,
-                timeout: DictationSessionController.modChannelFillTimeout
+    func deliver(_ text: String) async -> PromptDeliveryOutcome {
+        let exchange = await hub.exchange(
+            .init(kind: submits ? .send : .fill, text: text),
+            with: sessionID,
+            timeout: DictationSessionController.modChannelFillTimeout
+        )
+        let outcome = Self.outcome(of: exchange, submits: submits)
+        typealias Status = DictationSessionController.ModChannelStatus
+        switch outcome {
+        case .filled:
+            Log.overlay.info("overlay commit: the mod filled the prompt box")
+            return .delivered(submitted: false, status: nil)
+        case .sent:
+            Log.overlay.info("overlay commit: the mod filled and submitted the prompt")
+            return .delivered(submitted: true, status: nil)
+        case .queued:
+            Log.overlay.info("overlay commit: the mod filled the prompt; its submit waits for the running turn")
+            return .delivered(submitted: true, status: Status.queued)
+        case .filledNotSent:
+            Log.overlay.notice(
+                "overlay commit: the mod filled but did not submit (\(exchange.reply?.reason ?? "no reason", privacy: .public))"
             )
-            let outcome = Self.outcome(of: exchange, submits: submits)
-            switch outcome {
-            case .filled:
-                Log.overlay.info("overlay commit: the mod filled the prompt box")
-            case .sent:
-                Log.overlay.info("overlay commit: the mod filled and submitted the prompt")
-            case .queued:
-                Log.overlay.info("overlay commit: the mod filled the prompt; its submit waits for the running turn")
-            case .filledNotSent:
-                Log.overlay.notice(
-                    "overlay commit: the mod filled but did not submit (\(exchange.reply?.reason ?? "no reason", privacy: .public))"
-                )
-            case .notRestored:
-                Log.overlay.notice("overlay commit: the mod's submit was dropped and the box did not take the text back")
-            case .refused:
-                Log.overlay.notice(
-                    "overlay commit: the mod did not fill (\(exchange.reply?.reason ?? "not delivered", privacy: .public)); keyboard instead"
-                )
-            case .unanswered:
-                Log.overlay.error("overlay commit: the mod did not answer; text kept")
-            }
-            await settled(text, preferredAppPID, outcome)
-            #if DEBUG
-            ModChannelOverlayCommitter.debugFillSettled?([.filled, .sent, .queued, .filledNotSent, .notRestored].contains(outcome))
-            #endif
+            return .delivered(submitted: false, status: Status.filledNotSent)
+        case .notRestored:
+            Log.overlay.notice("overlay commit: the mod's submit was dropped and the box did not take the text back")
+            return .delivered(submitted: false, status: Status.notRestored)
+        case .refused:
+            Log.overlay.notice(
+                "overlay commit: the mod did not fill (\(exchange.reply?.reason ?? "not delivered", privacy: .public)); keyboard instead"
+            )
+            return .refused
+        case .unanswered:
+            Log.overlay.error("overlay commit: the mod did not answer; text kept")
+            return .mayHaveLanded
         }
-        return .insertedByAccessibility
-    }
-
-    func pasteUsingCommandV(_: String, preferredAppPID _: pid_t?) -> Bool {
-        false
     }
 
     static func outcome(of exchange: ClaudeModChannelHub.Exchange, submits: Bool) -> ModChannelCommitOutcome {

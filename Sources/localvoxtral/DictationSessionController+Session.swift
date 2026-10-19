@@ -13,17 +13,23 @@ extension DictationSessionController {
     //   error paths in prepareDictationSession() where no session was established.
     // All session exit paths MUST clear these fields to nil.
 
+    /// - Parameter warnsOfCopy: the caller replaces the status line at once,
+    ///   so a copy of the cancelled dictation plays the warning sound instead
+    ///   of showing its notice (#1887).
     @discardableResult
-    func cancelPolishingForNewSessionIfNeeded() -> Bool {
+    func cancelPolishingForNewSessionIfNeeded(warnsOfCopy: Bool = false) -> Bool {
         guard polishAndCommitTask != nil else { return false }
         debugLog("cancel the pending commit: a new dictation or a cancel supersedes it")
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         // Before the cleanup below clears it: the dictation being polished
-        // is not inserted, and History is where the user finds it again.
+        // is not inserted, and History is where the user finds it again, or
+        // the clipboard with History off.
+        var copied = false
         if let saveInterruptedPolishCommit {
             Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
-            saveInterruptedPolishCommit()
+            copied = keepUntypedDictation(savedBy: saveInterruptedPolishCommit)
+            if copied, warnsOfCopy { warnOfAnUnseenCopy(of: sessionStartGeneration) }
         }
 
         completeStoppedSessionCleanup(
@@ -31,6 +37,7 @@ extension DictationSessionController {
             overlayCommitOutcome: nil,
             shouldCommitOverlay: false
         )
+        if copied { statusText = StatusStrings.overlayCopiedToClipboard }
         // Do not carry old overlay state into a freshly requested session.
         overlayBufferCoordinator.reset()
         return true
@@ -735,8 +742,8 @@ extension DictationSessionController {
             refreshMicrophoneInputs: { [weak self] in
                 self?.refreshMicrophoneInputs()
             },
-            stopDictation: { [weak self] reason in
-                self?.stopDictation(reason: reason)
+            stopForSilentInput: { [weak self] in
+                self?.stopDictationForSilentMicrophone()
             },
             stopForUnavailableInput: { [weak self] in
                 self?.stopDictationForUnavailableMicrophone()
@@ -924,6 +931,32 @@ extension DictationSessionController {
         )
         stopDictation(reason: "selected input unavailable")
         lastError = Self.microphoneDisconnectedMessage
+        holdFailureIndicatorUntilStopCompletes = isFinalizingStop
+        markRecentConnectionFailureIndicator()
+    }
+
+    /// The mic still sends no frames `silentInputStopSeconds` after the
+    /// monitor's last restart: stop and commit what exists rather than keep
+    /// recording into nothing (#1865).
+    func stopDictationForSilentMicrophone() {
+        guard isDictating else { return }
+        Log.backends.error(
+            "microphone sent no audio \(Int(AudioCaptureHealthMonitor.silentInputStopSeconds), privacy: .public)s after its last restart; stopping the dictation and committing its text"
+        )
+        // The status line now says why; the monitor's "yet" error would
+        // otherwise stay under it until the next dictation.
+        if lastError == AudioCaptureHealthMonitor.noAudioFramesYetMessage {
+            lastError = nil
+        }
+        stopOnItsOwn(reason: "microphone sent no audio", status: StatusStrings.microphoneSentNoAudio)
+    }
+
+    /// A stop the app decided, not the user: the text so far commits as on
+    /// any stop, the icon stays red through the finalization, and the stop
+    /// ends on `status` instead of Ready.
+    func stopOnItsOwn(reason: String, status: String) {
+        stoppedOnItsOwnStatus = status
+        stopDictation(reason: reason)
         holdFailureIndicatorUntilStopCompletes = isFinalizingStop
         markRecentConnectionFailureIndicator()
     }
