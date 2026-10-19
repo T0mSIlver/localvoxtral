@@ -564,7 +564,7 @@ extension DictationSessionController {
         polishAndCommitTask = nil
         // A go-to of the last Live dictation must not focus a pane, or end a
         // prompt relay, in this one.
-        resetLiveGoToForSession()
+        resetLiveSpokenCommandsForSession()
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()

@@ -315,7 +315,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
 
         XCTAssertFalse(harness.viewModel.session.isCompletingStoppedSession)
         XCTAssertFalse(harness.viewModel.isFinalizingStop)
-        XCTAssertNil(harness.viewModel.session.liveGoToTask)
+        XCTAssertNil(harness.viewModel.session.spokenCommandGate.action)
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "History keeps it as not inserted")
     }
 
@@ -675,7 +675,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         /// Every go-to started, and the ones the queue behind it started.
         @MainActor
         func settle() async {
-            while let task = viewModel.session.liveGoToTask {
+            while let task = viewModel.session.spokenCommandGate.action {
                 await task.value
             }
             viewModel.textInsertion.flushFinalLiveReplacementCorrections()

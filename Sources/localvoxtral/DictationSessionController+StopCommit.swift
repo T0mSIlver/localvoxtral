@@ -70,7 +70,7 @@ extension DictationSessionController {
         // A cancel drops the segments that ended behind a go-to: they are
         // words the user threw away. The go-to itself still lands (#1251).
         if wasCancelled {
-            liveGoToQueuedSegments = []
+            _ = spokenCommandGate.takeQueue()
         }
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
@@ -865,7 +865,7 @@ extension DictationSessionController {
 
     func configureLiveAutoPasteReplacementCorrectorForSession() {
         resetLiveSpokenSendForSession()
-        resetLiveGoToForSession()
+        resetLiveSpokenCommandsForSession()
         // The verdict below is taken once; focus can reach a terminal later.
         textInsertion.setLiveLateTerminalProbe(
             isLiveAutoPasteModeEnabled && !sessionTargetIsTerminalLike
@@ -922,8 +922,7 @@ extension DictationSessionController {
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
         saveInterruptedPolishCommit = nil
-        liveSpokenSendSegmentMode = .undecided
-        resetLiveGoToForSession()
+        resetLiveSpokenCommandsForSession()
         // Every stop funnels through here. The commit path has already
         // consumed the capture by now (it reconciles synchronously, before
         // spawning the polish Task), so this is a no-op there — it exists to

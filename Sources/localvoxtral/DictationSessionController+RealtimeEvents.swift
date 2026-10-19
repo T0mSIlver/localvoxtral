@@ -168,17 +168,8 @@ extension DictationSessionController {
 
         transcript.appendPartial(processedDelta)
         noteTranscriptTextForSilenceAutoStop()
-        if isLiveAutoPasteModeEnabled, liveGoToHoldsPartial(processedDelta) {
-            // Held while it may still read "go to" (#747).
-        } else if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
-            // Typed at the final, once it is known whether it ends in the
-            // trigger: typed text cannot be taken back.
-        } else if isLiveAutoPasteModeEnabled {
-            textInsertion.enqueueRealtimeInsertion(processedDelta)
-            noteLiveTextTyped(processedDelta)
-            if let accessibilityError = textInsertion.lastAccessibilityError {
-                lastError = accessibilityError
-            }
+        if isLiveAutoPasteModeEnabled {
+            gateLivePartial(processedDelta)
         }
         statusText = isFinalizingStop ? StatusStrings.finalizing : "Transcribing..."
         refreshOverlayBufferSession()
@@ -206,30 +197,8 @@ extension DictationSessionController {
             earlyPolishRun?.settledTextChanged(transcript.currentDictationEventText)
         }
 
-        if isLiveAutoPasteModeEnabled,
-           liveGoToHandlesFinal(
-               processedText,
-               merged: finalized.text,
-               startsMidWord: finalized.startsMidWord
-           )
-        {
-            // A go-to, or a segment the go-to hold-back kept: delivered there.
-        } else if isLiveAutoPasteModeEnabled, liveSpokenSendWithholdsSegment() {
-            // No partial of this segment was typed, so the whole segment is.
-            deliverLiveSpokenSendFinal(
-                processedText,
-                merged: finalized.text,
-                startsMidWord: finalized.startsMidWord
-            )
-        } else if isLiveAutoPasteModeEnabled {
-            liveSpokenSendSegmentMode = .undecided
-            if let liveInsertion = finalized.liveInsertion {
-                textInsertion.enqueueRealtimeInsertion(liveInsertion)
-                noteLiveTextTyped(liveInsertion)
-            }
-            if let accessibilityError = textInsertion.lastAccessibilityError {
-                lastError = accessibilityError
-            }
+        if isLiveAutoPasteModeEnabled {
+            gateLiveFinal(processedText, finalized: finalized)
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
@@ -338,12 +307,8 @@ extension DictationSessionController {
             keepingOverlayMerge: isOverlayBufferModeEnabled
         ) else { return nil }
 
-        // Withheld partials are typed nowhere else: a promotion (stop,
-        // dropped socket) stands in for the final they never got.
-        if isLiveAutoPasteModeEnabled,
-           !liveGoToHandlesPromotion(pendingSegment, startsMidWord: startsMidWord)
-        {
-            deliverPromotedLiveSpokenSendSegment(pendingSegment, startsMidWord: startsMidWord)
+        if isLiveAutoPasteModeEnabled {
+            gateLivePromotion(pendingSegment, startsMidWord: startsMidWord)
         }
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
