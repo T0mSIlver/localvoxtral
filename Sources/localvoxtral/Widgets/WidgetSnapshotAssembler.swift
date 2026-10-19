@@ -28,6 +28,7 @@ enum WidgetSnapshotAssembler {
         case .managedLocal: return .managedLocal
         case .mistralAPI: return .mistralAPI
         case .externalURL: return .externalURL
+        case .anthropicAPI: return .anthropicAPI
         }
     }
 

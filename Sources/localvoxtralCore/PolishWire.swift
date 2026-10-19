@@ -99,10 +99,29 @@ package enum MistralReasoningEffort: String, Sendable {
 /// Wire constants for Anthropic's Messages API.
 package enum AnthropicPolishDefaults {
     package static let host = "api.anthropic.com"
+    package static let endpoint = URL(string: "https://api.anthropic.com")!
+    /// Anthropic API mode's default: fast enough to polish on stop.
+    package static let model = "claude-haiku-5-5"
+    /// The models the Anthropic API mode's picker offers, fastest first.
+    package static let models: [AnthropicPolishModel] = [
+        AnthropicPolishModel(id: "claude-haiku-5-5", name: "Claude Haiku 5.5"),
+        AnthropicPolishModel(id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5"),
+    ]
     package static let apiVersion = "2023-06-01"
     /// Required by the API. Covers the reply plus whatever the model thinks
     /// at low effort; a polish is about as long as its dictation.
     package static let maxTokens = 16000
+}
+
+/// A model the Anthropic API mode's picker offers.
+package struct AnthropicPolishModel: Sendable, Hashable, Identifiable {
+    package let id: String
+    package let name: String
+
+    package init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
 }
 
 /// One polishing server and every setting that changes the bytes sent to it.

@@ -51,6 +51,7 @@ package struct WidgetSnapshot: Codable, Equatable, Sendable {
         case managedLocal
         case mistralAPI
         case externalURL
+        case anthropicAPI
     }
 
     package enum EngineState: Codable, Equatable, Sendable {

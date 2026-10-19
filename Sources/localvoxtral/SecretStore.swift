@@ -17,6 +17,8 @@ enum SecretKey: String, CaseIterable, Sendable {
     case llmPolishingAPIKey
     /// The one Mistral account key, shared by both Mistral engines.
     case mistralAPIKey
+    /// Anthropic API mode's polishing key.
+    case anthropicAPIKey
     /// Jev's key, TypeSafe's or Vercel AI Gateway's, for quick capture
     /// routing (#725).
     case jevAPIKey

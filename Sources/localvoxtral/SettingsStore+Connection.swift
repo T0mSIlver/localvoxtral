@@ -30,7 +30,32 @@ extension SettingsStore {
             return apiKey.trimmed
         case .mistralAPI:
             return trimmedMistralAPIKey
+        case .anthropicAPI:
+            return ""
         }
+    }
+
+    // MARK: - Anthropic API
+
+    var trimmedAnthropicAPIKey: String { anthropicAPIKey.trimmed }
+
+    var resolvedAnthropicPolishingModel: String {
+        let model = anthropicPolishingModel.trimmed
+        return model.isEmpty ? AnthropicPolishDefaults.model : model
+    }
+
+    /// The picker's rows: the offered models, plus a stored one this build
+    /// does not list, so the picker never shows a blank selection.
+    var anthropicPolishingModelEntries: [AnthropicPolishModel] {
+        let offered = AnthropicPolishDefaults.models
+        let current = resolvedAnthropicPolishingModel
+        return offered.contains { $0.id == current }
+            ? offered : offered + [AnthropicPolishModel(id: current, name: current)]
+    }
+
+    var anthropicPolishingModelSelection: String {
+        get { resolvedAnthropicPolishingModel }
+        set { anthropicPolishingModel = newValue }
     }
 
     // MARK: - Mistral API

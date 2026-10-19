@@ -106,7 +106,7 @@ final class SecretStoreTests: XCTestCase {
     func testSecretKeyAccountNamesAreStable() {
         XCTAssertEqual(
             SecretKey.allCases.map(\.rawValue),
-            ["realtimeAPIKey", "llmPolishingAPIKey", "mistralAPIKey", "jevAPIKey"]
+            ["realtimeAPIKey", "llmPolishingAPIKey", "mistralAPIKey", "anthropicAPIKey", "jevAPIKey"]
         )
         XCTAssertEqual(KeychainSecretStore.defaultService, "com.localvoxtral.api-keys")
     }

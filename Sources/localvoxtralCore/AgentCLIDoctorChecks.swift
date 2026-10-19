@@ -15,6 +15,7 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
     package enum Engine: Sendable, Equatable {
         case managed(ManagedBackendStatus)
         case mistralAPI(keySet: Bool)
+        case anthropicAPI(keySet: Bool)
         /// A server the user runs; the app does not check it.
         case externalURL
         case off
@@ -309,6 +310,13 @@ package enum AgentCLIDoctorChecks {
                 : AgentCLICheck(
                     id: id, title: title, state: .failed, detail: "Mistral API, no key.",
                     fix: "Settings > Engines: paste a Mistral API key."
+                )
+        case .anthropicAPI(let keySet):
+            return keySet
+                ? AgentCLICheck(id: id, title: title, state: .ok, detail: "Anthropic API, key set.")
+                : AgentCLICheck(
+                    id: id, title: title, state: .failed, detail: "Anthropic API, no key.",
+                    fix: "Settings > Engines: paste an Anthropic API key."
                 )
         case .managed(let status):
             switch status {

@@ -329,19 +329,12 @@ enum StopCommitCoordinator {
             settings: settings,
             pasteboardReader: pasteboardReader
         )
-        // In Mistral mode the endpoint is pinned, so the only way to get no
-        // configuration is a missing key — and "set a valid endpoint URL"
+        // In the hosted modes the endpoint is pinned, so the only way to get
+        // no configuration is a missing key — and "set a valid endpoint URL"
         // would send the user hunting for a field that is not on the pane.
         let configurationFailure: (message: String, technicalDetails: String?)? =
             settings.llmPolishingEnabled && polishingConfig == nil
-            ? (
-                settings.polishingBackendMode == .mistralAPI
-                    ? "Mistral API key missing. Add it in Settings → Engines."
-                    : "Set a valid LLM polishing endpoint URL in Settings.",
-                settings.polishingBackendMode == .mistralAPI
-                    ? "No Mistral API key is configured; the polish request was not sent."
-                    : "Settings value could not be normalized to an HTTP endpoint URL."
-            )
+            ? Self.configurationFailure(for: settings.polishingBackendMode)
             : nil
         return Preparation(
             polishingConfig: polishingConfig,
@@ -353,8 +346,24 @@ enum StopCommitCoordinator {
         )
     }
 
+    private static func configurationFailure(
+        for mode: BackendMode
+    ) -> (message: String, technicalDetails: String?) {
+        switch mode {
+        case .mistralAPI:
+            return ("Mistral API key missing. Add it in Settings → Engines.",
+                    "No Mistral API key is configured; the polish request was not sent.")
+        case .anthropicAPI:
+            return ("Anthropic API key missing. Add it in Settings → Engines.",
+                    "No Anthropic API key is configured; the polish request was not sent.")
+        case .managedLocal, .externalURL:
+            return ("Set a valid LLM polishing endpoint URL in Settings.",
+                    "Settings value could not be normalized to an HTTP endpoint URL.")
+        }
+    }
+
     /// The templates the request is rendered from: the profile's pair, the
-    /// reference guide, then the user's About-you block and terms. The one
+    /// repair guide for an Anthropic model, the reference guide, then the user's About-you block and terms. The one
     /// place this is assembled; the prompt-cache warmup calls it too, so the
     /// fixed start it warms is the one real requests send. `projectNames`
     /// are `PolishProjectNames.names` of the learned terms, `skillNames`
@@ -368,6 +377,7 @@ enum StopCommitCoordinator {
         skillNames: [String] = []
     ) -> LLMPromptTemplates {
         appConfigStore.loadLLMPromptTemplates(profile: profile)
+            .withRepairGuide(for: settings.llmPolishingConfiguration?.requestShape ?? .openAICompatible)
             .withReferenceGuide()
             .withSpeakerProfile(
                 settings.polishSpeakerProfile, terms: settings.polishSpeakerTerms,

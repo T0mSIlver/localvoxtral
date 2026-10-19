@@ -52,9 +52,11 @@ struct TextProcessingSettingsPane: View {
     /// Reads the prompt files once per visit and change, not on every render.
     private func countPromptParts() async {
         let counter = tokenCounter
+        let shape = settings.llmPolishingConfiguration?.requestShape ?? .openAICompatible
         let instructions = { (profile: PolishPromptProfile) in
             PolishPromptParts.instructionText(
-                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile).withReferenceGuide())
+                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile)
+                    .withRepairGuide(for: shape).withReferenceGuide())
         }
         let standardText = instructions(.standard)
         let agentText = settings.agentPolishProfileEnabled ? instructions(.agent) : nil

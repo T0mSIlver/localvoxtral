@@ -43,6 +43,10 @@ final class SettingsStore {
         static let apiKeysMigratedToKeychain = "settings.api_keys_migrated_to_keychain"
         static let mistralDictationModel = "settings.mistral_dictation_model"
         static let mistralPolishingModel = "settings.mistral_polishing_model"
+        static let anthropicPolishingModel = "settings.anthropic_polishing_model"
+        /// Never stored in UserDefaults; the key exists only so the legacy
+        /// migration has a name to sweep.
+        static let anthropicAPIKeyNeverStored = "settings.anthropic_api_key"
         static let mistralModelCatalog = "settings.mistral_model_catalog"
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let managedSpeechModel = "settings.managed_speech_model"
@@ -294,6 +298,11 @@ final class SettingsStore {
         didSet { persistSecret(mistralAPIKey, for: .mistralAPIKey) }
     }
 
+    /// The Anthropic API key, for Anthropic API polishing. In the Keychain.
+    var anthropicAPIKey: String {
+        didSet { persistSecret(anthropicAPIKey, for: .anthropicAPIKey) }
+    }
+
     /// Jev's key for quick capture routing (#725), in the Keychain.
     var jevAPIKey: String {
         didSet { persistSecret(jevAPIKey, for: .jevAPIKey) }
@@ -350,6 +359,12 @@ final class SettingsStore {
     /// Hosted polishing model. Empty means `MistralPolishDefaults.model`.
     var mistralPolishingModel: String {
         didSet { defaults.set(mistralPolishingModel, forKey: Keys.mistralPolishingModel) }
+    }
+
+    /// Anthropic API polishing model. Empty means
+    /// `AnthropicPolishDefaults.model`.
+    var anthropicPolishingModel: String {
+        didSet { defaults.set(anthropicPolishingModel, forKey: Keys.anthropicPolishingModel) }
     }
 
     /// The models the Mistral key last listed. Kept across launches so the
@@ -1190,6 +1205,8 @@ final class SettingsStore {
 
         mistralAPIKey = Self.resolveSecret(
             secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
+        anthropicAPIKey = Self.resolveSecret(
+            secrets, .anthropicAPIKey, envKey: "ANTHROPIC_API_KEY", environment: environment)
         jevAPIKey = Self.resolveSecret(
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
         quickCaptureRouter = defaults.string(forKey: Keys.quickCaptureRouter)
@@ -1209,6 +1226,11 @@ final class SettingsStore {
         mistralPolishingModel = Self.loadString(
             defaults: defaults, key: Keys.mistralPolishingModel,
             envKey: "MISTRAL_POLISHING_MODEL", fallback: "",
+            environment: environment
+        )
+        anthropicPolishingModel = Self.loadString(
+            defaults: defaults, key: Keys.anthropicPolishingModel,
+            envKey: "ANTHROPIC_POLISHING_MODEL", fallback: "",
             environment: environment
         )
         mistralModelCatalog = Self.loadMistralModelCatalog(from: defaults)
@@ -1571,8 +1593,11 @@ final class SettingsStore {
         defaults: UserDefaults,
         environment: [String: String]
     ) -> (dictation: BackendMode, polishing: BackendMode) {
+        // Anthropic serves no speech-to-text: a dictation mode naming it is
+        // read as unset.
         let storedDictationMode = defaults.string(forKey: Keys.dictationBackendMode)
             .flatMap(BackendMode.init(rawValue:))
+            .flatMap { BackendMode.dictationModes.contains($0) ? $0 : nil }
         let storedPolishingMode = defaults.string(forKey: Keys.polishingBackendMode)
             .flatMap(BackendMode.init(rawValue:))
 
@@ -1582,7 +1607,8 @@ final class SettingsStore {
 
         let migratedMode: BackendMode
         if let storedBackendMode = defaults.string(forKey: Keys.backendMode),
-            let parsedBackendMode = BackendMode(rawValue: storedBackendMode)
+            let parsedBackendMode = BackendMode(rawValue: storedBackendMode),
+            BackendMode.dictationModes.contains(parsedBackendMode)
         {
             migratedMode = parsedBackendMode
         } else if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil

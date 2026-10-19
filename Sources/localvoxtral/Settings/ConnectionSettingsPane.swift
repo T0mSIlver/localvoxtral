@@ -115,7 +115,7 @@ struct ConnectionSettingsPane: View {
                     title: "Mode"
                 ) {
                     Picker("", selection: dictationBackendModeBinding) {
-                        ForEach(BackendMode.allCases) { mode in
+                        ForEach(BackendMode.dictationModes) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
@@ -160,7 +160,7 @@ struct ConnectionSettingsPane: View {
                             isConfigured: settings.isMistralAPIConfigured
                         )
                     }
-                case .managedLocal:
+                case .managedLocal, .anthropicAPI:
                     SettingsFieldRow(title: "Model") {
                         Picker("", selection: managedSpeechModelBinding) {
                             ForEach(SpeechModelCatalog.options, id: \.repoID) { option in
@@ -189,7 +189,7 @@ struct ConnectionSettingsPane: View {
                     title: "Mode"
                 ) {
                     Picker("", selection: polishingBackendModeBinding) {
-                        ForEach(BackendMode.allCases) { mode in
+                        ForEach(BackendMode.polishingModes) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
@@ -244,6 +244,31 @@ struct ConnectionSettingsPane: View {
                             summary: settings.mistralAPIStatusSummary,
                             isConfigured: settings.isMistralAPIConfigured
                         )
+                    }
+                case .anthropicAPI:
+                    SettingsFieldRow(title: "Model") {
+                        Picker("", selection: $settings.anthropicPolishingModelSelection) {
+                            ForEach(settings.anthropicPolishingModelEntries) { entry in
+                                Text(entry.name).tag(entry.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .accessibilityIdentifier("engines.polishing.anthropicModel")
+                    }
+
+                    SettingsFieldRow(
+                        title: "API key",
+                        status: settings.secretStoreFailureSummary,
+                        statusAccessibilityIdentifier: "engines.polishing.anthropicKey.status"
+                    ) {
+                        SecureField(
+                            "Paste a key from console.anthropic.com",
+                            text: $settings.anthropicAPIKey
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
+                        .accessibilityIdentifier("engines.polishing.anthropicKey")
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Model") {

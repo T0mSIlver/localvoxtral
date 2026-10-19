@@ -447,6 +447,8 @@ extension DictationSessionController {
         case .managedLocal: return .bundledHelper
         case .externalURL: return .userServer
         case .mistralAPI: return .mistral
+        // Never a dictation mode; Anthropic's spend is not priced yet.
+        case .anthropicAPI: return .userServer
         }
     }
 
