@@ -90,6 +90,34 @@ final class StallBackfillTests: XCTestCase {
         XCTAssertEqual(transcript.pendingSegmentText, " new segment")
     }
 
+    /// After a reconnect committed the text before the stall, the lead
+    /// repeats its end: those words are not inserted again.
+    func testAtASegmentsStartTheCommittedTextIsTheTextBefore() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("we should ship it tonight")
+        _ = transcript.promotePendingToLatestSegment()
+        let mark = transcript.stallMark()
+        transcript.appendPartial(" and then start fresh")
+
+        XCTAssertEqual(
+            transcript.spliceBackfill("ship it tonight then archive every session and then", at: mark),
+            "then archive every session")
+        XCTAssertNil(
+            transcript.spliceBackfill("something unrelated and then", at: mark),
+            "no overlap with the committed text keeps the hole")
+    }
+
+    /// A backfill that lands before the segment's first delta goes ahead of
+    /// the final, set off by a space.
+    func testABackfillIntoAnEmptySegmentPrecedesTheFinal() {
+        var transcript = TranscriptAccumulator()
+        let mark = transcript.stallMark()
+        XCTAssertEqual(transcript.spliceBackfill("Open the release notes", at: mark), "Open the release notes")
+
+        _ = transcript.applyFinal("and read them")
+        XCTAssertEqual(transcript.currentDictationEventText, "Open the release notes and read them")
+    }
+
     /// A later stall's backfill landing first must not shift an earlier one.
     func testTwoBackfillsLandOutOfOrder() {
         var transcript = TranscriptAccumulator()

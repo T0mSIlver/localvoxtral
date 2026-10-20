@@ -66,8 +66,11 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         let raw = unsplicedPending
         let offset = min(mark.offset, raw.count)
         let split = raw.index(raw.startIndex, offsetBy: offset)
+        // At the segment's start, the lead reaches into the committed text
+        // (a reconnect promotes the pending one): trim against that.
+        let before = offset == 0 ? currentDictationEventText : String(raw[..<split])
         guard let words = StallBackfill.wordsToInsert(
-            batch: batchText, before: String(raw[..<split]), after: String(raw[split...]))
+            batch: batchText, before: before, after: String(raw[split...]))
         else { return nil }
         unsplicedPendingText = raw
         backfills.append(Backfill(offset: offset, text: words))
@@ -236,8 +239,10 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         // The final repeats the deltas the backend sent, which lack the
         // backfilled words: keep the spliced text, plus whatever the final
         // adds past the deltas.
-        if !backfills.isEmpty {
-            let unspliced = unsplicedPendingText.trimmed
+        // A backfill into a segment with no deltas yet leaves nothing to
+        // match; the merge below orders it before the final.
+        let unspliced = unsplicedPendingText.trimmed
+        if !backfills.isEmpty, !unspliced.isEmpty {
             if finalizedText.hasPrefix(unspliced) {
                 return pendingText + finalizedText.dropFirst(unspliced.count)
             }
