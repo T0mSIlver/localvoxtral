@@ -27,8 +27,12 @@ open without a Gatekeeper prompt.
 On first launch, a setup wizard asks for the microphone and Accessibility
 permissions. It then asks which engine to use.
 
-The local engine downloads its models first. Mistral's hosted API needs only
-an API key and downloads nothing.
+The local engine downloads its models first: 2.6 GB for dictation and, if you
+keep polishing on, 3.3 GB for the polishing model. Running both takes over 7 GB
+of memory, so a 16 GB Mac is the comfortable minimum. On an 8 GB Mac,
+turn polishing off in the wizard, or pick the smaller dictation model (0.8 GB)
+and polishing model (1.0 GB) in **Settings → Engines**. Mistral's hosted API needs
+only an API key and downloads nothing.
 
 You can dictate as soon as the wizard finishes. To run it again later, open
 it from Settings.

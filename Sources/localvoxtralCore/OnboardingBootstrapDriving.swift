@@ -19,6 +19,19 @@ package enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// What the item downloads, for the Downloads page: the chosen model's
+    /// size on disk, so a first setup says it fetches gigabytes before it
+    /// starts. Nil for a model the catalog doesn't list.
+    package func downloadSizeLabel(speechModel: String, polishModel: String) -> String? {
+        let sizeOnDiskGB: Double?
+        switch self {
+        case .dictation:
+            sizeOnDiskGB = SpeechModelCatalog.option(forRepoID: speechModel)?.sizeOnDiskGB
+        case .polishing:
+            sizeOnDiskGB = PolishModelCatalog.option(forRepoID: polishModel)?.sizeOnDiskGB
+        }
+        return sizeOnDiskGB.map(ModelSizeLabel.gigabytes)
+    }
 }
 
 /// UI-facing state of a single onboarding download item. Deliberately decoupled
