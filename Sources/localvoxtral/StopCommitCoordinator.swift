@@ -377,8 +377,7 @@ enum StopCommitCoordinator {
         skillNames: [String] = []
     ) -> LLMPromptTemplates {
         appConfigStore.loadLLMPromptTemplates(profile: profile)
-            .withRepairGuide(for: settings.llmPolishingConfiguration?.requestShape ?? .openAICompatible)
-            .withReferenceGuide()
+            .withPolishGuides(for: settings.llmPolishingConfiguration?.requestShape ?? .openAICompatible)
             .withSpeakerProfile(
                 settings.polishSpeakerProfile, terms: settings.polishSpeakerTerms,
                 projects: projectNames, skills: skillNames)

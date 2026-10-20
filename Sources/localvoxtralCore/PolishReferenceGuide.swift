@@ -102,10 +102,22 @@ extension LLMPromptTemplates {
     /// These templates with `PolishReferenceGuide` appended to the system
     /// prompt. Applied before the About-you block so the guide sits with the
     /// fixed rules and the speaker's own text stays last in the system prompt.
-    package func withReferenceGuide() -> LLMPromptTemplates {
+    func withReferenceGuide() -> LLMPromptTemplates {
         LLMPromptTemplates(
             systemContent: "\(systemContent)\n\n\(PolishReferenceGuide.systemSection)\n",
             userContent: userContent
         )
+    }
+}
+
+extension LLMPromptTemplates {
+    /// The fixed instructions every polish request carries after the
+    /// profile's own rules: the repair guide when the request goes to
+    /// Anthropic, then the reference guide. Dictation, quick capture, the
+    /// prompt-cache warmup and the Settings token count all build theirs
+    /// here, so none of them can miss one (#1901); each then adds its own
+    /// About-you block.
+    package func withPolishGuides(for shape: LLMPolishingRequestShape) -> LLMPromptTemplates {
+        withRepairGuide(for: shape).withReferenceGuide()
     }
 }
