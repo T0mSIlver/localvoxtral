@@ -92,7 +92,10 @@ weights, and dispatching it is how that external contract gets repeated).
 `-f herdr=false` opts a single dispatch out, which is what
 `scripts/try-pr.sh` passes; pushes and PRs are unaffected and keep
 the `scripts/ci/herdr-lane-filter.sh` path filter plus the
-`[run-herdr-integration]` marker.
+`[run-herdr-integration]` marker. `-f herdr_only=true` goes the other way: the
+dispatch runs the herdr lane and skips the helper units, the live STT lane and
+packaging, so a herdr proof holds the Mac only for that lane. It has no
+bundle for `try-pr.sh` to install.
 
 The `hosted` dispatch input is a **no-op** now: it existed to force
 `build-test` onto a hosted runner, which is where it always runs. It is kept

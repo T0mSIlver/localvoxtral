@@ -1,6 +1,7 @@
 #!/bin/bash
 # Pins scripts/ci/stt-lane-filter.sh: which diffs buy live STT inference on the
-# owner's Mac, and that main, dispatches and unknown events are never gated.
+# owner's Mac, and that main, dispatches and unknown events are never gated
+# (a herdr-only dispatch excepted).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -101,6 +102,12 @@ expect false "another lane's marker does not" \
 
 expect true "a push to main is never gated" --event push docs/architecture.md
 expect true "a dispatch is never gated" --event workflow_dispatch docs/architecture.md
+expect false "a herdr-only dispatch skips the lane" \
+  --event workflow_dispatch --env LANE_HERDR_ONLY=true
+expect true "herdr-only touches no PR" \
+  --env LANE_HERDR_ONLY=true Sources/localvoxtralCore/RealtimeAPIWebSocketClient.swift
+expect true "herdr-only touches no push to main" \
+  --event push --env LANE_HERDR_ONLY=true docs/architecture.md
 expect true "an unknown event fails open" --event merge_group docs/architecture.md
 
 # A rename must not silently ungate the lane for the file an entry was written

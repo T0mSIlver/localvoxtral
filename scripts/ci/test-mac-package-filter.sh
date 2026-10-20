@@ -105,7 +105,15 @@ expect false "a lane marker alone does not" \
   --marker "[run-herdr-integration]" Tests/localvoxtralTests/HerdrIntegrationTests.swift
 
 # Events and fail-open.
-expect true "a dispatch always packages" --event workflow_dispatch docs/architecture.md
+expect true "a default dispatch packages, for try-pr.sh" --event workflow_dispatch docs/architecture.md
+expect true "herdr_only=false is a default dispatch" \
+  --event workflow_dispatch --env LANE_HERDR_ONLY=false docs/architecture.md
+expect false "a herdr-only dispatch does not package" \
+  --event workflow_dispatch --env LANE_HERDR_ONLY=true docs/architecture.md
+expect true "herdr-only touches no PR" \
+  --env LANE_HERDR_ONLY=true Sources/localvoxtral/SettingsView.swift
+expect true "herdr-only touches no push to main" \
+  --event push --env LANE_HERDR_ONLY=true docs/architecture.md
 expect true "a push always packages" --event push docs/architecture.md
 expect true "an unknown event packages" --event merge_group docs/architecture.md
 expect true "an empty changed-file list packages (fail open)"

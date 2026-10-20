@@ -16,6 +16,9 @@
 # ci.yml changed outside the mac-lanes job and the file's head, which cannot
 # change how these suites are invoked; only the literal "false" narrows.
 #
+# LANE_HERDR_ONLY=true, from the CI dispatch input `herdr_only`, narrows a
+# workflow_dispatch to the herdr lane: this lane skips. Other events ignore it.
+#
 # stdout is $GITHUB_OUTPUT-shaped:
 #   run=true|false
 #   reason=<one line, safe for a step summary>
@@ -39,8 +42,8 @@
 #
 # This is NOT the live-model lane pattern of "expensive, so opt in". Nothing
 # here is a judgment call and there is no marker: a diff that can affect the
-# suite runs it, and `workflow_dispatch` runs both unconditionally, which is
-# the escape hatch. Coverage is unchanged; only redundant executions go.
+# suite runs it, and `workflow_dispatch` runs both (unless herdr-only), which
+# is the escape hatch. Coverage is unchanged; only redundant executions go.
 set -euo pipefail
 
 # Changes that can alter EITHER helper suite without touching either helper
@@ -95,7 +98,8 @@ fi
 # and they all say "run".
 #   - workflow_dispatch: a dispatch exists to produce a full artifact on
 #     demand and carries no diff the way a PR does. Run both; it is also the
-#     no-new-grammar way for a human to force these suites.
+#     no-new-grammar way for a human to force these suites. A herdr-only
+#     dispatch asked for one live lane and skips both.
 #   - push: ci.yml's `push:` trigger is `branches: [main]` ONLY, so every push
 #     event here is a push to main — the parity reference every branch is
 #     compared against, which must never be gated.
@@ -106,6 +110,11 @@ case "$EVENT_NAME" in
   pull_request | "")
     ;;
   workflow_dispatch)
+    if [[ "${LANE_HERDR_ONLY:-}" == "true" ]]; then
+      echo "run=false"
+      echo "reason=herdr-only dispatch — only the herdr lane runs"
+      exit 0
+    fi
     echo "run=true"
     echo "reason=workflow_dispatch — dispatches build everything"
     exit 0
