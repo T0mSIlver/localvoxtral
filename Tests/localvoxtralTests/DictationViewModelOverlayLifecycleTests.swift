@@ -771,7 +771,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         var written: [String] = []
-        viewModel.dependencies.pasteboardWriter = { written.append($0) }
+        viewModel.dependencies.pasteboardWriter = { written.append($0); return true }
 
         // Nothing retained: the action is a no-op and writes nothing.
         XCTAssertFalse(viewModel.canCopyRawTranscript)

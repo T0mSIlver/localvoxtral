@@ -1229,7 +1229,7 @@ final class DictationSessionController {
     }
 
     private func writeToPasteboard(_ text: String) {
-        dependencies.pasteboardWriter(text)
+        _ = dependencies.pasteboardWriter(text)
     }
 
     /// Samples the terminal-like verdict and Secure Keyboard Entry state for

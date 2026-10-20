@@ -31,6 +31,7 @@ extension DictationViewModel {
         dependencies.pasteboardWriter = {
             written.values.append($0)
             onWrite()
+            return true
         }
         return written
     }

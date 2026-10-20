@@ -116,7 +116,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
     func testATailThatFailedToLandBeforeAGoToIsKeptNotTypedIntoTheNewPane() async {
         let harness = makeHarness()
         let clipboard = Box<[String]>([])
-        harness.viewModel.dependencies.pasteboardWriter = { clipboard.value.append($0) }
+        harness.viewModel.dependencies.pasteboardWriter = { clipboard.value.append($0); return true }
         harness.focuser.onFocus = { _ in harness.frontmost.value = Self.otherTerminalPID }
         let clock = ManualSessionClock()
         harness.viewModel.textInsertion.restartInsertionRetryTask(

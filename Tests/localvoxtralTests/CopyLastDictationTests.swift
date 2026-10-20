@@ -33,6 +33,65 @@ final class CopyLastDictationTests: XCTestCase {
         XCTAssertEqual(written.values, ["from four", "from five", "more from four"])
     }
 
+    /// A refused overlay text no key put in goes on the clipboard through
+    /// the injected writer, and only once the Cmd+V paste still reading the
+    /// clipboard settled (#1903).
+    func testARefusedTextNoKeyTypedIsCopiedAfterAnOutstandingPaste() async {
+        let (viewModel, written) = makeViewModel(polishing: nil)
+        let insertion = viewModel.textInsertion
+        let clock = ManualSessionClock()
+        insertion.pasteRestoreSleep = clock.sleep
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+        }
+        insertion.debugSetAccessibilityTrusted(true)
+        var keysLand = true
+        insertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in keysLand },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: { keysLand },
+            commandVPaster: { _ in keysLand }
+        )
+        // Claude Desktop gets a fenced text by Cmd+V; its restore is pending.
+        XCTAssertTrue(insertion.insertTextPrioritizingKeyboard("see:\n```\nline\n```").isSuccess)
+        keysLand = false
+
+        let typed = viewModel.session.settleUndeliveredOverlayText(
+            "refused text", outcome: .refused, keysReachPrompt: true, sessionID: nil,
+            generation: viewModel.session.sessionStartGeneration, preferredAppPID: nil
+        )
+
+        XCTAssertFalse(typed)
+        XCTAssertEqual(written.values, [], "the paste may still read the clipboard")
+        XCTAssertEqual(viewModel.session.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        await clock.waitForSleepers(1)
+        clock.advance(by: 0.15)
+        await insertion.pastesSettled()
+        XCTAssertEqual(written.values, ["refused text"])
+    }
+
+    /// The same copy when the clipboard does not take it: the popover says
+    /// the text went nowhere.
+    func testARefusedTextTheClipboardDoesNotTakeSaysSo() {
+        let (viewModel, _) = makeViewModel(polishing: nil)
+        viewModel.dependencies.pasteboardWriter = { _ in false }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+
+        viewModel.session.settleUndeliveredOverlayText(
+            "refused text", outcome: .refused, keysReachPrompt: true, sessionID: nil,
+            generation: viewModel.session.sessionStartGeneration, preferredAppPID: nil
+        )
+
+        XCTAssertEqual(viewModel.session.lastError, "Unable to insert buffered text into the focused app.")
+    }
+
     func testAPolishedDictationCopiesThePolishedText() async {
         let (viewModel, written) = makeViewModel(polishing: FakePolishingService(returning: "Hello world."))
 
