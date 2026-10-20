@@ -33,7 +33,8 @@ final class QuickCaptureLLMPolisher: QuickCapturePolishing {
             speakerProfile: settings.polishSpeakerProfile,
             speakerTerms: settings.polishSpeakerTerms,
             replacementDictionary: settings.replacementDictionaryEnabled
-                ? appConfigStore.loadReplacementDictionary() : nil
+                ? appConfigStore.loadReplacementDictionary() : nil,
+            requestShape: settings.llmPolishingConfiguration?.requestShape ?? .openAICompatible
         )
     }
 

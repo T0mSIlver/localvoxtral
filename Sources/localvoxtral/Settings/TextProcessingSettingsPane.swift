@@ -56,7 +56,7 @@ struct TextProcessingSettingsPane: View {
         let instructions = { (profile: PolishPromptProfile) in
             PolishPromptParts.instructionText(
                 viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile)
-                    .withRepairGuide(for: shape).withReferenceGuide())
+                    .withPolishGuides(for: shape))
         }
         let standardText = instructions(.standard)
         let agentText = settings.agentPolishProfileEnabled ? instructions(.agent) : nil
