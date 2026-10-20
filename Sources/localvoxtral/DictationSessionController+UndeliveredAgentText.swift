@@ -47,15 +47,18 @@ extension DictationSessionController {
     }
 
     /// Puts `text`, typed nowhere, on the clipboard whether or not History
-    /// keeps it too.
+    /// keeps it too. `ifCopyFails` runs when the clipboard did not take it,
+    /// now or once the pending pastes settled.
     ///
     /// - Returns: the popover's sentence for a copy.
-    func copyUntypedText(_ text: String) -> String {
+    func copyUntypedText(_ text: String, ifCopyFails: (@MainActor () -> Void)? = nil) -> String {
         // A Cmd+V paste may still read the clipboard (#1467). The relay
         // keeps the whole text each time, so a later write may replace a
         // held one.
         textInsertion.writeClipboardAfterPendingPastes { [weak self] in
-            self?.dependencies.pasteboardWriter(text)
+            guard let self, !self.dependencies.pasteboardWriter(text) else { return }
+            Log.dictation.error("clipboard did not take the untyped text")
+            ifCopyFails?()
         }
         return StatusStrings.overlayCopiedToClipboard
     }
