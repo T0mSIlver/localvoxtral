@@ -1,0 +1,61 @@
+name: Something went wrong
+description: Install, setup or dictation didn't do what you expected.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: localvoxtral version
+      description: Settings → About shows it.
+      placeholder: v0.14.0
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac, memory and macOS
+      description: Apple menu → About This Mac.
+      placeholder: MacBook Air M2, 16 GB, macOS 15.5
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - Installer script
+        - Homebrew
+        - DMG
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      options:
+        - Local (on this Mac)
+        - Mistral API
+        - My own server
+        - Not set up yet
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: App you were dictating into
+      placeholder: Ghostty with Claude Code, VS Code, Slack…
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics (optional)
+      description: >-
+        Settings → About → Export Diagnostics writes a redacted report to your
+        Desktop. Read it first, then drag it here if you're happy to share it.
