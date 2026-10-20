@@ -51,15 +51,20 @@ final class CopyLastDictationTests: XCTestCase {
         }
         insertion.debugSetAccessibilityTrusted(true)
         var keysLand = true
+        var pastes = 0
         insertion.debugConfigureInsertionHooks(
             unicodePoster: { _ in keysLand },
             modifierStateReader: { false },
             accessibilityInserter: { _, _ in false },
             shiftReturnPoster: { keysLand },
-            commandVPaster: { _ in keysLand }
+            commandVPaster: { _ in
+                if keysLand { pastes += 1 }
+                return keysLand
+            }
         )
         // Claude Desktop gets a fenced text by Cmd+V; its restore is pending.
         XCTAssertTrue(insertion.insertTextPrioritizingKeyboard("see:\n```\nline\n```").isSuccess)
+        XCTAssertEqual(pastes, 1)
         keysLand = false
 
         let typed = viewModel.session.settleUndeliveredOverlayText(
