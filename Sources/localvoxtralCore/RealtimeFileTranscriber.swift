@@ -146,7 +146,7 @@ package struct RealtimeFileTranscriber: Sendable {
                         throw Failure.backend(message)
                     case .disconnected:
                         throw Failure.disconnected
-                    case .status, .sessionRolledOver:
+                    case .status, .sessionRolledOver, .serverStallEnded:
                         break
                     }
                 }

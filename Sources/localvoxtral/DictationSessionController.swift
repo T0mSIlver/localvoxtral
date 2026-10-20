@@ -618,6 +618,14 @@ final class DictationSessionController {
     /// in Settings (#1678).
     @ObservationIgnored
     var sessionStopSecondPassTurnedOff = false
+    /// Latched at start: an Overlay Buffer dictation in Mistral API mode,
+    /// whose stalls are batch-transcribed as they end (#1648), second pass
+    /// or not.
+    @ObservationIgnored
+    var sessionHasStallBackfill = false
+    /// The stall backfills in flight, cancelled when the session resets.
+    @ObservationIgnored
+    var stallBackfillTasks: [Task<Void, Never>] = []
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored

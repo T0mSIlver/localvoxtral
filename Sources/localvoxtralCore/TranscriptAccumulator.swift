@@ -25,8 +25,79 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// segment without one start mid-word: a server that strips every
     /// leading space says nothing about where its words start.
     package var hasSeenSpacePrefixedDelta = false
+    /// Words a stall dropped from the stream and a batch pass found (#1648),
+    /// each at its offset in the deltas as the backend sent them. Spliced
+    /// into `pendingSegmentText`; cleared with it.
+    private var backfills: [Backfill] = []
+    /// `pendingSegmentText` without the backfills, which the backend's final
+    /// repeats. Kept only while there are backfills.
+    private var unsplicedPendingText = ""
+    /// Counts the pending segments, so a stall's mark goes stale once its
+    /// segment is gone.
+    private var pendingEpoch = 0
 
     package init() {}
+
+    private struct Backfill: Equatable, Sendable {
+        let offset: Int
+        let text: String
+    }
+
+    /// Where the stream was when a stall ended: the backfill for that stall
+    /// goes here, if this segment is still the pending one when it lands.
+    package struct StallMark: Equatable, Sendable {
+        fileprivate let epoch: Int
+        fileprivate let offset: Int
+    }
+
+    package func stallMark() -> StallMark {
+        StallMark(epoch: pendingEpoch, offset: unsplicedPending.count)
+    }
+
+    private var unsplicedPending: String {
+        backfills.isEmpty ? pendingSegmentText : unsplicedPendingText
+    }
+
+    /// Splices the words of `batchText` that the stream lacks at `mark` into
+    /// the pending segment. Returns them, or nil when the mark's segment is
+    /// gone or `StallBackfill.wordsToInsert` finds none to place.
+    package mutating func spliceBackfill(_ batchText: String, at mark: StallMark) -> String? {
+        guard mark.epoch == pendingEpoch else { return nil }
+        let raw = unsplicedPending
+        let offset = min(mark.offset, raw.count)
+        let split = raw.index(raw.startIndex, offsetBy: offset)
+        guard let words = StallBackfill.wordsToInsert(
+            batch: batchText, before: String(raw[..<split]), after: String(raw[split...]))
+        else { return nil }
+        unsplicedPendingText = raw
+        backfills.append(Backfill(offset: offset, text: words))
+        backfills.sort { $0.offset < $1.offset }
+        pendingSegmentText = Self.splicing(backfills, into: raw)
+        livePartialText = pendingSegmentText
+        return words
+    }
+
+    /// `raw` with each backfill at its offset, set off by spaces.
+    private static func splicing(_ backfills: [Backfill], into raw: String) -> String {
+        var text = ""
+        var cursor = raw.startIndex
+        for backfill in backfills {
+            let at = raw.index(raw.startIndex, offsetBy: backfill.offset)
+            text += raw[cursor..<at]
+            if let last = text.last, !last.isWhitespace { text += " " }
+            text += backfill.text
+            if at < raw.endIndex, !raw[at].isWhitespace { text += " " }
+            cursor = at
+        }
+        text += raw[cursor...]
+        return text
+    }
+
+    private mutating func clearBackfills() {
+        backfills = []
+        unsplicedPendingText = ""
+        pendingEpoch += 1
+    }
 
     /// A final that produced a segment, and what Live Auto-Paste still has
     /// to type for it.
@@ -45,6 +116,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// Appends one preprocessed partial delta.
     package mutating func appendPartial(_ processedDelta: String) {
         pendingSegmentText.append(processedDelta)
+        if !backfills.isEmpty { unsplicedPendingText.append(processedDelta) }
         livePartialText = pendingSegmentText
         if processedDelta.first?.isWhitespace == true {
             hasSeenSpacePrefixedDelta = true
@@ -71,6 +143,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         guard !finalizedSegment.isEmpty else {
             livePartialText = ""
             pendingSegmentText = ""
+            clearBackfills()
             return nil
         }
 
@@ -83,6 +156,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
         pendingSegmentText = ""
+        clearBackfills()
 
         let liveInsertion: String?
         if !hadLiveDelta {
@@ -131,6 +205,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
         pendingSegmentText = ""
+        clearBackfills()
 
         return pendingSegment
     }
@@ -156,6 +231,19 @@ package struct TranscriptAccumulator: Equatable, Sendable {
 
         if pendingText.isEmpty {
             return finalizedText
+        }
+
+        // The final repeats the deltas the backend sent, which lack the
+        // backfilled words: keep the spliced text, plus whatever the final
+        // adds past the deltas.
+        if !backfills.isEmpty {
+            let unspliced = unsplicedPendingText.trimmed
+            if finalizedText.hasPrefix(unspliced) {
+                return pendingText + finalizedText.dropFirst(unspliced.count)
+            }
+            if unspliced.hasPrefix(finalizedText) {
+                return pendingText
+            }
         }
 
         if finalizedText.count > pendingText.count, finalizedText.hasPrefix(pendingText) {
@@ -227,6 +315,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     package mutating func clearPending() {
         livePartialText = ""
         pendingSegmentText = ""
+        clearBackfills()
     }
 
     /// A new session starts with an empty dictation event. The running
@@ -236,5 +325,6 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         pendingSegmentText = ""
         currentDictationEventText = ""
         hasSeenSpacePrefixedDelta = false
+        clearBackfills()
     }
 }

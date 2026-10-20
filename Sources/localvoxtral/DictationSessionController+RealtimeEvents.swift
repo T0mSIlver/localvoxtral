@@ -70,6 +70,8 @@ extension DictationSessionController {
             handleTranscriptionStoppedEvent(message)
         case .sessionRolledOver:
             handleSessionRolledOverEvent()
+        case .serverStallEnded(let stall):
+            startStallBackfill(after: stall)
         }
     }
 

@@ -518,13 +518,17 @@ final class StopSecondPassPipelineTests: XCTestCase {
         settings.mistralStopSecondPassEnabled = false
         session.latchSessionAudio(outputMode: .overlayBuffer)
         XCTAssertFalse(session.sessionHasStopSecondPass, "turned off in Settings")
+        XCTAssertTrue(session.sessionHasStallBackfill, "a stall still gets its backfill (#1648)")
         session.audio.sessionRecording.append(Self.pcm)
-        XCTAssertNil(session.audio.sessionRecording.finish(), "no audio kept for a pass that won't run")
+        XCTAssertEqual(session.audio.sessionRecording.finish(), Self.pcm, "kept in memory for the backfill")
         settings.mistralStopSecondPassEnabled = true
 
         settings.dictationBackendMode = .externalURL
         session.latchSessionAudio(outputMode: .overlayBuffer)
         XCTAssertFalse(session.sessionHasStopSecondPass)
+        XCTAssertFalse(session.sessionHasStallBackfill)
+        session.audio.sessionRecording.append(Self.pcm)
+        XCTAssertNil(session.audio.sessionRecording.finish(), "no audio kept for a pass that won't run")
     }
 
     // MARK: - Harness

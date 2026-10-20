@@ -44,16 +44,41 @@ package struct MistralStreamHealth: Equatable {
         self.requestID = requestID
     }
 
+    /// A stall the server's latest frame ended: how long it was silent, and
+    /// the audio sent since its previous frame.
+    package struct StallEnd: Equatable, Sendable {
+        package let silentFor: TimeInterval
+        package let audioSeconds: Double
+        /// Loudest 100 ms of that audio (RMS, dBFS).
+        package let loudestDBFS: Double?
+
+        package init(silentFor: TimeInterval, audioSeconds: Double, loudestDBFS: Double?) {
+            self.silentFor = silentFor
+            self.audioSeconds = audioSeconds
+            self.loudestDBFS = loudestDBFS
+        }
+    }
+
     /// Any frame from the server. Returns how long the stall lasted when this
     /// frame ends one, so the log shows a slow server apart from a dead one.
     package mutating func serverEvent(at now: TimeInterval) -> TimeInterval? {
+        serverEventEndingStall(at: now)?.silentFor
+    }
+
+    /// `serverEvent`, with what was sent during the stall it ends (#1648).
+    package mutating func serverEventEndingStall(at now: TimeInterval) -> StallEnd? {
         defer {
             lastServerEventAt = now
             audioBytesSinceLastEvent = 0
             loudestDBFSSinceLastEvent = nil
             stallReportedAt = nil
         }
-        return stallReportedAt.map { _ in now - lastServerEventAt }
+        return stallReportedAt.map { _ in
+            StallEnd(
+                silentFor: now - lastServerEventAt,
+                audioSeconds: Double(audioBytesSinceLastEvent) / 32_000,
+                loudestDBFS: loudestDBFSSinceLastEvent)
+        }
     }
 
     /// Called as an audio frame is handed to the socket. Returns a report the

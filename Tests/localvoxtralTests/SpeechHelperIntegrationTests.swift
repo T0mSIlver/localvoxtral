@@ -395,7 +395,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
                 realtimeError.fulfill()
             case .disconnected:
                 disconnected.fulfill()
-            case .sessionRolledOver:
+            case .sessionRolledOver, .serverStallEnded:
                 break
             }
         }
@@ -516,7 +516,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
                 errors.append(delta: message)
             case .disconnected:
                 disconnected.fulfill()
-            case .status, .transcriptionFinalized, .sessionRolledOver:
+            case .status, .transcriptionFinalized, .sessionRolledOver, .serverStallEnded:
                 break
             }
         }
@@ -599,7 +599,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
                 stops.append(delta: message)
             case .disconnected:
                 disconnected.fulfill()
-            case .partialTranscript, .error, .status, .transcriptionFinalized, .sessionRolledOver:
+            case .partialTranscript, .error, .status, .transcriptionFinalized, .sessionRolledOver, .serverStallEnded:
                 break
             }
         }
