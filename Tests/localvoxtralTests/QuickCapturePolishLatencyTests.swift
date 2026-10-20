@@ -89,7 +89,7 @@ final class QuickCapturePolishLatencyTests: XCTestCase {
         let service = LLMPolishingService()
         // The prefix is checkpointed first, as the app's launch warmup does.
         _ = try? await service.polish(
-            request: PolishPromptWarmup.request(templates: inputs.templates.withReferenceGuide().withSpeakerProfile("")),
+            request: PolishPromptWarmup.request(templates: inputs.templates.withPolishGuides(for: inputs.requestShape).withSpeakerProfile("")),
             configuration: configuration)
 
         var seconds: [Double] = []

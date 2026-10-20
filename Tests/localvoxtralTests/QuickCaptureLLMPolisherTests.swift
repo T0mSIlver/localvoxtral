@@ -53,6 +53,26 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
         XCTAssertEqual(request.usageFeature, .quickCapturePolish)
     }
 
+    /// #1901: a capture polished on Anthropic carries the repair guide, as a
+    /// dictation's polish does.
+    func testACaptureOnAnthropicCarriesTheRepairGuideLikeADictation() async throws {
+        let settings = configuredSettings()
+        settings.polishingBackendMode = .anthropicAPI
+        settings.anthropicAPIKey = "sk-ant-test"
+        let service = FakePolishingService()
+        let polisher = QuickCaptureLLMPolisher(settings: settings, appConfigStore: { self.config }, service: { service })
+
+        _ = await polisher.polish(raw, vocabulary: [])
+        let last = await service.lastRequest
+        let request = try XCTUnwrap(last)
+
+        XCTAssertTrue(request.systemPrompt.contains(PolishRepairGuide.systemSection))
+        XCTAssertEqual(
+            request.systemPrompt,
+            StopCommitCoordinator.promptTemplates(profile: .standard, settings: settings, appConfigStore: config, projectNames: []).systemContent
+        )
+    }
+
     /// The app sends the core builder's request byte for byte, as a
     /// dictation's polish assembles its own (`StopCommitCoordinator`'s
     /// templates and replacement rules), and the wire body carries its

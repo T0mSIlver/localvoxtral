@@ -44,8 +44,9 @@ package enum PolishRepairGuide {
 extension LLMPromptTemplates {
     /// These templates with `PolishRepairGuide` appended to the system prompt
     /// when the request goes to Anthropic, and unchanged otherwise. Applied
-    /// right after the profile's own rules, before the reference guide.
-    package func withRepairGuide(for shape: LLMPolishingRequestShape) -> LLMPromptTemplates {
+    /// right after the profile's own rules, before the reference guide;
+    /// requests get both through `withPolishGuides(for:)`.
+    func withRepairGuide(for shape: LLMPolishingRequestShape) -> LLMPromptTemplates {
         guard shape == .anthropic else { return self }
         return LLMPromptTemplates(
             systemContent: "\(systemContent)\n\n\(PolishRepairGuide.systemSection)\n",
