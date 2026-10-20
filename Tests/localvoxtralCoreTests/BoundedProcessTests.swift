@@ -93,6 +93,165 @@ final class BoundedProcessTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(result).timedOut, "the deadline ended the run, not quit")
     }
 
+    // MARK: The synchronous engine
+
+    /// A child that prints, then hangs silently, is stopped at the deadline,
+    /// and the caller still gets what it printed: the ssh runner reports it.
+    func testTheDeadlineStopsASilentChildAndKeepsItsPartialOutput() throws {
+        let output = try BoundedProcess.runSynchronously(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "echo partial; exec sleep 30"],
+            environment: ["PATH": "/usr/bin:/bin"],
+            timeoutSeconds: 0.2,
+            maxBytes: 1024,
+            label: "test"
+        )
+        XCTAssertTrue(output.timedOut)
+        XCTAssertFalse(output.capped)
+        XCTAssertTrue(output.reaped)
+        XCTAssertEqual(String(decoding: output.data, as: UTF8.self), "partial\n")
+    }
+
+    /// Output exactly at the cap is complete; one byte past it is an overrun.
+    func testTheCapAllowsMaxBytesAndStopsAtOneMore() throws {
+        func run(_ bytes: Int) throws -> BoundedProcess.Output {
+            try BoundedProcess.runSynchronously(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "head -c \(bytes) /dev/zero"],
+                environment: ["PATH": "/usr/bin:/bin"],
+                timeoutSeconds: Self.deadline,
+                maxBytes: 1024,
+                label: "test"
+            )
+        }
+        let atCap = try run(1024)
+        XCTAssertFalse(atCap.capped)
+        XCTAssertEqual(atCap.exitCode, 0)
+        XCTAssertEqual(atCap.data.count, 1024)
+        let past = try run(1025)
+        XCTAssertTrue(past.capped)
+        XCTAssertFalse(past.timedOut)
+    }
+
+    /// Stderr is discarded unless the caller merges it into the output.
+    func testStandardErrorJoinsTheOutputOnlyWhenMerged() throws {
+        func run(merging: Bool) throws -> String {
+            let output = try BoundedProcess.runSynchronously(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "echo out; echo err >&2"],
+                environment: ["PATH": "/usr/bin:/bin"],
+                mergingStandardError: merging,
+                timeoutSeconds: Self.deadline,
+                maxBytes: 1024,
+                label: "test"
+            )
+            return String(decoding: output.data, as: UTF8.self)
+        }
+        XCTAssertEqual(try run(merging: false), "out\n")
+        XCTAssertEqual(try run(merging: true), "out\nerr\n")
+    }
+
+    /// Stdin within the preload size and stdin past it (the writer thread)
+    /// both reach the child whole.
+    func testStandardInputReachesTheChildOnBothSidesOfThePreloadSize() throws {
+        for size in [100, BoundedProcess.standardInputPreloadBytes, 4 * BoundedProcess.standardInputPreloadBytes] {
+            let input = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 % 251) })
+            let output = try BoundedProcess.runSynchronously(
+                executableURL: URL(fileURLWithPath: "/bin/cat"),
+                arguments: [],
+                environment: ["PATH": "/usr/bin:/bin"],
+                standardInput: .bytes(input),
+                timeoutSeconds: Self.deadline,
+                maxBytes: 1 << 20,
+                label: "test"
+            )
+            XCTAssertEqual(output.exitCode, 0, "\(size) bytes")
+            XCTAssertEqual(output.data, input, "\(size) bytes")
+        }
+    }
+
+    #if canImport(Darwin)
+    /// A child that exits without reading a large stdin turns the writer's
+    /// next write into EPIPE, never a SIGPIPE that would kill the app.
+    func testAChildThatClosesItsStdinEarlyDoesNotRaiseSIGPIPE() throws {
+        let output = try BoundedProcess.runSynchronously(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exec 0<&-; echo gone"],
+            environment: ["PATH": "/usr/bin:/bin"],
+            standardInput: .bytes(Data(count: 1 << 20)),
+            timeoutSeconds: Self.deadline,
+            maxBytes: 1024,
+            label: "test"
+        )
+        XCTAssertEqual(output.exitCode, 0)
+        XCTAssertEqual(String(decoding: output.data, as: UTF8.self), "gone\n")
+    }
+    #endif
+
+    func testALaunchFailureThrows() {
+        XCTAssertThrowsError(try BoundedProcess.runSynchronously(
+            executableURL: URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString)"),
+            arguments: [],
+            environment: [:],
+            timeoutSeconds: Self.deadline,
+            maxBytes: 1024,
+            label: "test"
+        ))
+    }
+
+    // MARK: Bounded teardown
+    //
+    // Every seam is injected, so these prove the escalation ordering without a
+    // process and without a clock: no signals are sent, no time passes.
+
+    /// Records the teardown steps in the order they were taken.
+    private func recordTeardown(
+        gracePeriod: TimeInterval = 2,
+        exitsAfterWait: Int?
+    ) -> (outcome: BoundedProcess.TerminationOutcome, steps: [String], windows: [TimeInterval]) {
+        var steps: [String] = []
+        var windows: [TimeInterval] = []
+        var waits = 0
+        let outcome = BoundedProcess.terminateBounded(
+            gracePeriod: gracePeriod,
+            terminate: { steps.append("terminate") },
+            kill: { steps.append("kill") },
+            waitForExit: { window in
+                waits += 1
+                steps.append("wait")
+                windows.append(window)
+                return waits == exitsAfterWait
+            }
+        )
+        return (outcome, steps, windows)
+    }
+
+    func testTeardownStopsAtSIGTERMWhenTheChildHonoursIt() {
+        // A well-behaved CLI must never be killed: SIGTERM lets it clean up.
+        let run = recordTeardown(exitsAfterWait: 1)
+        XCTAssertEqual(run.outcome, .exitedOnTerminate)
+        XCTAssertEqual(run.steps, ["terminate", "wait"])
+        XCTAssertFalse(run.steps.contains("kill"))
+    }
+
+    func testTeardownEscalatesToSIGKILLWhenSIGTERMIsIgnored() {
+        // The regression this guards: SIGTERM is advisory, so the wait after it
+        // is a grace period. Waiting on a TERM-ignoring child forever is how the
+        // runner used to wedge the app.
+        let run = recordTeardown(gracePeriod: 0.25, exitsAfterWait: 2)
+        XCTAssertEqual(run.outcome, .killed)
+        XCTAssertEqual(run.steps, ["terminate", "wait", "kill", "wait"])
+        XCTAssertEqual(run.windows, [0.25, 0.25], "both waits are bounded by the grace period")
+    }
+
+    func testTeardownGivesUpRatherThanWaitingForeverOnAChildThatSurvivesSIGKILL() {
+        // Uninterruptible sleep. Nothing we can send helps, so the one thing
+        // that must not happen is blocking the caller indefinitely.
+        let run = recordTeardown(exitsAfterWait: nil)
+        XCTAssertEqual(run.outcome, .abandonedAfterKill)
+        XCTAssertEqual(run.steps, ["terminate", "wait", "kill", "wait"], "exactly two bounded waits, then return")
+    }
+
     /// Far enough off that only the owner can end a run first; near enough
     /// that a broken owner fails the test instead of hanging it.
     private static let deadline: TimeInterval = 10

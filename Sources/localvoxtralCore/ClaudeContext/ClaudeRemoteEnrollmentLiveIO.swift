@@ -475,8 +475,9 @@ package enum ClaudeLoginShellReader {
     /// * an unbounded pipe read would instead freeze it for as long as a
     ///   stalled `dscl` stays silent.
     ///
-    /// `ClaudePluginInstallService.processRunner` already does both right
-    /// (`poll()`-gated reads, semaphore exit, SIGTERM then SIGKILL).
+    /// `BoundedProcess`, under `ClaudePluginInstallService.processRunner`,
+    /// does both right (`poll()`-gated reads, semaphore exit, SIGTERM then
+    /// SIGKILL).
     package static func runCapturingOutput(
         executableURL: URL,
         arguments: [String],
@@ -528,34 +529,22 @@ extension ClaudeRemoteEnrollmentService {
         )
     }
 
-    /// Runs `ssh` with stdin preloaded before launch, so the token-bearing
-    /// script is never written after a child could close its pipe.
-    ///
-    /// A script larger than the pipe buffer cannot be preloaded (the write
-    /// would block with no child to drain it), so an invocation whose budget
-    /// allows one is fed from a writer thread AFTER launch instead: raw
-    /// `write(2)` on a descriptor with `F_SETNOSIGPIPE`, so a child that
-    /// closes its end early costs an `EPIPE` the thread swallows, never a
-    /// signal or the `FileHandle` exception this repo bans. The loop below
-    /// owns the timeout either way; killing the child ends the writer.
+    /// Runs `ssh` through `BoundedProcess`, the token-bearing script on its
+    /// stdin: preloaded before launch, so it is never written after a child
+    /// could close its pipe, or, past the preload size (the Vibe hooks setup
+    /// moves files), fed from a writer thread that cannot raise SIGPIPE.
     ///
     /// `environment` is read per run: the ssh config override
-    /// (`SSHConfigOverride`) comes from it.
-    ///
-    /// `children` owns the ssh while it runs (#1875): the deadline lives in
-    /// this loop, which ends with the app, so quit stops the child through
-    /// `terminateAll`.
+    /// (`SSHConfigOverride`) comes from it. The child inherits this process's
+    /// environment unless the invocation adds variables.
     package static func processRunner(
         sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
         environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment },
         children: BoundedProcessChildren = .shared
     ) -> Runner {
         { invocation in
-            // The preload below writes the whole script into the pipe before
-            // the child exists to drain it; past the kernel pipe buffer that
-            // write would block forever with no timeout running yet. Scripts
-            // here are a few hundred bytes — refuse loudly long before the
-            // buffer, rather than deadlock, if a future plan grows one.
+            // Scripts here are a few hundred bytes; refuse loudly long before
+            // any pipe buffer if a future plan grows one past its budget.
             let budget = invocation.budget
             guard invocation.standardInput.count <= budget.standardInputBytes else {
                 throw RunnerFailure.outputTooLarge(
@@ -563,128 +552,33 @@ extension ClaudeRemoteEnrollmentService {
                     message: "generated setup script exceeds its stdin budget"
                 )
             }
-            let preloads = invocation.standardInput.count <= Invocation.Budget.standard.standardInputBytes
-            let process = Process()
-            process.executableURL = sshExecutableURL
             let parentEnvironment = environment()
-            process.arguments = Array(
-                SSHConfigOverride.argv(invocation.argv, environment: parentEnvironment).dropFirst()
+            let output = try BoundedProcess.runSynchronously(
+                executableURL: sshExecutableURL,
+                arguments: Array(
+                    SSHConfigOverride.argv(invocation.argv, environment: parentEnvironment).dropFirst()
+                ),
+                environment: invocation.environment.isEmpty
+                    ? nil
+                    : parentEnvironment.merging(invocation.environment, uniquingKeysWith: { _, requested in requested }),
+                standardInput: .bytes(invocation.standardInput),
+                mergingStandardError: true,
+                timeoutSeconds: invocation.timeout,
+                maxBytes: budget.outputBytes,
+                gracePeriod: ClaudePluginInstallService.terminationGracePeriod,
+                label: "remote setup ssh",
+                children: children
             )
-            if !invocation.environment.isEmpty {
-                process.environment = parentEnvironment.merging(
-                    invocation.environment,
-                    uniquingKeysWith: { _, requested in requested }
-                )
-            }
-
-            let input = Pipe()
-            process.standardInput = input
-            if preloads {
-                try input.fileHandleForWriting.write(contentsOf: invocation.standardInput)
-                try input.fileHandleForWriting.close()
-            }
-
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = output
-            let exited = DispatchSemaphore(value: 0)
-            process.terminationHandler = { finished in
-                children.unregister(finished.processIdentifier)
-                exited.signal()
-            }
-            try process.run()
-            let pid = children.adopt(process, label: "remote setup ssh")
-            defer { children.unregister(pid) }
-            if !preloads {
-                // Our copy of the read end: left open, a child that exits early
-                // would never turn the writer's next write into EPIPE.
-                try? input.fileHandleForReading.close()
-                let writer = input.fileHandleForWriting
-                let script = invocation.standardInput
-                Thread {
-                    let descriptor = writer.fileDescriptor
-                    POSIXSocket.suppressSIGPIPE(onPipe: descriptor)
-                    script.withUnsafeBytes { raw in
-                        guard let base = raw.baseAddress else { return }
-                        var offset = 0
-                        while offset < raw.count {
-                            let written = LibC.write(descriptor, base.advanced(by: offset), raw.count - offset)
-                            if written < 0, errno == EINTR { continue }
-                            if written <= 0 { return } // EPIPE: the child is gone.
-                            offset += written
-                        }
-                    }
-                    try? writer.close()
-                }.start()
-            }
-
-            func waitForExit(_ window: TimeInterval) -> Bool {
-                exited.wait(timeout: .now() + max(window, 0)) == .success
-            }
-
-            func stopChild() {
-                _ = ClaudePluginInstallService.terminateBounded(
-                    gracePeriod: ClaudePluginInstallService.terminationGracePeriod,
-                    terminate: { process.terminate() },
-                    kill: {
-                        let pid = process.processIdentifier
-                        if pid > 0, process.isRunning { _ = LibC.kill(pid, SIGKILL) }
-                    },
-                    waitForExit: waitForExit
-                )
-            }
-
-            let descriptor = output.fileHandleForReading.fileDescriptor
-            let deadline = Date().addingTimeInterval(max(invocation.timeout, 0))
-            var collected = Data()
-            var timedOut = false
-            var outputTooLarge = false
-
-            while true {
-                let remaining = deadline.timeIntervalSinceNow
-                if remaining <= 0 {
-                    timedOut = true
-                    break
-                }
-                var descriptorPoll = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-                let ready = poll(&descriptorPoll, 1, Int32(remaining * 1_000))
-                if ready < 0 {
-                    if errno == EINTR { continue }
-                    break
-                }
-                if ready == 0 {
-                    timedOut = true
-                    break
-                }
-                let chunk = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
-                if chunk.isEmpty { break }
-                collected.append(chunk)
-                if collected.count > budget.outputBytes {
-                    outputTooLarge = true
-                    break
-                }
-            }
-
-            if !timedOut, !outputTooLarge,
-               !waitForExit(deadline.timeIntervalSinceNow) {
-                timedOut = true
-            }
-            let message = String(decoding: collected.prefix(budget.outputBytes), as: UTF8.self)
+            let message = String(decoding: output.data.prefix(budget.outputBytes), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if timedOut {
-                stopChild()
+            if output.timedOut {
                 throw RunnerFailure.timedOut(seconds: invocation.timeout, message: message)
             }
-            if outputTooLarge {
-                stopChild()
-                throw RunnerFailure.outputTooLarge(
-                    capBytes: budget.outputBytes,
-                    message: message
-                )
+            if output.capped {
+                throw RunnerFailure.outputTooLarge(capBytes: budget.outputBytes, message: message)
             }
             return RunResult(
-                exitCode: process.terminationStatus,
+                exitCode: output.exitCode,
                 message: String(message.prefix(budget.messageCharacters))
             )
         }

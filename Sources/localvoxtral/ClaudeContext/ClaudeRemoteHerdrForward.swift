@@ -814,7 +814,7 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
             reapWithoutBlocking()
             return
         }
-        _ = ClaudePluginInstallService.terminateBounded(
+        _ = BoundedProcess.terminateBounded(
             gracePeriod: Self.gracePeriod,
             // Negative pid = the whole process group. The child is its own
             // group leader (POSIX_SPAWN_SETPGROUP), so this cannot reach
