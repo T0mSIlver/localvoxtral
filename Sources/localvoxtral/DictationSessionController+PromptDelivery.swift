@@ -52,7 +52,7 @@ extension DictationSessionController {
         case .mayHaveLanded:
             lastError = keepUndeliveredAgentText(text, of: generation)
         case .refused where keysReachPrompt:
-            inserted = typeUndeliveredOverlayText(text, preferredAppPID: pid)
+            inserted = typeUndeliveredOverlayText(text, generation: generation, preferredAppPID: pid)
         case .refused:
             Log.overlay.notice("overlay commit: the route did not take the text and keys would not reach its prompt; text kept")
             lastError = keepUndeliveredAgentText(text, of: generation)
@@ -67,10 +67,11 @@ extension DictationSessionController {
     /// route: keys, then Cmd+V, to the target the commit named when it
     /// handed the text off (the overlay may have reset since). Under Secure
     /// Keyboard Entry, or when no key lands, the text goes on the
-    /// clipboard: the panel is gone, and it may exist nowhere else.
+    /// clipboard once no paste reads it: the panel is gone, and it may
+    /// exist nowhere else.
     ///
     /// - Returns: whether keys put the text in.
-    private func typeUndeliveredOverlayText(_ text: String, preferredAppPID pid: pid_t?) -> Bool {
+    private func typeUndeliveredOverlayText(_ text: String, generation: UInt64, preferredAppPID pid: pid_t?) -> Bool {
         if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
            textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
             || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
@@ -78,18 +79,12 @@ extension DictationSessionController {
             return true
         }
         Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
-        #if DEBUG
-        // A test must never write the host's clipboard.
-        if TerminalTargetDetector.isRunningUnderXCTest {
-            lastError = StatusStrings.overlayCopiedToClipboard
-            return false
+        // Set first: a copy that fails at once replaces it.
+        lastError = StatusStrings.overlayCopiedToClipboard
+        _ = copyUntypedText(text) { [weak self] in
+            guard let self, self.sessionStartGeneration == generation else { return }
+            self.lastError = "Unable to insert buffered text into the focused app."
         }
-        #endif
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        lastError = pasteboard.setString(text, forType: .string)
-            ? StatusStrings.overlayCopiedToClipboard
-            : "Unable to insert buffered text into the focused app."
         return false
     }
 }
