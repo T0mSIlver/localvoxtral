@@ -6,7 +6,7 @@ import Foundation
 /// AGENTS.md, PR #60).
 ///
 /// `run` is the single git entry point: it isolates the environment and hands
-/// the process to `BoundedProcess`, which owns the reader thread, the
+/// the process to `BoundedProcess`, which owns the poll-gated read, the
 /// cap/timeout escalation and the bounded final wait. `lsFiles` and the Claude
 /// repo collector (`ClaudeRepoCollector`) are both thin argument lists over it.
 package enum RepoGitRunner {
