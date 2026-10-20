@@ -6,9 +6,10 @@ import Foundation
 /// the text as dictated". GLM 5.3 reads that loosely and still repairs words
 /// the speech-to-text system misheard; Claude Haiku reads it to the letter and
 /// copies them (a near-homophone left in place of the word meant, a misheard
-/// tool name left beside the speaker's own term for it). This section tells it that repair is
-/// the job, and that the speaker's own names come first: pointed only at "the
-/// speaker's terms", Haiku left a listed name misheard (#1897). It is applied by request shape, not by backend mode, so an
+/// tool name left beside the speaker's own term for it). This section tells
+/// it that repair is the job, and that the speaker's own names come first:
+/// pointed only at "the speaker's terms", Haiku left a listed name misheard
+/// (#1897). It is applied by request shape, not by backend mode, so an
 /// External URL server on `api.anthropic.com` gets it too, and every other
 /// model's request stays byte for byte what it was.
 package enum PolishRepairGuide {
