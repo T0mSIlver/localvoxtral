@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// Replays labelled captures through the production router (#730) and
 /// prints the scoreboard: the right-project rate, the catch-all count and
