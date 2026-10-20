@@ -248,8 +248,12 @@ package struct LLMPromptTemplates: Equatable, Sendable {
 
     package static let speakerProfileMaxCharacters = 1500
 
+    /// What the About-you block opens with; the Anthropic repair rule
+    /// points at the block by this label (#1897).
+    package static let speakerProfileLabel = "About the speaker"
+
     package static let speakerProfileHeader =
-        "About the speaker (written by them). Use it to recognize names and terms the "
+        speakerProfileLabel + " (written by them). Use it to recognize names and terms the "
         + "speech-to-text system misheard: when a word or phrase sounds like one of these "
         + "and makes less sense than it would in that sentence, write the term as spelled "
         + "here. Never insert any of this where nothing similar was said:"

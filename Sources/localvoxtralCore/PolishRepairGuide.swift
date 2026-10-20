@@ -7,7 +7,8 @@ import Foundation
 /// the speech-to-text system misheard; Claude Haiku reads it to the letter and
 /// copies them (a near-homophone left in place of the word meant, a misheard
 /// tool name left beside the speaker's own term for it). This section tells it that repair is
-/// the job. It is applied by request shape, not by backend mode, so an
+/// the job, and that the speaker's own names come first: pointed only at "the
+/// speaker's terms", Haiku left a listed name misheard (#1897). It is applied by request shape, not by backend mode, so an
 /// External URL server on `api.anthropic.com` gets it too, and every other
 /// model's request stays byte for byte what it was.
 package enum PolishRepairGuide {
@@ -15,12 +16,18 @@ package enum PolishRepairGuide {
         Repairing what the speech-to-text system got wrong. The rules above say to keep \
         the speaker's wording. That never means keeping a word the speech-to-text system \
         misheard: repair the transcript, don't copy it.
+        - Names first. The speaker's own names and terms are listed under "About the \
+        speaker" at the end of these instructions (their tools, products, models, projects \
+        and skills). A word or phrase that sounds like one of them, or like a name in the \
+        reference material, is that name, even when an ordinary word or a better-known \
+        name would also make sense there: write it exactly as spelled in the list. For \
+        example, if the speaker lists "Kubrix", "deploy it on cube ricks" -> "deploy it on \
+        Kubrix". Never put a name where nothing sounds like it.
         - A word or phrase that makes no sense where it stands was almost always misheard. \
         Replace it with what the speaker most plausibly said, judged by how it sounds and \
         by the rest of the text: "can you right a test for it" -> "can you write a test \
         for it", "we should catch the results between runs" -> "we should cache the \
-        results between runs". When a name from the reference material or the speaker's \
-        terms sounds like it, use that name.
+        results between runs".
         - Drop false starts, stutters and repeated words: "it's on the on the main \
         branch" -> "it's on the main branch", "what do we, what should we ship first" -> \
         "what should we ship first".
