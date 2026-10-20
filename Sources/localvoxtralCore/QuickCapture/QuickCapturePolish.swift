@@ -115,15 +115,20 @@ package struct QuickCapturePolishInputs: Sendable {
     package var speakerProfile: String
     package var speakerTerms: [String]
     package var replacementDictionary: ReplacementDictionary?
+    /// The polishing backend's request format, which decides whether the
+    /// repair guide goes in.
+    package var requestShape: LLMPolishingRequestShape
 
     package init(
         templates: LLMPromptTemplates, speakerProfile: String = "", speakerTerms: [String] = [],
-        replacementDictionary: ReplacementDictionary? = nil
+        replacementDictionary: ReplacementDictionary? = nil,
+        requestShape: LLMPolishingRequestShape = .openAICompatible
     ) {
         self.templates = templates
         self.speakerProfile = speakerProfile
         self.speakerTerms = speakerTerms
         self.replacementDictionary = replacementDictionary
+        self.requestShape = requestShape
     }
 }
 
@@ -139,11 +144,11 @@ extension QuickCapturePolishPrompt {
     /// The whole request, as a dictation's polish assembles its own: the
     /// replacement rules and the casing of the user's terms applied first,
     /// then the vocabulary matched, into the profile's templates with the
-    /// reference guide and About you.
+    /// polish guides and About you.
     package static func request(
         transcript: String, vocabulary: [String], inputs: QuickCapturePolishInputs
     ) -> QuickCapturePolishRequest {
-        let templates = inputs.templates.withReferenceGuide()
+        let templates = inputs.templates.withPolishGuides(for: inputs.requestShape)
             .withSpeakerProfile(inputs.speakerProfile, terms: inputs.speakerTerms)
         let rules = (inputs.replacementDictionary ?? ReplacementDictionary(entries: []))
             .adding(speakerTerms: inputs.speakerTerms)
