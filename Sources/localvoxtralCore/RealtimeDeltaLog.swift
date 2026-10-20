@@ -106,6 +106,14 @@ package struct RealtimeDeltaLog {
             Log.deltas.notice(
                 "[delta-log seq=\(sequence)] session boundary: rolled over to \(next.description, privacy: .public)")
             emit(.status, payload: "rolled over to \(next.description)")
+        case .serverStallEnded(let stall):
+            let summary = String(
+                format: "server resumed after %.1fs; %.1fs of audio sent (loudest %@)",
+                stall.silentFor, stall.audioSeconds,
+                MistralStreamHealth.describeLevel(stall.loudestDBFS))
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] \(summary, privacy: .public)")
+            emit(.status, payload: summary)
         }
     }
 }

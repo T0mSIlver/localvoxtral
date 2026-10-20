@@ -47,6 +47,18 @@ package final class DictationAudioRecording: Sendable {
         }
     }
 
+    /// The last `byteCount` bytes recorded so far (all of them when fewer),
+    /// starting on a sample; nil when the recording is off, empty or too
+    /// long. The recording goes on.
+    package func tail(byteCount: Int) -> Data? {
+        state.withLock { state in
+            guard state.isRecording, !state.overflowed, !state.pcm.isEmpty else { return nil }
+            let count = min(max(byteCount, 0), state.pcm.count) & ~1
+            guard count > 0 else { return nil }
+            return Data(state.pcm.suffix(count))
+        }
+    }
+
     /// The session's audio, or nil when it was off, empty or too long. Ends
     /// the recording either way.
     package func finish() -> Data? {

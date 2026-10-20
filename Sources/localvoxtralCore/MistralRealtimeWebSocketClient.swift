@@ -356,14 +356,17 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         let receivedAt = now()
         // Every mutation below is judged against the socket the frame was read
         // from, never against whichever one the client holds by now.
-        let silenceReport: Double? = state.withLock { s in
+        let stallEnd: MistralStreamHealth.StallEnd? = state.withLock { s in
             guard isCurrentConnectionLocked(s.base, generation) else { return nil }
-            return s.health?.serverEvent(at: receivedAt) ?? nil
+            return s.health?.serverEventEndingStall(at: receivedAt) ?? nil
         }
-        if let silence = silenceReport {
+        if let stallEnd {
             Log.realtime.notice(
-                "mistral realtime server resumed after \(String(format: "%.1f", silence), privacy: .public)s of silence (\(type, privacy: .public))"
+                "mistral realtime server resumed after \(String(format: "%.1f", stallEnd.silentFor), privacy: .public)s of silence (\(type, privacy: .public))"
             )
+            // Ahead of the frame's own event, so the session knows where the
+            // stream skipped to before the resumed text lands.
+            emit(.serverStallEnded(stallEnd), from: generation)
         }
 
         switch type {

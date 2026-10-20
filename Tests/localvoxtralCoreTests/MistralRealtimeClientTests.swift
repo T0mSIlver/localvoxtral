@@ -368,6 +368,46 @@ final class MistralRealtimeClientTests: XCTestCase {
         XCTAssertEqual(reports.first?.silentFor ?? 0, 5.0, accuracy: 1e-9)
     }
 
+    /// #1648: the frame that ends a stall reaches the session as a stall end,
+    /// with the audio sent and its loudness, before the frame's own text, so
+    /// the session knows where the stream skipped.
+    func testTheFrameEndingAStallIsPrecededByTheStallsAudio() {
+        let clock = ManualSeconds()
+        let client = MistralRealtimeWebSocketClient(now: { clock.value })
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0, from: $1) }
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+        client.debugHandleFrameForTesting(json: ["type": "transcription.text.delta", "text": "Look"])
+
+        // 7.5 s of a steady tone at about -33 dBFS, and nothing back.
+        let speech = Data((0..<1_600).flatMap { index -> [UInt8] in
+            let sample = Int16(index % 2 == 0 ? 732 : -732)
+            return withUnsafeBytes(of: sample.littleEndian) { Array($0) }
+        })
+        for tick in 1...75 {
+            clock.value = Double(tick) / 10
+            client.sendAudioChunk(speech)
+        }
+        client.debugHandleFrameForTesting(json: ["type": "transcription.text.delta", "text": " here"])
+
+        let events = collector.snapshot().suffix(2)
+        guard case .serverStallEnded(let stall) = events.first else {
+            return XCTFail("expected a stall end, got \(events)")
+        }
+        XCTAssertEqual(stall.silentFor, 7.5, accuracy: 1e-9)
+        XCTAssertEqual(stall.audioSeconds, 7.5, accuracy: 1e-9)
+        XCTAssertEqual(stall.loudestDBFS ?? 0, -33, accuracy: 0.1)
+        guard case .partialTranscript(" here") = events.last else {
+            return XCTFail("expected the resumed delta last, got \(events)")
+        }
+    }
+
     func testSessionUpdateCarriesTargetStreamingDelayWhenConfigured() {
         let (client, session, task) = makeFrameRecordingClient(
             targetStreamingDelayMilliseconds: 1_000)

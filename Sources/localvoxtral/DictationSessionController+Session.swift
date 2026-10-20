@@ -63,6 +63,9 @@ extension DictationSessionController {
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
         sessionStopSecondPassTurnedOff = false
+        sessionHasStallBackfill = false
+        stallBackfillTasks.forEach { $0.cancel() }
+        stallBackfillTasks = []
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
     }
@@ -661,7 +664,9 @@ extension DictationSessionController {
             && outputMode == .overlayBuffer
         sessionHasStopSecondPass = secondPassApplies && settings.mistralStopSecondPassEnabled
         sessionStopSecondPassTurnedOff = secondPassApplies && !settings.mistralStopSecondPassEnabled
-        audio.sessionRecording.begin(enabled: sessionStoresAudio || sessionHasStopSecondPass)
+        sessionHasStallBackfill = secondPassApplies
+        audio.sessionRecording.begin(
+            enabled: sessionStoresAudio || sessionHasStopSecondPass || sessionHasStallBackfill)
     }
 
     /// Fail fast on Live Auto-Paste without Accessibility trust: transcribed

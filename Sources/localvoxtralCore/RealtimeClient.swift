@@ -78,6 +78,9 @@ package enum RealtimeEvent: Sendable {
     /// session is on `to`, and refuses the retiring socket by name like any
     /// other retired one. The new socket's own `.connected` follows.
     case sessionRolledOver(to: RealtimeConnectionGeneration)
+    /// The Mistral server sent a frame after a stall, before that frame's own
+    /// event (#1648). Its stream may have dropped the speech of the stall.
+    case serverStallEnded(MistralStreamHealth.StallEnd)
 }
 
 /// `Sendable` because the session's audio-send and periodic-commit tasks hold
