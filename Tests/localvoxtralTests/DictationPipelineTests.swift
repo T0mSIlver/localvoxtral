@@ -3917,7 +3917,7 @@ final class DictationPipelineTests: XCTestCase {
             TerminalTargetDetector.debugSecureEventInputOverride = nil
         }
         let clipboard = FakeClipboard()
-        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0); return true }
         let typed = TypedText()
         var pasted: [String] = []
         pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
@@ -3970,7 +3970,7 @@ final class DictationPipelineTests: XCTestCase {
             TerminalTargetDetector.debugSecureEventInputOverride = nil
         }
         let clipboard = FakeClipboard()
-        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0); return true }
         var pasted: [String] = []
         pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
         pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
@@ -4535,7 +4535,7 @@ final class DictationPipelineTests: XCTestCase {
             TerminalTargetDetector.debugSecureEventInputOverride = nil
         }
         let clipboard = FakeClipboard()
-        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0); return true }
         pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
         pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: { _ in true },

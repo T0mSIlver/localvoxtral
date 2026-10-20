@@ -387,8 +387,9 @@ final class DictationViewModel {
         /// The pasteboard the polish context and the payload macro read. Both
         /// read the one clipboard; a counting stub proves the no-read paths.
         var pasteboardReader: @MainActor () -> any PasteboardReading
-        /// Where the copy actions write.
-        var pasteboardWriter: @MainActor (String) -> Void
+        /// Where the copy actions write; false when the clipboard did not
+        /// take the text.
+        var pasteboardWriter: @MainActor (String) -> Bool
         /// The bundle identifier of a running process, for the app the
         /// overlay commits into.
         var bundleIdentifier: (pid_t) -> String?
@@ -446,7 +447,7 @@ final class DictationViewModel {
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
             pasteboardReader: @escaping @MainActor () -> any PasteboardReading = { SystemPasteboardReader() },
-            pasteboardWriter: @escaping @MainActor (String) -> Void = DictationViewModel.writeToSystemPasteboard,
+            pasteboardWriter: @escaping @MainActor (String) -> Bool = DictationViewModel.writeToSystemPasteboard,
             bundleIdentifier: @escaping (pid_t) -> String? = {
                 NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
             },
@@ -1035,13 +1036,13 @@ final class DictationViewModel {
     /// The production `Dependencies.pasteboardWriter`: the general pasteboard,
     /// which a test never reaches (headless CI has no pasteboard server, and
     /// clobbering the host clipboard is antisocial).
-    static func writeToSystemPasteboard(_ text: String) {
+    static func writeToSystemPasteboard(_ text: String) -> Bool {
         #if DEBUG
-        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        if TerminalTargetDetector.isRunningUnderXCTest { return true }
         #endif
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        return pasteboard.setString(text, forType: .string)
     }
 
     /// Reset the first-launch flag and ask the app delegate to re-present the
