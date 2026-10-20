@@ -302,6 +302,11 @@ avoidable run costs far more than its own duration.
 - **The one exception** is a dispatch that produces something the queued run
   cannot — an artifact-only input the queued run never carries. A dispatch
   that would merely re-run the same lanes is never worth its slot.
+- **A herdr proof dispatches herdr-only:**
+  `gh workflow run CI --ref <branch> -f herdr_only=true` runs the live herdr
+  lane alone, without the helper units, the live STT lane or packaging. A
+  default dispatch runs all of those, because it exists to build the bundle
+  `scripts/try-pr.sh` installs.
 - **Drafts, and how a push is priced.** `mac-lanes` skips a draft, so the
   cheap loop is: open as a draft, push as often as the hosted `build-test`
   needs, `gh pr ready <n>` once. After that every push costs a Mac slot and

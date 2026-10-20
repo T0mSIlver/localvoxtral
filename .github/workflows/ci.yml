@@ -24,6 +24,13 @@ on:
         description: "Run the live herdr lane on this dispatch"
         type: boolean
         default: true
+      # A before/after proof of a herdr change needs only that lane, not the
+      # whole Mac pipeline. `herdr_only=true` runs the herdr lane and skips the
+      # helper units, the live STT lane and packaging; it implies herdr=true.
+      herdr_only:
+        description: "Run only the live herdr lane: no helper units, live STT lane or packaging"
+        type: boolean
+        default: false
       # REDUNDANT since build-test moved to hosted runners for every event
       # (this PR): the job it used to redirect is now always on macos-latest,
       # so this input has no effect on anything. Kept for one release so a
@@ -999,6 +1006,7 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
           DISPATCH_HERDR: ${{ inputs.herdr }}
+          DISPATCH_HERDR_ONLY: ${{ inputs.herdr_only }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -1012,7 +1020,11 @@ jobs:
             # time or its failure modes. Pushes and PRs are untouched by
             # this input — they keep the path filter + [run-herdr-integration]
             # marker, which is what holds the contract.
-            if [[ "$DISPATCH_HERDR" == "false" ]]; then
+            if [[ "$DISPATCH_HERDR_ONLY" == "true" ]]; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              echo "Herdr integration lane: RUNNING (herdr-only dispatch)" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+            elif [[ "$DISPATCH_HERDR" == "false" ]]; then
               echo "run=false" >> "$GITHUB_OUTPUT"
               echo "Herdr integration lane: SKIPPED (manual dispatch with herdr=false)" \
                 | tee -a "$GITHUB_STEP_SUMMARY"
@@ -1077,6 +1089,7 @@ jobs:
         env:
           LANE_MAC_LANES_JOB_CHANGED: ${{ steps.diff_facts.outputs.mac_lanes_job_changed }}
           LANE_PACKAGE_DEPS_CHANGED: ${{ steps.diff_facts.outputs.package_deps_changed }}
+          LANE_HERDR_ONLY: ${{ inputs.herdr_only }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
           # env indirection, not inline ${{ }} in the script body: PR bodies
@@ -1093,7 +1106,11 @@ jobs:
           elif git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
             BASE="$PUSH_BEFORE_SHA"
           fi
-          if [[ -z "$BASE" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # A dispatch has no diff; the filters decide it by event (and by
+            # LANE_HERDR_ONLY) without reading the empty list.
+            : >"$FILES"
+          elif [[ -z "$BASE" ]]; then
             # Fail open: an uncomputable diff must never skip a suite. Same
             # contract as every other lane-decide step here.
             : >"$FILES"
@@ -1107,8 +1124,9 @@ jobs:
             echo "SpeechHelper unit lane: RUNNING (diff unavailable — failing open)" \
               | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
+          else
+            git diff --name-only "$BASE" HEAD > "$FILES"
           fi
-          git diff --name-only "$BASE" HEAD > "$FILES"
 
           decide() {
             local helper="$1" label="$2" output_key="$3" decision run reason
@@ -1149,15 +1167,17 @@ jobs:
         # the same bundle main has. scripts/ci/mac-package-filter.sh lists
         # what may skip; anything unclassified packages. A lane below that
         # reads the bundle (polishd, speechd) packages
-        # whatever the diff. A dispatch always packages, so try-pr.sh can
-        # still build any branch; a missing decision packages too, because
-        # the steps below skip only on the literal 'false'.
+        # whatever the diff. A dispatch packages, so try-pr.sh can still
+        # build any branch, unless it is herdr-only; a missing decision
+        # packages too, because the steps below skip only on the literal
+        # 'false'.
         id: package_scope
         if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           LANE_MAC_LANES_JOB_CHANGED: ${{ steps.diff_facts.outputs.mac_lanes_job_changed }}
           LLM_RUN: ${{ steps.llm_lane.outputs.run }}
           SPEECHD_RUN: ${{ steps.speechd_lane.outputs.run }}
+          LANE_HERDR_ONLY: ${{ inputs.herdr_only }}
           # env indirection: PR bodies are attacker-shaped strings.
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}

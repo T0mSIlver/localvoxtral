@@ -27,27 +27,26 @@ fail() {
   exit 1
 }
 
-# expect <polish|speech> <true|false> <description> [--event <name>] <changed-path>...
+# expect <polish|speech> <true|false> <description> [--event <name>] [--env NAME=VALUE] <changed-path>...
 expect() {
   local helper="$1" expected="$2" description="$3"
   shift 3
   local changed="$TMP_DIR/changed" event=""
+  local -a env_args=()
   : >"$changed"
   while [[ $# -gt 0 ]]; do
-    if [[ "$1" == "--event" ]]; then
-      event="$2"
-      shift 2
-      continue
-    fi
-    printf '%s\n' "$1" >>"$changed"
-    shift
+    case "$1" in
+      --event) event="$2"; shift 2 ;;
+      --env) env_args+=("$2"); shift 2 ;;
+      *) printf '%s\n' "$1" >>"$changed"; shift ;;
+    esac
   done
   local output
   if [[ -n "$event" ]]; then
-    output="$("$FILTER" "$helper" "$changed" "$event")" \
+    output="$(env ${env_args[@]+"${env_args[@]}"} "$FILTER" "$helper" "$changed" "$event")" \
       || fail "$description: filter exited non-zero"
   else
-    output="$("$FILTER" "$helper" "$changed")" \
+    output="$(env ${env_args[@]+"${env_args[@]}"} "$FILTER" "$helper" "$changed")" \
       || fail "$description: filter exited non-zero"
   fi
   local run reason
@@ -74,6 +73,16 @@ expect polish true "workflow_dispatch runs the polish lane whatever the diff" \
   --event workflow_dispatch README.md
 expect speech true "workflow_dispatch runs the speech lane whatever the diff" \
   --event workflow_dispatch README.md
+expect polish false "a herdr-only dispatch skips the polish lane" \
+  --event workflow_dispatch --env LANE_HERDR_ONLY=true
+expect speech false "a herdr-only dispatch skips the speech lane" \
+  --event workflow_dispatch --env LANE_HERDR_ONLY=true
+expect polish true "herdr-only=false is a default dispatch" \
+  --event workflow_dispatch --env LANE_HERDR_ONLY=false
+expect speech true "herdr-only touches no PR" \
+  --event pull_request --env LANE_HERDR_ONLY=true SpeechHelper/Package.swift
+expect polish true "herdr-only touches no push to main" \
+  --event push --env LANE_HERDR_ONLY=true
 expect polish true "push (ci.yml only pushes on main) runs the polish lane" \
   --event push README.md
 expect speech true "push (ci.yml only pushes on main) runs the speech lane" \

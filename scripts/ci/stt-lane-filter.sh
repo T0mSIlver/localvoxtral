@@ -21,6 +21,9 @@
 #   LANE_MAC_LANES_JOB_CHANGED=false  ci.yml changed, but not the mac-lanes
 #                                     job or the file's head
 #
+# LANE_HERDR_ONLY=true, from the CI dispatch input `herdr_only`, narrows a
+# workflow_dispatch to the herdr lane: this lane skips. Other events ignore it.
+
 # stdout is $GITHUB_OUTPUT-shaped:
 #   run=true|false
 #   reason=<one line, safe for a step summary>
@@ -90,6 +93,11 @@ case "$EVENT_NAME" in
   pull_request | "")
     ;;
   workflow_dispatch)
+    if [[ "${LANE_HERDR_ONLY:-}" == "true" ]]; then
+      echo "run=false"
+      echo "reason=herdr-only dispatch — only the herdr lane runs"
+      exit 0
+    fi
     echo "run=true"
     echo "reason=workflow_dispatch — dispatches build everything"
     exit 0

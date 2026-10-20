@@ -13,7 +13,7 @@
 #                         the literal [mac-lanes] packages whatever the diff,
 #                         since a draft carries it to get the signed bundle
 #
-# Two env vars say what else the run needs:
+# Three env vars say what else the run needs:
 #   LANE_NEEDS_BUNDLE   space-separated names of the lanes this run will run
 #                       that read the packaged bundle (the polishd and speechd
 #                       integrations); non-empty packages
@@ -21,6 +21,10 @@
 #                       ci.yml changed outside the mac-lanes job, so not the
 #                       packaging or smoke steps; only the literal "false"
 #                       narrows
+#   LANE_HERDR_ONLY=true  from the CI dispatch input `herdr_only`: a
+#                       workflow_dispatch skips packaging, since the herdr lane
+#                       reads no bundle. Any other dispatch packages, because
+#                       scripts/try-pr.sh installs the dispatched bundle.
 #
 # stdout is $GITHUB_OUTPUT-shaped:
 #   run=true|false
@@ -75,6 +79,16 @@ fi
 
 case "$EVENT_NAME" in
   pull_request | "")
+    ;;
+  workflow_dispatch)
+    if [[ "${LANE_HERDR_ONLY:-}" == "true" ]]; then
+      echo "run=false"
+      echo "reason=herdr-only dispatch — the herdr lane reads no bundle"
+    else
+      echo "run=true"
+      echo "reason=a dispatch packages, so try-pr.sh can install it"
+    fi
+    exit 0
     ;;
   *)
     echo "run=true"
