@@ -14,7 +14,7 @@ body:
     attributes:
       label: localvoxtral version
       description: Settings → About shows it.
-      placeholder: v0.14.0
+      placeholder: v0.15.0
     validations:
       required: true
   - type: input
@@ -57,5 +57,5 @@ body:
     attributes:
       label: Diagnostics (optional)
       description: >-
-        Settings → About → Export Diagnostics writes a redacted report to your
+        Settings → About → Export diagnostics… writes a redacted report to your
         Desktop. Read it first, then drag it here if you're happy to share it.
