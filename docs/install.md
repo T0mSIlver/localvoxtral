@@ -90,13 +90,16 @@ your login keychain.
      ~/Library/Saved\ Application\ State/com.localvoxtral.app.savedState
    ```
 
-4. Delete the models it downloaded (if you set `HF_HUB_CACHE` or `HF_HOME`,
-   they are under that folder instead):
+4. Delete the models it downloaded. If you set `HF_HUB_CACHE`, they are in
+   that folder instead; if you set `HF_HOME`, they are in its `hub` folder.
+   Other apps' models in the same cache are left alone:
 
    ```bash
    rm -rf ~/.cache/huggingface/hub/models--T0mSIlver--Voxtral-Mini-4B-Realtime-2602-4bit-qhead \
-     ~/.cache/huggingface/hub/models--mlx-community--nemotron-3.5-asr-streaming-0.6b-8bit
-   find ~/.cache/huggingface/hub -maxdepth 1 -name 'models--mlx-community--Qwen3.5-*' -exec rm -rf {} +
+     ~/.cache/huggingface/hub/models--mlx-community--nemotron-3.5-asr-streaming-0.6b-8bit \
+     ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-0.8B-8bit \
+     ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-OptiQ-4bit \
+     ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit
    ```
 
 5. If you installed the `localvoxtral` command, run
