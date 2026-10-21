@@ -125,6 +125,12 @@ extension DictationSessionController {
             case .fallBack: break
             }
         }
+        // A permission or a question holds the pane: typed text and a Return
+        // would answer it, whatever route types them (#1914).
+        if sessionNavigator?.showsDialog(sessionID: session.sessionID) == true {
+            saveInterruptedPolishCommit = nil
+            return .notSent(AddressedSendStatus.showsDialog)
+        }
         var route = AddressedSessionRoute.unsupported(.noTTY)
         if let resolver = context.claudeSessionJoinResolver {
             route = await resolver.addressedRoute(for: session)
@@ -166,8 +172,8 @@ extension DictationSessionController {
         var status = addressed.status
         if status == AddressedSendStatus.notSent {
             status = keepUndeliveredAgentText(text, statusLineSaysSo: true)
-        } else if status == AddressedSendStatus.unsupported {
-            status = keepUntypedText(text, status: AddressedSendStatus.unsupported)
+        } else if status == AddressedSendStatus.unsupported || status == AddressedSendStatus.showsDialog {
+            status = keepUntypedText(text, status: status ?? AddressedSendStatus.unsupported)
         }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -274,7 +280,10 @@ extension DictationSessionController {
                 handedOff: handedOff
             )
         }
-        guard stillThere, returnSubmitsPrompt(inPID: pid), pressSpokenSendReturn(pid: pid) else {
+        // A dialog that opened during the typing takes the Return (#1914).
+        guard stillThere, !navigator.showsDialog(sessionID: session.sessionID),
+              returnSubmitsPrompt(inPID: pid), pressSpokenSendReturn(pid: pid)
+        else {
             Log.dictation.notice("send to session: the pane changed after typing; no Return")
             return AddressedCommit(
                 outcome: commit.outcome,

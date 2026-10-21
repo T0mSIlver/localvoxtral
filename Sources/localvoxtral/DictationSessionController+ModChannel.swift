@@ -142,7 +142,9 @@ extension DictationSessionController {
     /// cmux surface answers no and keeps its text. The caller types without
     /// awaiting again.
     private func keysReachModSession(_ sessionID: String, terminalPID: pid_t?) async -> Bool {
-        guard let terminalPID, let resolver = context.claudeSessionJoinResolver,
+        // A permission or a question holds the pane: keys would answer it (#1914).
+        guard sessionNavigator?.showsDialog(sessionID: sessionID) != true,
+              let terminalPID, let resolver = context.claudeSessionJoinResolver,
               let target = TerminalScreenContextSource.frontmostTarget(), target.pid == terminalPID,
               await resolver.shows(sessionID, target: target)
         else { return false }

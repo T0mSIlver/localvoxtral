@@ -397,11 +397,23 @@ there is not.
   to the `draft` read or to the `send`, and an unanswered request, which
   may have submitted, keep the text in History and try no other route (a
   detach with no clean bye leaves the old registry entry, whose tty and
-  pid still match the pane after `/clear`). A mod that refused for any other reason
-  (a dialog, a placeholder, a command, an `@` mention), or never got the
+  pid still match the pane after `/clear`). A mod that refused for a text
+  only keys can enter (a placeholder, a command, an `@` mention,
+  `Reply.keyedReasons`; or a mod older than `send`), or never got the
   request, changed nothing in the session, so the routes below run as if
   it had no mod, logged to `Log.backends`; a new dictation started by
-  then sends nothing anywhere and keeps the text.
+  then sends nothing anywhere and keeps the text. Any other refusal (a
+  dialog, no composer, a failure) keeps the text and tries no other
+  route: a dialog holding the box takes keys and Return as its answer
+  (#1914). **A session showing a dialog gets no key** (#1914): while its
+  last `Notification` hook (a permission, a question) is not followed by a
+  submit, a tool run, a turn's end or the session's end
+  (`ClaudeSessionSnapshot.openDialog`), routes (1) to (3) below do not
+  run and the text is kept, the Return after the typing is not pressed,
+  and a refused mod fill in the pane the user looks at is not typed. A
+  dialog dismissed with Escape may send no hook, so the session counts as
+  showing it until its next prompt: a send kept for nothing, never one
+  that answers.
   (1) opencode's prompt relay, from a fresh declaration by the session's
   pid; (2) the herdr pane the session's own hooks reported, only when it is
   the one live local herdr, the registry maps the pane to that session
