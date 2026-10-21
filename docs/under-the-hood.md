@@ -183,7 +183,7 @@ as margin, up to 30 seconds in all.
 The app writes the audio to disk only if History keeps audio.
 
 The second pass costs 0.003 USD per minute, so hosted dictation in the
-Overlay Buffer costs 1.5 times the realtime price. Live Auto-Paste has
+Overlay Buffer costs 1.5 times the realtime price on 2602, about 1.4 times on Realtime 3. Live Auto-Paste has
 already typed its text and gets no second pass.
 
 Mistral's realtime stream sometimes stalls for a few seconds and drops the
