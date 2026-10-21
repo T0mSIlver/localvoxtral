@@ -385,6 +385,26 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
     }
 
+    /// A Mistral start snapshots the user's own terms with the endpoint and
+    /// key, so the socket (and a reconnect, which redials the snapshot) can
+    /// hand them to Voxtral Realtime 3 (#1931).
+    func testAMistralStartCarriesTheUsersTermsInItsSnapshot() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .mistralAPI
+        viewModel.settings.mistralAPIKey = "mistral-account-key"
+        viewModel.settings.mistralDictationModel = MistralRealtimeModels.voxtral3
+        viewModel.settings.polishSpeakerTerms = ["localvoxtral", "herdr"]
+        viewModel.session.mistralRealtimeClient.debugSkipSocketCreationForTesting()
+        retainForTestProcessLifetime(viewModel)
+
+        guard let configuration = await viewModel.session.prepareDictationSession() else {
+            return XCTFail("the start ended before the connect")
+        }
+
+        XCTAssertEqual(configuration.model, MistralRealtimeModels.voxtral3)
+        XCTAssertEqual(Array(configuration.contextBias.prefix(2)), ["localvoxtral", "herdr"])
+    }
+
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
         let settings = makeExternalBackendSettings(outputMode: .overlayBuffer)
         settings.onboardingCompleted = false

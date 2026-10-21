@@ -9,12 +9,23 @@ package struct RealtimeSessionConfiguration: Sendable {
     /// user's own server. Nil records nothing. The Mistral client ignores it:
     /// its socket is always `.mistral`.
     package let usageBackend: UsageEntry.Backend?
+    /// The user's own terms, in priority order, for a model that takes them
+    /// at session start. Only the Mistral client reads it, and only for a
+    /// model `MistralRealtimeModels.acceptsContextBias` names.
+    package let contextBias: [String]
 
-    package init(endpoint: URL, apiKey: String, model: String, usageBackend: UsageEntry.Backend? = nil) {
+    package init(
+        endpoint: URL,
+        apiKey: String,
+        model: String,
+        usageBackend: UsageEntry.Backend? = nil,
+        contextBias: [String] = []
+    ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
         self.usageBackend = usageBackend
+        self.contextBias = contextBias
     }
 }
 

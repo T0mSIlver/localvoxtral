@@ -426,7 +426,9 @@ extension DictationSessionController {
             endpoint: endpoint,
             apiKey: apiKey,
             model: model,
-            usageBackend: usageBackend
+            usageBackend: usageBackend,
+            contextBias: Self.realtimeContextBias(
+                settings: settings, dictionary: sessionReplacementDictionary)
         )
     }
 
@@ -441,6 +443,21 @@ extension DictationSessionController {
     private func ownsSessionStart(generation: UInt64, ownerTaskID: UUID?) -> Bool {
         sessionStartGeneration == generation
             && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
+    }
+
+    /// The terms a realtime socket may take at session start: the user's own,
+    /// as the stall backfill sends them, since the context sources pass their
+    /// gates only at stop. Only a Mistral model that takes `context_bias`
+    /// (Voxtral Realtime 3) sends them.
+    static func realtimeContextBias(
+        settings: SettingsStore, dictionary: ReplacementDictionary?
+    ) -> [String] {
+        StopSecondPass.candidates(
+            userTerms: settings.polishSpeakerTerms,
+            dictionarySpellings: dictionary?.entries.map(\.replaceWith) ?? [],
+            learnedTerms: [],
+            contextTrusted: false
+        )
     }
 
     /// Who the usage ledger charges a dictation in `mode` to. The Mistral

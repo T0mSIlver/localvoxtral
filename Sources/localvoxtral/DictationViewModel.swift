@@ -1191,7 +1191,11 @@ extension DictationViewModel {
             endpoint: endpoint,
             apiKey: settings.trimmedAPIKey,
             model: settings.effectiveModelName(for: provider),
-            usageBackend: DictationSessionController.usageBackend(for: mode)
+            usageBackend: DictationSessionController.usageBackend(for: mode),
+            contextBias: DictationSessionController.realtimeContextBias(
+                settings: settings,
+                dictionary: StopCommitCoordinator.effectiveReplacementDictionary(
+                    settings: settings, appConfigStore: appConfigStore))
         )
         if mode == .mistralAPI {
             return (configuration, nil, {

@@ -61,6 +61,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         var isReplayingHandshakeQueue = false
         /// The model this socket was opened for, nil when none is open.
         var usageModel: String?
+        /// The `context_bias` this socket's `session.update` carries; empty
+        /// for a model that takes none.
+        var sessionContextBias: [String] = []
         /// PCM bytes of `input_audio.append` actually handed to the socket
         /// since it opened — what Mistral bills, as far as this Mac can tell.
         var sentAudioBytes = 0
@@ -216,8 +219,10 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         return request
     }
 
-    /// The `session.update` frame sent right after `session.created`.
-    func sessionUpdatePayload() -> [String: Any] {
+    /// The `session.update` frame sent right after `session.created`. It is
+    /// the session's only one: Voxtral 3 refuses a field change once audio
+    /// has started.
+    func sessionUpdatePayload(contextBias: [String] = []) -> [String: Any] {
         var session: [String: Any] = [
             "audio_format": [
                 "encoding": Self.audioEncoding,
@@ -227,7 +232,19 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         if let targetStreamingDelayMilliseconds {
             session["target_streaming_delay_ms"] = targetStreamingDelayMilliseconds
         }
+        if !contextBias.isEmpty {
+            session["context_bias"] = contextBias
+        }
         return ["type": "session.update", "session": session]
+    }
+
+    /// The terms `configuration` carries, as `model` takes them: none for a
+    /// model without `context_bias`.
+    static func sessionContextBias(
+        for configuration: RealtimeSessionConfiguration, model: String
+    ) -> [String] {
+        guard MistralRealtimeModels.acceptsContextBias(model) else { return [] }
+        return MistralRealtimeModels.contextBias(from: configuration.contextBias)
     }
 
     // MARK: - RealtimeClient
@@ -266,7 +283,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
             // a frame admitted in that window would come out wearing the new
             // socket's name, which is the failure this whole stamp exists for.
             s.base.connectionGeneration = .next()
-            s.usageModel = Self.resolvedModel(configuration.model)
+            let model = Self.resolvedModel(configuration.model)
+            s.usageModel = model
+            s.sessionContextBias = Self.sessionContextBias(for: configuration, model: model)
             s.health = MistralStreamHealth(openedAt: now())
 
             let (session, task) = createWebSocketSession(request: request, delegate: self)
@@ -409,7 +428,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     private func handleSessionCreated(
         requestID: String?, from generation: RealtimeConnectionGeneration
     ) {
-        let declaration = encodedFrame(sessionUpdatePayload())
+        let contextBias = state.withLock { $0.sessionContextBias }
+        let declaration = encodedFrame(sessionUpdatePayload(contextBias: contextBias))
         let opened: Bool = state.withLock { s in
             // A stale handshake applied here would replay the NEW socket's
             // queue ahead of the audio-format declaration it owes the server.
@@ -873,6 +893,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
+        s.sessionContextBias = []
         s.health = nil
     }
 }
@@ -909,12 +930,14 @@ extension MistralRealtimeWebSocketClient {
         task: URLSessionWebSocketTask,
         isUserInitiatedDisconnect: Bool = false,
         hasReceivedSessionCreated: Bool = false,
-        usageModel: String? = nil
+        usageModel: String? = nil,
+        sessionContextBias: [String] = []
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
             s.base.connectionGeneration = .next()
             s.usageModel = usageModel
+            s.sessionContextBias = sessionContextBias
             s.sentAudioBytes = 0
             s.base.webSocketTask = task
             s.base.socketState = .connected
