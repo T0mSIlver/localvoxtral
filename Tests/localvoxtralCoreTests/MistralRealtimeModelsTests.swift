@@ -14,6 +14,8 @@ final class MistralRealtimeModelsTests: XCTestCase {
         XCTAssertTrue(MistralRealtimeModels.isVoxtral3(" Voxtral-Mini-Transcribe-Realtime-3-0 "))
         XCTAssertFalse(MistralRealtimeModels.isVoxtral3("voxtral-mini-transcribe-realtime-2602"))
         XCTAssertFalse(MistralRealtimeModels.isVoxtral3("voxtral-mini-realtime-latest"))
+        XCTAssertFalse(MistralRealtimeModels.isVoxtral3("voxtral-mini-transcribe-realtime-3-1"))
+        XCTAssertFalse(MistralRealtimeModels.isVoxtral3("voxtral-mini-transcribe-realtime-30"))
         XCTAssertFalse(MistralRealtimeModels.isVoxtral3(""))
     }
 

@@ -17,7 +17,7 @@ Status on 2026-09-19 (D added 2026-10-03): symptom A (the one the owner hits) is
 - `mistral realtime session ready request_id=ws-...`
 - `mistral realtime server silent: no server event for 5.0s; ... (loudest -NN dBFS); N sends awaiting completion; last ping answered|unanswered for Xs; request_id=...`. Sends piling up or an unanswered ping point to the network, and completed sends with an answered ping point to Mistral.
 - `mistral realtime server resumed after Xs of silence`
-- `mistral realtime final commit: flush + end; Xs of audio since the last server event (loudest -NN dBFS), ...`. Speech reads around -40 to -20 dBFS and a quiet room below -50. This line settles symptom C.
+- `mistral realtime final commit: flush + end; Xs of audio since the last server event (loudest -NN dBFS), ...`, or `final commit: end; …` for Voxtral Realtime 3, which gets no flush. Speech reads around -40 to -20 dBFS and a quiet room below -50. This line settles symptom C.
 - `mistral realtime closing before transcription.done: ...` is symptom A at stop.
 
 ## Reading the owner's Mac log

@@ -13,7 +13,8 @@ import Synchronization
 ///    a `session.update` body.
 ///  - Audio frames are `input_audio.append`; there is no partial-commit
 ///    concept, so `supportsPeriodicCommit` is false and the stream is ended
-///    once with `input_audio.flush` + `input_audio.end`.
+///    once with `input_audio.flush` + `input_audio.end` (`input_audio.end`
+///    alone for Voxtral Realtime 3, `MistralRealtimeModels`).
 ///  - The server always speaks first (`session.created`), so outbound frames
 ///    are queued until it does — there is no compatibility bypass timer.
 ///  - The server closes the socket normally after `transcription.done`; the

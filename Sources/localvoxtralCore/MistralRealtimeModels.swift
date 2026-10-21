@@ -7,16 +7,22 @@ import Foundation
 /// alias `voxtral-mini-transcribe-realtime-3`, public preview since
 /// 2026-10-20, no open weights) takes a `context_bias` array in
 /// `session.update`, before the first audio chunk, with phrases holding
-/// spaces allowed. Its documented end of stream is `input_audio.end` alone.
+/// spaces allowed. Its docs end the stream with `input_audio.end` and name
+/// no `input_audio.flush`; the docs' event tables leave flush out for 2602
+/// too, so dropping it for Voxtral 3 is a choice the live check settles.
 /// Docs, checked 2026-10-21: docs.mistral.ai/studio/audio/speech-to-text/
 /// transcribe-in-realtime ("Session fields"), .../bias-context-and-vocabulary,
 /// and docs.mistral.ai/studio/audio/migrate-from-voxtral-2.
 package enum MistralRealtimeModels {
     package static let voxtral3 = "voxtral-mini-transcribe-realtime-3-0"
+    package static let voxtral3Alias = "voxtral-mini-transcribe-realtime-3"
 
-    /// Whether `model` names Voxtral Realtime 3, by its id or its alias.
+    /// Whether `model` names Voxtral Realtime 3, by its id or its alias
+    /// exactly: a later 3.x may differ on the wire, and gets 2602's frames
+    /// until it is added here.
     package static func isVoxtral3(_ model: String) -> Bool {
-        model.trimmed.lowercased().hasPrefix("voxtral-mini-transcribe-realtime-3")
+        let id = model.trimmed.lowercased()
+        return id == voxtral3 || id == voxtral3Alias
     }
 
     /// Only Voxtral 3 lists `context_bias` among its session fields; the docs
@@ -25,7 +31,8 @@ package enum MistralRealtimeModels {
         isVoxtral3(model)
     }
 
-    /// 2602's stop flushes, then ends. Voxtral 3 documents no flush event.
+    /// 2602's stop flushes, then ends, as it always has. Voxtral 3 ends only,
+    /// the one stop its docs describe.
     package static func sendsFlushBeforeEnd(_ model: String) -> Bool {
         !isVoxtral3(model)
     }
