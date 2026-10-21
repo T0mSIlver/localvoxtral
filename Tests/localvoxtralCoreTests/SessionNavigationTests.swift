@@ -152,6 +152,25 @@ final class SessionNavigationTests: XCTestCase {
         XCTAssertEqual(resolvedID("cool roentgen", candidates), "wt", "the default names still work")
     }
 
+    /// A session whose last wait is still open shows a dialog where its
+    /// prompt was; no key may go there (#1914).
+    @MainActor
+    func testOnlyALiveSessionWithAnOpenDialogShowsOne() async {
+        var dialog = localSession("w", cwd: "/r/payments", tty: "/dev/ttys001")
+        dialog.openDialog = .permissionPrompt
+        let waiting = dialog
+        let idle = localSession("i", cwd: "/r/web", tty: "/dev/ttys002")
+        let navigator = SessionNavigator(
+            liveSessions: { [waiting, idle] },
+            repositoryRoot: { _ in .unknown },
+            focuser: FakeSessionPaneFocuser(),
+            sleep: ManualSessionClock().sleep
+        )
+        XCTAssertTrue(navigator.showsDialog(sessionID: "w"))
+        XCTAssertFalse(navigator.showsDialog(sessionID: "i"))
+        XCTAssertFalse(navigator.showsDialog(sessionID: "gone"))
+    }
+
     @MainActor
     func testANamedSessionIsFoundByItsNickname() async {
         let session = localSession("s", cwd: "/r/localvoxtral", tty: "/dev/ttys002")

@@ -14,6 +14,7 @@ extension DictationSessionController {
         static let unsupported = "Can't send to that session yet"
         static let notSent = StatusStrings.agentPromptTextKeptInHistory
         static let typedNotSubmitted = "Typed but not sent; the pane changed"
+        static let showsDialog = "Not sent; the session waits on a dialog"
     }
 
     /// What became of an addressed commit.

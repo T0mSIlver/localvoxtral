@@ -114,6 +114,11 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// is attached the session does not expire; once it detaches, the TTL
     /// counts from then. In memory only: a channel ends with the app.
     package var modChannel: ClaudeModChannelLiveness?
+    /// The dialog the session's last `Notification` hook reported (a
+    /// permission, a question) while nothing since says it closed. Its pane
+    /// shows the dialog where the prompt was, so typed text and a Return
+    /// answer it (#1914). Not persisted.
+    package var openDialog: ClaudeNotificationType?
     public var firstSeen: Date
     public var lastActivity: Date
 
@@ -319,6 +324,17 @@ public enum ClaudeSessionReducer {
         // records.
         if let title = record.sessionTitle {
             snapshot.harnessTitle = title
+        }
+
+        // A dialog closes with the next submit, tool run, turn end or
+        // session end. A file change can come while it is still open.
+        switch record.event {
+        case .notification:
+            snapshot.openDialog = record.notificationType
+        case .sessionStart, .userPromptSubmit, .postToolUse, .stop, .sessionEnd:
+            snapshot.openDialog = nil
+        case .cwdChanged, .fileChanged, .focusChanged, .focusCleared, .statusQuery:
+            break
         }
 
         switch record.event {

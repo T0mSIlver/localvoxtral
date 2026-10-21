@@ -716,6 +716,16 @@ package final class SessionNavigator {
         return true
     }
 
+    /// Whether the live session `sessionID` shows a permission or a question
+    /// where its prompt was (#1914): a key typed there picks an option, and
+    /// Return confirms the highlighted one. Asked before any key or Return
+    /// meant for the session's prompt.
+    package func showsDialog(sessionID: String) -> Bool {
+        guard liveSession(sessionID)?.openDialog != nil else { return false }
+        Log.dictation.notice("session pane: the session shows a dialog; no key")
+        return true
+    }
+
     /// Brings a live session's pane forward by registry id; nil when the
     /// session is no longer live, before or after the focus (#1219).
     package func focusPane(sessionID: String) async -> SessionPaneFocusOutcome? {
