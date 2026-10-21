@@ -2150,12 +2150,12 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     }
 
     /// Fails the test, instead of hanging it, when the calls never come.
-    func waitForEnsureCallCount(_ expected: Int, file: StaticString = #filePath, line: UInt = #line) async {
+    func waitForEnsureCallCount(_ expected: Int) async {
         guard ensureCalls.count < expected else { return }
         let wait = BoundedWait()
         ensureCallCountWaiters.append((expected, wait))
         let reached = await wait.value(failAfter: 10)
-        XCTAssertTrue(reached, "\(ensureCalls.count) of \(expected) ensureReady calls: \(ensureCalls)", file: file, line: line)
+        XCTAssertTrue(reached, "\(ensureCalls.count) of \(expected) ensureReady calls: \(ensureCalls)")
     }
 
     func resumeEnsure() {
