@@ -107,6 +107,11 @@ model repo can never change what your install runs.
 The app supervises both helpers, and a watchdog stops them even if the app
 crashes.
 
+Dictation waits only for the speech model. While the polish model is still
+downloading, or if its helper failed, a dictation goes in as spoken and the
+status line says "Polishing not ready; inserted as spoken." Polishing starts
+with the first dictation after the helper is ready.
+
 An end-to-end eval guards transcription and polish quality. It runs real
 audio through the production ASR and polishing path and scores the result
 against an agent-dictation corpus of ~160 cases. Every model or prompt change

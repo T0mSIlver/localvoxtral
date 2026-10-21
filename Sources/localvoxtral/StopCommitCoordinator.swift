@@ -298,6 +298,10 @@ enum StopCommitCoordinator {
         let payloadProvenanceSummary: String?
         /// Set when polishing is on but has no configuration to send to.
         let configurationFailure: (message: String, technicalDetails: String?)?
+        /// The bundled polishing helper was not ready at stop (its model
+        /// still downloading, or it failed): the text goes in as spoken,
+        /// with no failure to report.
+        var polishingUnavailable = false
     }
 
     /// `polishingConfig` is the one the commit sampled at stop.
@@ -310,7 +314,8 @@ enum StopCommitCoordinator {
         latchedReplacementDictionary: ReplacementDictionary?,
         settings: SettingsStore,
         appConfigStore: any AppConfigServing,
-        pasteboardReader: @MainActor () -> any PasteboardReading
+        pasteboardReader: @MainActor () -> any PasteboardReading,
+        polishingUnavailable: Bool = false
     ) -> Preparation {
         let replacementAppliedText =
             (latchedReplacementDictionary
@@ -333,16 +338,17 @@ enum StopCommitCoordinator {
         // no configuration is a missing key — and "set a valid endpoint URL"
         // would send the user hunting for a field that is not on the pane.
         let configurationFailure: (message: String, technicalDetails: String?)? =
-            settings.llmPolishingEnabled && polishingConfig == nil
+            settings.llmPolishingEnabled && polishingConfig == nil && !polishingUnavailable
             ? Self.configurationFailure(for: settings.polishingBackendMode)
             : nil
         return Preparation(
-            polishingConfig: polishingConfig,
+            polishingConfig: polishingUnavailable ? nil : polishingConfig,
             originalText: originalText,
             workingText: clipboardMacro.placeholderText,
             clipboardPayload: clipboardMacro.payload,
             payloadProvenanceSummary: clipboardMacro.summary,
-            configurationFailure: configurationFailure
+            configurationFailure: configurationFailure,
+            polishingUnavailable: polishingUnavailable
         )
     }
 
