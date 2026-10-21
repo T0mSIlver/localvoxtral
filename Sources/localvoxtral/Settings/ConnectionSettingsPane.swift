@@ -156,7 +156,7 @@ struct ConnectionSettingsPane: View {
 
                     SettingsFieldRow(title: "Status") {
                         MistralConfigurationStatusLabel(
-                            summary: settings.mistralAPIStatusSummary,
+                            summary: settings.mistralDictationStatusSummary,
                             isConfigured: settings.isMistralAPIConfigured
                         )
                     }

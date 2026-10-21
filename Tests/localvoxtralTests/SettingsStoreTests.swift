@@ -1211,4 +1211,13 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.mistralAPIStatusSummary, "Ready")
     }
 
+    /// Dictation's Mistral line says where the audio goes once the key is in.
+    func testMistralDictationStatusSaysTheAudioLeavesTheMac() {
+        let store = makeStore()
+        XCTAssertEqual(store.mistralDictationStatusSummary, "API key missing")
+
+        store.mistralAPIKey = "mk-mistral"
+        XCTAssertEqual(store.mistralDictationStatusSummary, "Ready, audio streams to Mistral")
+    }
+
 }

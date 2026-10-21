@@ -118,6 +118,31 @@ final class MistralModelCatalogTests: XCTestCase {
         )
     }
 
+    /// Voxtral Realtime 3 gets its row by id, whether or not the listing sets
+    /// its realtime flag, and the default stays 2602.
+    func testDictationPickerOffersVoxtralRealtime3() throws {
+        for realtimeFlag in [true, false] {
+            let listing = """
+                {"object": "list", "data": [
+                  \(Self.entry("voxtral-mini-transcribe-realtime-2602", name: "voxtral-mini-transcribe-realtime-2602", realtime: true)),
+                  \(Self.entry("voxtral-mini-transcribe-realtime-3-0", name: "voxtral-mini-transcribe-realtime-3-0", realtime: realtimeFlag)),
+                  \(Self.entry("voxtral-mini-transcribe-realtime-3", name: "voxtral-mini-transcribe-realtime-3-0", realtime: realtimeFlag))
+                ]}
+                """
+            let entries = MistralModelCatalog.pickerEntries(
+                for: .dictation,
+                catalog: try MistralModelCatalog.models(fromListResponse: Data(listing.utf8)),
+                storedModel: "",
+                defaultModel: MistralRealtimeWebSocketClient.defaultModel
+            )
+
+            XCTAssertEqual(
+                entries.map(\.tag), ["", "voxtral-mini-transcribe-realtime-3-0"],
+                "realtime flag \(realtimeFlag)")
+            XCTAssertEqual(entries.last?.label, "Voxtral Mini Transcribe Realtime 3.0")
+        }
+    }
+
     /// No key yet, or the fetch failed on first run: the default is still
     /// selectable, never an empty menu.
     func testAnEmptyCatalogStillOffersTheDefault() {

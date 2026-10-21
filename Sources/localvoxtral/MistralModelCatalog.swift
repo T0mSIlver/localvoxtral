@@ -120,7 +120,11 @@ enum MistralModelCatalog {
         let candidates = catalog.filter { model in
             guard !model.isDeprecated else { return false }
             switch purpose {
-            case .dictation: return model.supportsRealtimeTranscription
+            // Voxtral Realtime 3 counts even if the listing leaves its
+            // realtime flag off: the key can still dial it.
+            case .dictation:
+                return model.supportsRealtimeTranscription
+                    || model.ids.contains(where: MistralRealtimeModels.isVoxtral3)
             case .polishing: return model.supportsChat
             }
         }

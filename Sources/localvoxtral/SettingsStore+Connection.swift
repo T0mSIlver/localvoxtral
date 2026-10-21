@@ -87,6 +87,13 @@ extension SettingsStore {
         return isMistralAPIConfigured ? "Ready" : "API key missing"
     }
 
+    /// The Dictation group's line in Mistral API mode, which says the audio
+    /// leaves this Mac: every other dictation mode can be local.
+    var mistralDictationStatusSummary: String {
+        let summary = mistralAPIStatusSummary
+        return summary == "Ready" ? "Ready, audio streams to Mistral" : summary
+    }
+
     var effectiveModelName: String {
         effectiveModelName(for: realtimeProvider)
     }

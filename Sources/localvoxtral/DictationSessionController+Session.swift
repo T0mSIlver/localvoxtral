@@ -422,11 +422,21 @@ extension DictationSessionController {
             "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
         )
 
+        // The user's own terms, as the stall backfill sends them: the context
+        // sources pass their gates at stop. Only a Mistral model that takes
+        // `context_bias` at session start sends them (Voxtral Realtime 3).
+        let contextBias = StopSecondPass.candidates(
+            userTerms: settings.polishSpeakerTerms,
+            dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
+            learnedTerms: [],
+            contextTrusted: false
+        )
         return RealtimeSessionConfiguration(
             endpoint: endpoint,
             apiKey: apiKey,
             model: model,
-            usageBackend: usageBackend
+            usageBackend: usageBackend,
+            contextBias: contextBias
         )
     }
 
