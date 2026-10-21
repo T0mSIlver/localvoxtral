@@ -296,7 +296,11 @@ private struct DownloadsPage: View {
                 }
             }
 
-            if model.downloadsStarted {
+            if model.hasFailedDownload {
+                Button("Try again") { model.retryDownloads() }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("onboarding.downloads.retry")
+            } else if model.downloadsStarted {
                 Text(
                     "You can continue while downloads finish in the background."
                 )

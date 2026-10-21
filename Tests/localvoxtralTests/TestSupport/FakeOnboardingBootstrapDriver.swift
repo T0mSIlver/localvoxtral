@@ -26,4 +26,9 @@ final class FakeOnboardingBootstrapDriver: OnboardingBootstrapDriving {
     func cancel() {
         cancelCallCount += 1
     }
+
+    /// Moves one item, as the backend's status would.
+    func set(_ state: OnboardingItemState, for item: OnboardingItemID) {
+        itemStates[item] = state
+    }
 }

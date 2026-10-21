@@ -470,9 +470,9 @@ struct ManagedBackendStatusRow: View {
     }
 }
 
-/// Pause/Resume/Cancel for the automatic model download. Present only while
-/// there is a download to act on, so a ready or failed engine's row looks
-/// exactly as it did before.
+/// Pause/Resume/Cancel for the automatic model download, and Try again for
+/// an engine that failed to download or start. Absent for a ready, starting
+/// or stopped engine.
 private struct ManagedBackendDownloadControls: View {
     let status: ManagedBackendStatus
     let identifierPrefix: String
@@ -488,7 +488,10 @@ private struct ManagedBackendDownloadControls: View {
         case .pausedModelDownload:
             button("Resume", identifier: "\(identifierPrefix).download.resume", action: onResume)
             button("Cancel", identifier: "\(identifierPrefix).download.cancel", action: onCancel)
-        case .starting, .ready, .stopped, .failed:
+        case .failed:
+            // Resume is the warmup, which retries the download or the start.
+            button("Try again", identifier: "\(identifierPrefix).retry", action: onResume)
+        case .starting, .ready, .stopped:
             EmptyView()
         }
     }

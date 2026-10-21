@@ -220,6 +220,23 @@ final class OnboardingViewModel {
         driver.start(dictation: true, polishing: polishingConsent)
     }
 
+    /// A download this page started failed: offline, a full disk, Hugging
+    /// Face busy. The page offers to try again.
+    var hasFailedDownload: Bool {
+        guard downloadsStarted else { return false }
+        return driver.itemStates.values.contains {
+            if case .failed = $0 { return true }
+            return false
+        }
+    }
+
+    /// Starts the page's downloads again. A model already in the cache is
+    /// not fetched twice, so only what failed runs.
+    func retryDownloads() {
+        guard hasFailedDownload else { return }
+        driver.start(dictation: true, polishing: polishingConsent)
+    }
+
     /// The "I run my own server instead" escape hatch: point both backends at
     /// external URLs, finish onboarding, and jump the user to the Engines tab.
     func useOwnServer() {
