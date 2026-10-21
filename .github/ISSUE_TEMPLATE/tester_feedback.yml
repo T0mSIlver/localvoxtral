@@ -1,0 +1,80 @@
+name: Test feedback
+description: How localvoxtral went for you over the test. Ten questions, about five minutes.
+title: "Test feedback: "
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for trying localvoxtral. Short answers are fine. Anything you
+        write here is public; leave out what you'd rather not share.
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and memory
+      placeholder: MacBook Pro M3, 18 GB
+    validations:
+      required: true
+  - type: dropdown
+    id: first-run
+    attributes:
+      label: From install to your first dictation that worked
+      options:
+        - Under 10 minutes
+        - 10 to 30 minutes
+        - Longer than 30 minutes
+        - It never worked
+    validations:
+      required: true
+  - type: textarea
+    id: first-run-snag
+    attributes:
+      label: If setup snagged anywhere, where?
+  - type: checkboxes
+    id: where
+    attributes:
+      label: Where you dictated
+      options:
+        - label: Claude Code in a terminal
+        - label: Claude Desktop or claude.ai/code
+        - label: Codex, opencode or Mistral Vibe
+        - label: An editor (VS Code, Cursor, Zed…)
+        - label: Chat, email or docs
+  - type: dropdown
+    id: days
+    attributes:
+      label: On how many days did you use it?
+      options:
+        - "1"
+        - 2 to 4
+        - 5 to 9
+        - 10 or more
+    validations:
+      required: true
+  - type: textarea
+    id: best
+    attributes:
+      label: The moment it was most useful
+      description: One concrete example beats a rating.
+  - type: textarea
+    id: worst
+    attributes:
+      label: The moment it got in the way, or made you stop using it
+  - type: input
+    id: before
+    attributes:
+      label: What you used before
+      placeholder: Wispr Flow, superwhisper, Handy, macOS dictation, typing…
+  - type: dropdown
+    id: keep
+    attributes:
+      label: Will you keep it installed?
+      options:
+        - "Yes"
+        - Maybe
+        - "No"
+    validations:
+      required: true
+  - type: input
+    id: call
+    attributes:
+      label: Open to a 15-minute call about it? Leave a way to reach you, or nothing.

@@ -42,7 +42,7 @@ Or install with Homebrew:
 brew install --cask T0mSIlver/localvoxtral/localvoxtral
 ```
 
-You can also download the latest DMG from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). localvoxtral needs an Apple Silicon Mac on macOS 15 or later.
+You can also download the latest DMG from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). localvoxtral needs an Apple Silicon Mac on macOS 15 or later. The local engine downloads about 6 GB on first setup and runs best with 16 GB of memory; on an 8 GB Mac, turn polishing off or pick the smaller models in Settings → Engines.
 
 On first launch, a setup wizard asks for permissions and downloads the engine.
 

@@ -264,6 +264,15 @@ private struct DownloadsPage: View {
         return items
     }
 
+    /// The default polish model needs about 4 GB beside the speech model's
+    /// 3.5, which an 8 GB Mac can't spare, so the toggle says so up front.
+    private var polishingDetail: String {
+        guard let option = PolishModelCatalog.option(forRepoID: model.settings.resolvedManagedLLMPolishingModel)
+        else { return "Downloads a polishing model. You can add it later in Settings." }
+        return "Uses about \(ModelSizeLabel.gigabytes(option.estimatedRAMGB)) of memory while it runs."
+            + " On an 8 GB Mac, leave it off or pick a smaller model later in Settings."
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             OnboardingHeader(
@@ -276,9 +285,7 @@ private struct DownloadsPage: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Also set up LLM polishing")
                         .font(.system(size: 13, weight: .medium))
-                    Text(
-                        "Downloads a small polishing model. You can add it later in Settings."
-                    )
+                    Text(polishingDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -291,6 +298,9 @@ private struct DownloadsPage: View {
                 ForEach(plannedItems) { item in
                     DownloadItemRow(
                         item: item,
+                        sizeLabel: item.downloadSizeLabel(
+                            speechModel: model.settings.managedSpeechModel,
+                            polishModel: model.settings.resolvedManagedLLMPolishingModel),
                         state: model.downloadsStarted ? model.driver.itemStates[item] : nil
                     )
                 }
@@ -314,6 +324,7 @@ private struct DownloadsPage: View {
 
 private struct DownloadItemRow: View {
     let item: OnboardingItemID
+    let sizeLabel: String?
     /// nil before downloads start (planned but not yet running).
     let state: OnboardingItemState?
 
@@ -323,8 +334,15 @@ private struct DownloadItemRow: View {
                 .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title)
-                    .font(.system(size: 13, weight: .medium))
+                HStack(spacing: 6) {
+                    Text(item.title)
+                        .font(.system(size: 13, weight: .medium))
+                    if let sizeLabel {
+                        Text(sizeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 if case .working(let detail, let fraction) = state ?? .pending {
                     HStack(spacing: 8) {
