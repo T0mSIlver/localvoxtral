@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import Foundation
 import SwiftData
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtral
 
@@ -2042,7 +2043,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     /// ensure: cancel it, so that `await ensureReady` throws `CancellationError`.
     private var ensureResumeContinuations: [CheckedContinuation<Void, Error>] = []
     private var polishingEnsureContinuations: [CheckedContinuation<Void, Error>] = []
-    private var ensureCallCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var ensureCallCountWaiters: [(count: Int, wait: BoundedWait)] = []
     private var stopDictationContinuation: CheckedContinuation<Void, Never>?
     private var stopDictationResumeContinuation: CheckedContinuation<Void, Never>?
     private var stopPolishingContinuation: CheckedContinuation<Void, Never>?
@@ -2054,7 +2055,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         ensureStartedContinuation = nil
         let reached = ensureCallCountWaiters.filter { $0.count <= ensureCalls.count }
         ensureCallCountWaiters.removeAll { $0.count <= ensureCalls.count }
-        reached.forEach { $0.continuation.resume() }
+        reached.forEach { $0.wait.resolve() }
 
         if polishing, !dictation, suspendPolishingOnlyEnsure {
             emitStatus(spec: BackendCatalog.polishd, status: polishingOnlyHoldStatus)
@@ -2148,11 +2149,13 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         }
     }
 
-    func waitForEnsureCallCount(_ expected: Int) async {
+    /// Fails the test, instead of hanging it, when the calls never come.
+    func waitForEnsureCallCount(_ expected: Int, file: StaticString = #filePath, line: UInt = #line) async {
         guard ensureCalls.count < expected else { return }
-        await withCheckedContinuation { continuation in
-            ensureCallCountWaiters.append((expected, continuation))
-        }
+        let wait = BoundedWait()
+        ensureCallCountWaiters.append((expected, wait))
+        let reached = await wait.value(failAfter: 10)
+        XCTAssertTrue(reached, "\(ensureCalls.count) of \(expected) ensureReady calls: \(ensureCalls)", file: file, line: line)
     }
 
     func resumeEnsure() {
