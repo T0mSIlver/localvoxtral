@@ -267,7 +267,7 @@ private struct DownloadsPage: View {
     /// The default polish model needs about 4 GB beside the speech model's
     /// 3.5, which an 8 GB Mac can't spare, so the toggle says so up front.
     private var polishingDetail: String {
-        guard let option = PolishModelCatalog.option(forRepoID: model.settings.llmPolishingModel)
+        guard let option = PolishModelCatalog.option(forRepoID: model.settings.resolvedManagedLLMPolishingModel)
         else { return "Downloads a polishing model. You can add it later in Settings." }
         return "Uses about \(ModelSizeLabel.gigabytes(option.estimatedRAMGB)) of memory while it runs."
             + " On an 8 GB Mac, leave it off or pick a smaller model later in Settings."
@@ -300,7 +300,7 @@ private struct DownloadsPage: View {
                         item: item,
                         sizeLabel: item.downloadSizeLabel(
                             speechModel: model.settings.managedSpeechModel,
-                            polishModel: model.settings.llmPolishingModel),
+                            polishModel: model.settings.resolvedManagedLLMPolishingModel),
                         state: model.downloadsStarted ? model.driver.itemStates[item] : nil
                     )
                 }
