@@ -27,6 +27,20 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
+# The app is built for Apple Silicon on macOS 15+. Checked before anything is
+# downloaded, so an Intel Mac or an older macOS gets one line instead of an app
+# that will not open. hw.optional.arm64 reads 1 on Apple Silicon even from a
+# shell running under Rosetta, where `uname -m` says x86_64.
+check_platform() {
+  [ "$(uname -s)" = "Darwin" ] || die "This installer only runs on macOS. Set LOCALVOXTRAL_INSTALL_DRYRUN=1 to test release URL resolution elsewhere."
+  [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = "1" ] \
+    || die "localvoxtral needs a Mac with Apple Silicon (M1 or later)."
+  local macos_version
+  macos_version="$(sw_vers -productVersion 2>/dev/null || true)"
+  [ "${macos_version%%.*}" -ge 15 ] 2>/dev/null \
+    || die "localvoxtral needs macOS 15 or later; this Mac runs macOS ${macos_version:-unknown}."
+}
+
 cleanup() {
   if [ -n "$INSTALL_TMP_DIR" ]; then
     rm -rf "$INSTALL_TMP_DIR"
@@ -222,6 +236,8 @@ main() {
     *) die "Unknown LOCALVOXTRAL_CHANNEL: ${CHANNEL} (expected stable or nightly)" ;;
   esac
 
+  [ "$DRYRUN" = "1" ] || check_platform
+
   if [ "$CHANNEL" = "nightly" ] && [ "$VERSION" = "latest" ]; then
     step "Resolving the newest localvoxtral build of main (nightly or stable)"
   else
@@ -234,8 +250,6 @@ main() {
     step "Dry run requested; stopping before download and macOS install steps"
     exit 0
   fi
-
-  [ "$(uname -s)" = "Darwin" ] || die "This installer only runs on macOS. Set LOCALVOXTRAL_INSTALL_DRYRUN=1 to test release URL resolution elsewhere."
 
   require_command ditto
   require_command xattr
