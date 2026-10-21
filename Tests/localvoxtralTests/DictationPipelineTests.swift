@@ -1125,6 +1125,8 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         pipeline.viewModel.settings.dictationBackendMode = .managedLocal
         pipeline.viewModel.settings.polishingBackendMode = .managedLocal
+        // As a start that went ahead of the polishing helper leaves it.
+        pipeline.viewModel.session.managedPolishingSkippedAtStart = true
         backend.polishdStatus = .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4))
         await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.polishingNotReady)
 
@@ -1132,6 +1134,27 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(requests.isEmpty, "nothing was sent to the polishing helper")
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
         XCTAssertEqual(pipeline.records.all.map(\.status), [DictationSessionStatus.sttCompleted.rawValue])
+    }
+
+    /// A helper whose download ended during the dictation and that is still
+    /// starting at stop does not answer yet: the text goes in as spoken, not
+    /// into a failed request.
+    func testADictationStoppedWhileThePolishingHelperStillStartsGoesInAsSpoken() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let backend = OnboardingTestBackendManager()
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, backendManager: backend)
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.settings.dictationBackendMode = .managedLocal
+        pipeline.viewModel.settings.polishingBackendMode = .managedLocal
+        pipeline.viewModel.session.managedPolishingSkippedAtStart = true
+        backend.polishdStatus = .starting
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.polishingNotReady)
+
+        let requests = await polish.requests
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
     }
 
     /// The same dictation once the polishing helper is ready is polished,
@@ -1145,6 +1168,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         pipeline.viewModel.settings.dictationBackendMode = .managedLocal
         pipeline.viewModel.settings.polishingBackendMode = .managedLocal
+        pipeline.viewModel.session.managedPolishingSkippedAtStart = true
         backend.polishdStatus = .ready
         await stopAndFinalize(pipeline)
 

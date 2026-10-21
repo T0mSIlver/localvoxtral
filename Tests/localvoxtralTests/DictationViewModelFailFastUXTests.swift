@@ -616,6 +616,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             "the polishing model is still downloading"
         )
         XCTAssertNotEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertTrue(viewModel.session.managedPolishingSkippedAtStart, "its stop commits as spoken")
         viewModel.session.abortConnectingSession()
         backendManager.resumePolishingEnsure()
     }
@@ -646,6 +647,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertEqual(backendManager.polishdStatus, .ready)
         XCTAssertNotNil(viewModel.session.sessionProvider)
+        XCTAssertFalse(viewModel.session.managedPolishingSkippedAtStart, "its stop polishes")
         viewModel.session.abortConnectingSession()
     }
 

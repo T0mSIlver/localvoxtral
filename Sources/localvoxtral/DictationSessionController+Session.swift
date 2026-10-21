@@ -120,6 +120,7 @@ extension DictationSessionController {
         }
         let needsManagedDictation = settings.dictationBackendMode == .managedLocal
         let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
+        managedPolishingSkippedAtStart = false
 
         guard needsManagedDictation || needsManagedPolishing else {
             isConnectingRealtimeSession = true
@@ -191,7 +192,7 @@ extension DictationSessionController {
                     )
                     // A helper that is only starting is seconds away: the
                     // dictation waits for it, as before.
-                    if let polishingReady, !self.managedPolishingIsDelayed {
+                    if let polishingReady, self.backendManager.polishdStatus == .starting {
                         await polishingReady.value
                     }
                 } onCancel: {
@@ -222,6 +223,10 @@ extension DictationSessionController {
                           && self.settings.polishingBackendMode == .managedLocal)),
                   self.isConnectingRealtimeSession
             else { return }
+            if splitsPolishing, self.backendManager.polishdStatus != .ready {
+                Log.polishing.notice("dictation starts before the polishing helper is ready")
+                self.managedPolishingSkippedAtStart = true
+            }
             await self.beginDictationSession(outputMode: outputMode)
             // beginDictationSession re-checks secure input and may refuse
             // HERE — long after the initiating gesture ended (a toggle tap
@@ -262,23 +267,13 @@ extension DictationSessionController {
         }
     }
 
-    /// The bundled polishing helper cannot be ready in seconds: its model is
-    /// downloading or paused, or it failed. A dictation does not wait for it.
-    var managedPolishingIsDelayed: Bool {
-        switch backendManager.polishdStatus {
-        case .preparingModel, .pausedModelDownload, .failed: true
-        case .starting, .ready, .stopped: false
-        }
-    }
-
-    /// Both helpers are bundled, polishing is on for `outputMode`, and the
-    /// polishing helper is one the start did not wait for: the dictation is
-    /// committed as spoken. A helper that is only stopped or starting was
-    /// waited for, and polishes as before.
+    /// The start went ahead of the bundled polishing helper, polishing is
+    /// on for `outputMode`, and the helper is still not ready: the dictation
+    /// is committed as spoken.
     func managedPolishingIsUnavailable(outputMode: DictationOutputMode) -> Bool {
-        settings.dictationBackendMode == .managedLocal
+        managedPolishingSkippedAtStart
             && isManagedPolishingRequired(outputMode: outputMode)
-            && managedPolishingIsDelayed
+            && backendManager.polishdStatus != .ready
     }
 
     func cancelManagedStartupTask() {
