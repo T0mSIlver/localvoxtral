@@ -6,8 +6,14 @@ setting is listed at the end, under [Settings](#settings).
 
 ## Shortcuts
 
-One key dictates. You pick it in **Settings → Dictation**, as one of two
-triggers.
+One key dictates: Fn/Globe on a new install. You pick it in **Settings →
+Dictation**, as one of two triggers.
+
+If tapping Fn/Globe also opens the emoji picker or switches the input
+source, set **System Settings → Keyboard → Press 🌐 key to** to **Do
+Nothing**, or pick Right Option in **Settings → Dictation**. Some external
+keyboards have no Fn key macOS can see; pick Right Option or a key
+combination there.
 
 **Modifier keys.** Fn/Globe, Right Command, Right Option, or a chord: two
 modifier keys or more pressed together, such as left Shift and right Shift.
@@ -707,7 +713,7 @@ History; the panes sit under the sidebar's Settings header.
   installed and what it supports
   ([See whether a dictation joined](integration-matrix.md#see-whether-a-dictation-joined)).
   cmux's pane also holds its [session join](coding-agents.md#join-sessions-in-cmux).
-- **About**: version, link to the repository, and **Export Diagnostics**,
+- **About**: version, link to the repository, and **Export diagnostics…**,
   which writes a redacted local report to the Desktop.
 
 ## Screenshots

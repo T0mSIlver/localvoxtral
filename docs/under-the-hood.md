@@ -42,10 +42,9 @@ you have selected, at launch or when you switch to one, and the Engines pane,
 which shows the fields. Managed local mode uses no key, so that setup never
 opens the Keychain.
 
-This matters because localvoxtral is not signed with an Apple Developer
-identity. macOS ties each stored item to the exact build that wrote it, so a
-newly installed build asks you to allow its first read. Answer **Always
-Allow** and that build stops asking.
+The first read may show a macOS prompt asking whether localvoxtral may use
+the stored key. Answer **Always Allow**. Releases are signed with the same
+Developer ID, so updates keep that answer.
 
 ## The managed local engines
 

@@ -56,6 +56,12 @@ edited ([how new defaults arrive](dictation.md#edit-the-polishing-prompts-and-di
 > Settings → Privacy & Security → Accessibility** (**Device Control and Data
 > Access** on macOS 27) and add it back. Later updates keep the grant.
 
+## Report a problem
+
+Open **Settings → About → Report an Issue**. To attach details, click
+**Export diagnostics…** on the same page: it writes a redacted report to your
+Desktop. Read it before you attach it.
+
 ## Uninstall with Homebrew
 
 This command also removes settings, downloaded engines and caches:
@@ -68,6 +74,35 @@ It leaves two things that other apps can share. Models stay in
 `~/.cache/huggingface`, and so does `~/Library/Application Support/default.store`,
 where older versions kept the dictation history. Stored API keys stay in
 your login keychain.
+
+## Uninstall without Homebrew
+
+1. In Settings, under **Integrations**, click **Remove** on each agent plugin
+   or hook you installed.
+2. Quit localvoxtral and move `/Applications/localvoxtral.app` to the Trash.
+3. Delete its data, settings and caches:
+
+   ```bash
+   rm -rf ~/Library/Application\ Support/localvoxtral \
+     ~/Library/Caches/com.localvoxtral.app \
+     ~/Library/HTTPStorages/com.localvoxtral.app \
+     ~/Library/Preferences/com.localvoxtral.app.plist \
+     ~/Library/Saved\ Application\ State/com.localvoxtral.app.savedState
+   ```
+
+4. Delete the models it downloaded:
+
+   ```bash
+   rm -rf ~/.cache/huggingface/hub/models--T0mSIlver--Voxtral-Mini-4B-Realtime-2602-4bit-qhead \
+     ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-* \
+     ~/.cache/huggingface/hub/models--mlx-community--nemotron-3.5-asr-streaming-0.6b-8bit
+   ```
+
+5. If you installed the `localvoxtral` command, run
+   `sudo rm /usr/local/bin/localvoxtral`.
+
+Stored API keys stay in your login keychain until you delete them in
+Keychain Access.
 
 ## The Homebrew cask
 
@@ -106,10 +141,11 @@ settings and models are kept either way.
 To install one specific build, pass its tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | LOCALVOXTRAL_VERSION=v0.8.5-nightly.20260916 bash
+curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | LOCALVOXTRAL_VERSION=<tag> bash
 ```
 
-Only the seven most recent nightlies are kept, so pin a tag only for a build
+Take the tag from the [Releases](https://github.com/T0mSIlver/localvoxtral/releases)
+page. Only the seven most recent nightlies are kept, so pin a tag only for a build
 you are testing now. Nightlies are notarized like stable releases. The rare
 nightly built while signing was unavailable says so at the top of its
 release notes; install it with the installer script, which re-signs it on
