@@ -84,6 +84,29 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
         )
     }
 
+    /// A start after a failure reads pending until the backend leaves
+    /// `.failed`, so the wizard's Try again goes away on the click, not once
+    /// a pending shutdown ends; a new failure shows again (#1929).
+    func testARetryReadsPendingUntilTheBackendLeavesFailed() async {
+        let manager = OnboardingTestBackendManager()
+        manager.polishdStatus = .failed(summary: "Model download failed: check your internet connection.", detail: nil)
+        let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
+        driver.start(dictation: false, polishing: true)
+        guard case .failed = driver.itemStates[.polishing] else {
+            return XCTFail("the first start shows the failure: \(String(describing: driver.itemStates[.polishing]))")
+        }
+
+        driver.start(dictation: false, polishing: true)
+        XCTAssertEqual(driver.itemStates[.polishing], .pending, "the retry hides the failure at once")
+
+        await awaitStateChange(from: driver, until: { if case .working = $0[.polishing] { true } else { false } }) {
+            manager.polishdStatus = .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil))
+        }
+        await awaitStateChange(from: driver, until: { if case .failed = $0[.polishing] { true } else { false } }) {
+            manager.polishdStatus = .failed(summary: "Model download failed: check your internet connection.", detail: nil)
+        }
+    }
+
     func testStart_polishingOnly_onlyTracksPolishingItem() {
         let manager = OnboardingTestBackendManager()
         let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
@@ -115,6 +138,21 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
     private final class Box<Value> {
         var value: Value
         init(_ value: Value) { self.value = value }
+    }
+
+    private func awaitStateChange(
+        from driver: LiveOnboardingBootstrapDriver,
+        until reached: @escaping ([OnboardingItemID: OnboardingItemState]) -> Bool,
+        afterStartingObservation mutate: () -> Void
+    ) async {
+        await withCheckedContinuation { continuation in
+            driver.onItemStatesChanged = { [weak driver] states in
+                guard reached(states) else { return }
+                driver?.onItemStatesChanged = nil
+                continuation.resume()
+            }
+            mutate()
+        }
     }
 
     private func awaitReadyStateChange(

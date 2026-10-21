@@ -14,6 +14,9 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
 
     @ObservationIgnored private let backendManager: any ManagedBackendManaging
     @ObservationIgnored private let waitForPendingShutdowns: @MainActor () async -> Void
+    /// Items that had failed when the last start ran, shown pending until
+    /// their backend leaves `.failed`.
+    @ObservationIgnored private var restartedAfterFailure: Set<OnboardingItemID> = []
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var dictationRequested = false
     @ObservationIgnored private var polishingRequested = false
@@ -37,6 +40,13 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
         guard dictation || polishing else { return }
         dictationRequested = dictation
         polishingRequested = polishing
+        // A start after a failure is a retry: the row reads pending until the
+        // backend leaves `.failed`, so Try again does not stay up while the
+        // start waits for a shutdown (#1929).
+        restartedAfterFailure = Set(itemStates.compactMap { id, state in
+            if case .failed = state { return id }
+            return nil
+        })
 
         recomputeItemStates()
         beginObservingIfNeeded()
@@ -85,13 +95,22 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
         }
     }
 
+    private func itemState(_ id: OnboardingItemID, managedStatus: ManagedBackendStatus) -> OnboardingItemState {
+        let state = OnboardingItemState(managedStatus: managedStatus)
+        guard case .failed = state else {
+            restartedAfterFailure.remove(id)
+            return state
+        }
+        return restartedAfterFailure.contains(id) ? .pending : state
+    }
+
     private func recomputeItemStates() {
         var states: [OnboardingItemID: OnboardingItemState] = [:]
         if dictationRequested {
-            states[.dictation] = OnboardingItemState(managedStatus: backendManager.speechdStatus)
+            states[.dictation] = itemState(.dictation, managedStatus: backendManager.speechdStatus)
         }
         if polishingRequested {
-            states[.polishing] = OnboardingItemState(managedStatus: backendManager.polishdStatus)
+            states[.polishing] = itemState(.polishing, managedStatus: backendManager.polishdStatus)
         }
         if itemStates != states {
             itemStates = states

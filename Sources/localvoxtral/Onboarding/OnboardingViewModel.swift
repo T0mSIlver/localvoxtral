@@ -222,16 +222,24 @@ final class OnboardingViewModel {
 
     /// A download this page started failed: offline, a full disk, Hugging
     /// Face busy. The page offers to try again.
+    /// A download failed and none still runs: a retry restarts the page's
+    /// downloads, and must not cut one that is still going.
     var hasFailedDownload: Bool {
         guard downloadsStarted else { return false }
-        return driver.itemStates.values.contains {
+        let states = driver.itemStates.values
+        let failed = states.contains {
             if case .failed = $0 { return true }
             return false
         }
+        let running = states.contains {
+            if case .working = $0 { return true }
+            return false
+        }
+        return failed && !running
     }
 
     /// Starts the page's downloads again. A model already in the cache is
-    /// not fetched twice, so only what failed runs.
+    /// not fetched twice.
     func retryDownloads() {
         guard hasFailedDownload else { return }
         driver.start(dictation: true, polishing: polishingConsent)

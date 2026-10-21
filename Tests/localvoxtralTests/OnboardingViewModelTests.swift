@@ -571,6 +571,23 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertFalse(model.hasFailedDownload, "the retry runs again")
     }
 
+    /// Try again restarts both downloads, so it waits until none still
+    /// runs: a retry must not cut a download that is going (#1929).
+    func testNoRetryIsOfferedWhileTheOtherDownloadStillRuns() {
+        let (model, _, driver, _, _) = makeModel()
+        model.polishingConsent = true
+        model.startDownloads()
+
+        driver.set(.working(detail: "Downloading model 40%", fraction: 0.4), for: .dictation)
+        driver.set(.failed(summary: "Model download failed: check your internet connection."), for: .polishing)
+        XCTAssertFalse(model.hasFailedDownload)
+        model.retryDownloads()
+        XCTAssertEqual(driver.startCallCount, 1, "the running download was not restarted")
+
+        driver.set(.ready, for: .dictation)
+        XCTAssertTrue(model.hasFailedDownload)
+    }
+
     // MARK: - "I run my own server instead"
 
     func testUseOwnServer_setsBothModesExternal_completes_opensEndpoints_andCloses() {
