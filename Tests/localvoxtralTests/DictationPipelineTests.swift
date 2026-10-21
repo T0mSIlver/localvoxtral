@@ -1112,6 +1112,47 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(recordsAtEngineStop, 1, "the engine stopped before the dictation ended")
     }
 
+    /// With both engines bundled, a dictation stopped while the polishing
+    /// model still downloads goes in as spoken: no request to a helper that
+    /// is not there, no failure alert, and a status line that says why
+    /// (#1933).
+    func testADictationStoppedWhileThePolishingModelDownloadsGoesInAsSpoken() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let backend = OnboardingTestBackendManager()
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, backendManager: backend)
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.settings.dictationBackendMode = .managedLocal
+        pipeline.viewModel.settings.polishingBackendMode = .managedLocal
+        backend.polishdStatus = .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4))
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.polishingNotReady)
+
+        let requests = await polish.requests
+        XCTAssertTrue(requests.isEmpty, "nothing was sent to the polishing helper")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.status), [DictationSessionStatus.sttCompleted.rawValue])
+    }
+
+    /// The same dictation once the polishing helper is ready is polished,
+    /// as before.
+    func testADictationStoppedOnceThePolishingHelperIsReadyIsPolished() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let backend = OnboardingTestBackendManager()
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, backendManager: backend)
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.settings.dictationBackendMode = .managedLocal
+        pipeline.viewModel.settings.polishingBackendMode = .managedLocal
+        backend.polishdStatus = .ready
+        await stopAndFinalize(pipeline)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [Self.phrase])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"])
+    }
+
     /// The same quit during a quick capture files the words so far as the
     /// stop would: in History as a capture, then in the Inbox (#1296).
     func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {

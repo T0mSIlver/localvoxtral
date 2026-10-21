@@ -107,6 +107,7 @@ final class DictationViewModel {
         static let connectingRealtimeBackend = "Connecting to realtime backend..."
         static let finalizingPreviousDictation = "Finalizing previous dictation..."
         static let polishing = "Polishing..."
+        static let polishingNotReady = "Polishing not ready; inserted as spoken."
         static let transcribingAgain = "Transcribing again..."
         static let awaitingMicrophonePermission = "Awaiting microphone permission..."
         static let requestingMicrophonePermission = "Requesting microphone permission..."
