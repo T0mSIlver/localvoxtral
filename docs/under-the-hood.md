@@ -43,8 +43,8 @@ which shows the fields. Managed local mode uses no key, so that setup never
 opens the Keychain.
 
 The first read may show a macOS prompt asking whether localvoxtral may use
-the stored key. Answer **Always Allow**. Releases are signed with the same
-Developer ID, so updates keep that answer.
+the stored key. Answer **Always Allow**. Stable releases are signed with the
+same Developer ID, so updates keep that answer.
 
 ## The managed local engines
 
