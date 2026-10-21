@@ -7,9 +7,9 @@ import Foundation
 /// alias `voxtral-mini-transcribe-realtime-3`, public preview since
 /// 2026-10-20, no open weights) takes a `context_bias` array in
 /// `session.update`, before the first audio chunk, with phrases holding
-/// spaces allowed. Its docs end the stream with `input_audio.end` and name
-/// no `input_audio.flush`; the docs' event tables leave flush out for 2602
-/// too, so dropping it for Voxtral 3 is a choice the live check settles.
+/// spaces allowed. Its stop is 2602's: the docs name only
+/// `input_audio.end`, but they leave `input_audio.flush` out for 2602 too,
+/// which has always taken it.
 /// Docs, checked 2026-10-21: docs.mistral.ai/studio/audio/speech-to-text/
 /// transcribe-in-realtime ("Session fields"), .../bias-context-and-vocabulary,
 /// and docs.mistral.ai/studio/audio/migrate-from-voxtral-2.
@@ -31,14 +31,9 @@ package enum MistralRealtimeModels {
         isVoxtral3(model)
     }
 
-    /// 2602's stop flushes, then ends, as it always has. Voxtral 3 ends only,
-    /// the one stop its docs describe.
-    package static func sendsFlushBeforeEnd(_ model: String) -> Bool {
-        !isVoxtral3(model)
-    }
-
-    /// The docs set no count limit; the terms share the model's context with
-    /// the audio. The batch model's 100 keeps a long dictation clear of it.
+    /// The docs set no fixed count, but a list over the model's limit is a
+    /// 400 and the terms share its context with the audio. The batch model's
+    /// 100 is the cap until a live check finds the realtime one.
     package static let maxContextBiasTerms = 100
 
     /// The `context_bias` list for a realtime session: candidates in priority

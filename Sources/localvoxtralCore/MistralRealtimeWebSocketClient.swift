@@ -13,8 +13,7 @@ import Synchronization
 ///    a `session.update` body.
 ///  - Audio frames are `input_audio.append`; there is no partial-commit
 ///    concept, so `supportsPeriodicCommit` is false and the stream is ended
-///    once with `input_audio.flush` + `input_audio.end` (`input_audio.end`
-///    alone for Voxtral Realtime 3, `MistralRealtimeModels`).
+///    once with `input_audio.flush` + `input_audio.end`.
 ///  - The server always speaks first (`session.created`), so outbound frames
 ///    are queued until it does — there is no compatibility bypass timer.
 ///  - The server closes the socket normally after `transcription.done`; the
@@ -348,22 +347,18 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         guard final else { return }
 
         let committedAt = now()
-        let commit: (summary: String, flushes: Bool)? = state.withLock { s in
+        let summary: String? = state.withLock { s in
             guard s.base.socketState != .disconnected else { return nil }
             guard !s.hasRequestedFinalCommit else { return nil }
             s.hasRequestedFinalCommit = true
             s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
             s.health?.endSent(at: committedAt)
-            let flushes = MistralRealtimeModels.sendsFlushBeforeEnd(s.usageModel ?? Self.defaultModel)
-            return (s.health?.finalCommitSummary(at: committedAt) ?? "", flushes)
+            return s.health?.finalCommitSummary(at: committedAt) ?? ""
         }
-        guard let commit else { return }
+        guard let summary else { return }
 
-        Log.realtime.notice(
-            "mistral realtime final commit: \(commit.flushes ? "flush + end" : "end", privacy: .public); \(commit.summary, privacy: .public)")
-        if commit.flushes {
-            send(event: ["type": "input_audio.flush"])
-        }
+        Log.realtime.notice("mistral realtime final commit: flush + end; \(summary, privacy: .public)")
+        send(event: ["type": "input_audio.flush"])
         send(event: ["type": "input_audio.end"])
     }
 

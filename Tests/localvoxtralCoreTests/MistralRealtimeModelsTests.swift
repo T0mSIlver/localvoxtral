@@ -19,11 +19,10 @@ final class MistralRealtimeModelsTests: XCTestCase {
         XCTAssertFalse(MistralRealtimeModels.isVoxtral3(""))
     }
 
-    func testOnlyVoxtral3TakesContextBiasAndSkipsTheFlush() {
+    func testOnlyVoxtral3TakesContextBias() {
         XCTAssertTrue(MistralRealtimeModels.acceptsContextBias(MistralRealtimeModels.voxtral3))
-        XCTAssertFalse(MistralRealtimeModels.sendsFlushBeforeEnd(MistralRealtimeModels.voxtral3))
+        XCTAssertTrue(MistralRealtimeModels.acceptsContextBias(MistralRealtimeModels.voxtral3Alias))
         XCTAssertFalse(MistralRealtimeModels.acceptsContextBias(MistralRealtimeWebSocketClient.defaultModel))
-        XCTAssertTrue(MistralRealtimeModels.sendsFlushBeforeEnd(MistralRealtimeWebSocketClient.defaultModel))
     }
 
     func testContextBiasKeepsPhrasesAndDropsDuplicatesAndBlanks() {
@@ -117,7 +116,8 @@ final class MistralRealtimeModelsTests: XCTestCase {
         )
     }
 
-    func testVoxtral3FinalCommitSendsEndWithoutFlush() {
+    /// Voxtral 3 keeps 2602's stop: flush, then end, once.
+    func testVoxtral3FinalCommitSendsFlushThenEnd() {
         let (client, session, task) = makeClient(model: MistralRealtimeModels.voxtral3)
         defer {
             task.cancel()
@@ -127,7 +127,9 @@ final class MistralRealtimeModelsTests: XCTestCase {
         client.sendCommit(final: true)
         client.sendCommit(final: true)
 
-        XCTAssertEqual(client.debugRecordedFrames(), [#"{"type":"input_audio.end"}"#])
+        XCTAssertEqual(
+            client.debugRecordedFrames(),
+            [#"{"type":"input_audio.flush"}"#, #"{"type":"input_audio.end"}"#])
         XCTAssertTrue(client.debugStateSnapshot().isAwaitingFinalCommitDone)
     }
     #endif
