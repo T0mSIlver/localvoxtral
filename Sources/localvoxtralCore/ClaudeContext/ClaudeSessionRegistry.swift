@@ -645,6 +645,12 @@ public final class ClaudeSessionRegistry: Sendable {
         resolveUnique(reporting: desktopSessionID, via: \.desktopSessionID, label: "Claude Desktop")
     }
 
+    /// The one fresh session whose prompts were relayed from the Claude
+    /// project thread `projectThreadID` (#1194), with the same rules.
+    package func resolve(projectThreadID: String) -> ClaudeSessionResolution {
+        resolveUnique(reporting: projectThreadID, via: \.projectThreadID, label: "Claude project thread")
+    }
+
     /// The one fresh session whose `key` equals `value`, across both origins.
     /// Shared by the two globally-unique-id arms so they cannot drift apart on
     /// the stale/ambiguous rules.

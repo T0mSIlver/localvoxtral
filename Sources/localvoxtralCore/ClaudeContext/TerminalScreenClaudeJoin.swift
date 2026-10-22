@@ -111,14 +111,24 @@ package struct ClaudeBrowserTabBinding: Sendable, Equatable {
     }
 }
 
-/// The Claude Desktop session id a `.desktopSession` join resolved on. Same
-/// role as `ClaudeBrowserTabBinding`: commit-time liveness re-resolves THIS id
+/// The id a `.desktopSession` join resolved on: a Code-tab session's
+/// `local_…` id, or a Claude project thread's `cmsg_…` id (#1194). Same role
+/// as `ClaudeBrowserTabBinding`: commit-time liveness re-resolves THIS id
 /// instead of reading the desktop window a second time.
 package struct ClaudeDesktopSessionBinding: Sendable, Equatable {
-    package let desktopSessionID: String
+    /// Nil for a project thread.
+    package let desktopSessionID: String?
+    /// Nil for a Code-tab session.
+    package let projectThreadID: String?
 
     package init(desktopSessionID: String) {
         self.desktopSessionID = desktopSessionID
+        self.projectThreadID = nil
+    }
+
+    package init(projectThreadID: String) {
+        self.desktopSessionID = nil
+        self.projectThreadID = projectThreadID
     }
 }
 

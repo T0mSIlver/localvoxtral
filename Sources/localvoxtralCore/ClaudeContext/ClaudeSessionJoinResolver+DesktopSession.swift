@@ -32,8 +32,7 @@ extension ClaudeSessionJoinResolver {
             return ClaudeJoinResolution(join: nil)
         }
         if ClaudeProjectPageURL.isProjectPage(address) {
-            Self.abstainedDesktopSessionJoin(outcome: "focus is in a Claude project, whose page names no session")
-            return ClaudeJoinResolution(join: nil, focusedClaudeProject: true)
+            return resolveViaProjectThread(target: target, address: address)
         }
         guard let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address) else {
             // Never the address itself: it names what the user is looking at.
@@ -63,6 +62,41 @@ extension ClaudeSessionJoinResolver {
             Self.abstainedDesktopSessionJoin(outcome: "ambiguous")
         }
         return ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true)
+    }
+
+    /// A Claude project's page (#1194). The project chat is served by a
+    /// session that sends no hooks, so it joins nothing. A thread joins the
+    /// one live session whose prompts were relayed from the same thread id
+    /// (`ClaudeProjectThreadEnvelope`), by exact equality like a Code-tab id.
+    /// Every abstention still says the focus is in a project, which keeps the
+    /// agent polish profile; it is not an unmatched session view, because a
+    /// thread whose session has not had a message since the app started is
+    /// expected to abstain.
+    private func resolveViaProjectThread(target: TerminalScreenTarget, address: String) -> ClaudeJoinResolution {
+        guard let threadID = ClaudeProjectPageURL.threadID(inPageURL: address) else {
+            Self.abstainedDesktopSessionJoin(outcome: "focus is in a Claude project's chat, which no session reports")
+            return ClaudeJoinResolution(join: nil, focusedClaudeProject: true)
+        }
+        switch registry.resolve(projectThreadID: threadID) {
+        case .resolved(let snapshot):
+            Log.claudeContext.info(
+                "Claude Desktop joined to a live Claude session via its project thread id"
+            )
+            return ClaudeJoinResolution(join: ClaudeSessionJoin(
+                target: target,
+                snapshot: snapshot,
+                windowID: nil,
+                mechanism: .desktopSession,
+                desktopSession: ClaudeDesktopSessionBinding(projectThreadID: threadID)
+            ))
+        case .unknown:
+            Self.abstainedDesktopSessionJoin(outcome: "focus is in a Claude project thread no live session has seen")
+        case .stale:
+            Self.abstainedDesktopSessionJoin(outcome: "project thread stale")
+        case .ambiguous:
+            Self.abstainedDesktopSessionJoin(outcome: "project thread ambiguous")
+        }
+        return ClaudeJoinResolution(join: nil, focusedClaudeProject: true)
     }
 
     /// Outcome only. The desktop session id is a live handle to a session's

@@ -168,6 +168,81 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         }
     }
 
+    private let threadID = "cmsg_01HregWkNSNjrQYcwzckDpZzB3Lf"
+    private var threadAddress: String {
+        "https://claude.ai/epitaxy/project/chan_01HregWkNSNjrQYcwzckDpZz?thread=\(threadID)"
+    }
+
+    // A prompt the project's harness relayed into a thread's session (the
+    // envelope measured 2026-10-05), on a remote host as measured.
+    private func relayedPrompt(session: String = "s1", thread: String? = nil) -> ClaudeHookRecord {
+        ClaudeHookRecord(
+            event: .userPromptSubmit,
+            sessionID: session,
+            timestamp: 0,
+            prompt: #"<wake reason="message" current-time="2026-10-05T19:21:57Z"><project id="chan_01HregWkNSNjrQYcwzckDpZz" type="project"><thread ts="\#(thread ?? threadID)"><message trigger="true" from="human" id="cmsg_01Msg">run the tests</message></thread></project></wake>"#
+        )
+    }
+
+    private func threadSession(_ session: String = "s1", thread: String? = nil, in registry: ClaudeSessionRegistry) {
+        XCTAssertNotNil(registry.ingest(record(session: session, claudePID: nil, desktopSessionID: nil), origin: remote))
+        XCTAssertNotNil(registry.ingest(relayedPrompt(session: session, thread: thread), origin: remote))
+    }
+
+    // A thread's page joins the one session its messages were relayed to:
+    // the agent profile through the join, no screen read, and the binding
+    // commit-time liveness re-resolves.
+    func testAProjectThreadJoinsTheSessionItsMessagesReach() async throws {
+        let registry = makeRegistry()
+        threadSession(in: registry)
+        threadSession("s2", thread: "cmsg_01OtherThread", in: registry)
+        let joinResolver = resolver(registry: registry, address: threadAddress)
+        let resolution = await joinResolver.resolution(target: desktop)
+        let join = try XCTUnwrap(resolution.join)
+        XCTAssertEqual(join.mechanism, .desktopSession)
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertEqual(join.desktopSession, ClaudeDesktopSessionBinding(projectThreadID: threadID))
+        XCTAssertNil(join.windowID)
+        XCTAssertFalse(resolution.focusedClaudeProject, "a join gives the agent profile itself")
+        XCTAssertTrue(joinResolver.isStillLive(join))
+    }
+
+    // The project chat, a thread no session has had a message from, a thread
+    // two sessions claim, and a session that only started: no join, and still
+    // the agent profile.
+    func testAProjectThreadNoSessionAloneHasSeenAbstains() async {
+        let chat = makeRegistry()
+        threadSession(in: chat)
+        let seen = makeRegistry()
+        XCTAssertNotNil(seen.ingest(record(session: "s1", claudePID: nil, desktopSessionID: nil), origin: remote))
+        let twice = makeRegistry()
+        threadSession("s1", in: twice)
+        threadSession("s2", in: twice)
+        XCTAssertEqual(twice.resolve(projectThreadID: threadID), .ambiguous)
+        for (registry, address) in [
+            (chat, "https://claude.ai/epitaxy/project/chan_01HregWkNSNjrQYcwzckDpZz"),
+            (seen, threadAddress),
+            (twice, threadAddress),
+        ] {
+            let resolution = await resolver(registry: registry, address: address).resolution(target: desktop)
+            XCTAssertNil(resolution.join, address)
+            XCTAssertTrue(resolution.focusedClaudeProject, address)
+            XCTAssertFalse(resolution.focusedSessionUnmatched, address)
+        }
+    }
+
+    // A second session claiming the thread mid-dictation kills the join, as
+    // a second reporter of a Code-tab id does.
+    func testASecondClaimOnTheThreadKillsTheJoin() async throws {
+        let registry = makeRegistry()
+        threadSession(in: registry)
+        let joinResolver = resolver(registry: registry, address: threadAddress)
+        let resolved = await joinResolver.resolve(target: desktop)
+        let join = try XCTUnwrap(resolved)
+        threadSession("s2", in: registry)
+        XCTAssertFalse(joinResolver.isStillLive(join))
+    }
+
     // Agent polish for a project page, as for a joined Code-tab session; the
     // plain chat, which neither joins nor is a project, keeps the standard one.
     func testAProjectPageGetsTheAgentPolishProfile() {
