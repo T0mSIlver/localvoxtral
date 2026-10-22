@@ -63,12 +63,14 @@ extension SettingsStore {
     var trimmedMistralAPIKey: String { mistralAPIKey.trimmed }
 
     var resolvedMistralDictationModel: String {
-        let model = mistralDictationModel.trimmed
+        let model = MistralModelCatalog.requestModelID(
+            for: mistralDictationModel.trimmed, catalog: mistralModelCatalog)
         return model.isEmpty ? MistralRealtimeWebSocketClient.defaultModel : model
     }
 
     var resolvedMistralPolishingModel: String {
-        let model = mistralPolishingModel.trimmed
+        let model = MistralModelCatalog.requestModelID(
+            for: mistralPolishingModel.trimmed, catalog: mistralModelCatalog)
         return model.isEmpty ? MistralPolishDefaults.model : model
     }
 

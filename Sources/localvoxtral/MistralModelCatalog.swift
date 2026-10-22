@@ -79,7 +79,10 @@ enum MistralModelCatalog {
     }
 
     /// `GET /v1/models` → one `MistralModel` per `name`, in the order the
-    /// listing first mentions each.
+    /// listing first mentions each. A `name` with a space is a display name
+    /// (Voxtral's "Voxtral Mini Transcribe Realtime 3.0", 2026-10-22), not
+    /// an id the API takes: the group's id is then its longest member id,
+    /// the most specific spelling, and the name only matches a stored value.
     static func models(fromListResponse data: Data) throws -> [MistralModel] {
         let entries = try JSONDecoder().decode(ListResponse.self, from: data).data
         var order: [String] = []
@@ -92,9 +95,15 @@ enum MistralModelCatalog {
         return order.compactMap { name in
             guard let members = groups[name], let first = members.first else { return nil }
             var ids = members.map(\.id)
-            if !ids.contains(name) { ids.insert(name, at: 0) }
+            var id = name
+            if isDisplayName(name), !ids.contains(name) {
+                id = mostSpecificID(in: ids) ?? name
+                ids.append(name)
+            } else if !ids.contains(name) {
+                ids.insert(name, at: 0)
+            }
             return MistralModel(
-                id: name,
+                id: id,
                 ids: ids,
                 supportsChat: first.capabilities?.completionChat ?? false,
                 supportsRealtimeTranscription:
@@ -162,6 +171,29 @@ enum MistralModelCatalog {
             )
         }
         return entries
+    }
+
+    private static func isDisplayName(_ value: String) -> Bool {
+        value.contains(where: \.isWhitespace)
+    }
+
+    /// The longest id that is not a display name, first on a tie.
+    private static func mostSpecificID(in ids: [String]) -> String? {
+        ids.filter { !isDisplayName($0) }
+            .reduce(nil) { best, id in id.count > (best?.count ?? 0) ? id : best }
+    }
+
+    /// The model id to send for a stored value. A display name, which an
+    /// earlier picker stored as a tag, becomes its model's id: Mistral
+    /// answers it with a 403 (owner's log, 2026-10-22). It reads the ids,
+    /// not `id`, because a catalog cached by that picker still has the
+    /// name as its `id`. Anything else is sent as stored.
+    static func requestModelID(for stored: String, catalog: [MistralModel]) -> String {
+        guard isDisplayName(stored),
+            let model = catalog.first(where: { $0.answers(to: stored) }),
+            let id = mostSpecificID(in: model.ids)
+        else { return stored }
+        return id
     }
 
     /// The row a stored id selects: an alias selects its model's row, and

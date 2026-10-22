@@ -1095,6 +1095,30 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.resolvedMistralPolishingModel, MistralPolishDefaults.model)
     }
 
+    /// The picker stored Voxtral 3's display name as its tag (2026-10-22),
+    /// and the socket sent it as `?model=`, which Mistral refuses with a 403.
+    /// That stored value now resolves to the model's id, even through the
+    /// catalog that build cached, whose `id` is the display name too.
+    func testAStoredVoxtralDisplayNameResolvesToItsId() {
+        let store = makeStore()
+        store.mistralModelCatalog = [
+            MistralModel(
+                id: "Voxtral Mini Transcribe Realtime 3.0",
+                ids: [
+                    "voxtral-mini-transcribe-realtime-3",
+                    "voxtral-mini-transcribe-realtime-3-0",
+                    "Voxtral Mini Transcribe Realtime 3.0",
+                ],
+                supportsChat: false,
+                supportsRealtimeTranscription: true,
+                supportsReasoning: false,
+                isDeprecated: false)
+        ]
+        store.mistralDictationModel = "Voxtral Mini Transcribe Realtime 3.0"
+
+        XCTAssertEqual(store.resolvedMistralDictationModel, "voxtral-mini-transcribe-realtime-3-0")
+    }
+
     func testResolvedWebSocketURL_mistralAPI_usesThePinnedHostedEndpoint() {
         let store = makeStore()
         store.dictationBackendMode = .mistralAPI

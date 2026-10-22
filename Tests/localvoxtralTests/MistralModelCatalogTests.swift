@@ -125,8 +125,8 @@ final class MistralModelCatalogTests: XCTestCase {
             let listing = """
                 {"object": "list", "data": [
                   \(Self.entry("voxtral-mini-transcribe-realtime-2602", name: "voxtral-mini-transcribe-realtime-2602", realtime: true)),
-                  \(Self.entry("voxtral-mini-transcribe-realtime-3-0", name: "voxtral-mini-transcribe-realtime-3-0", realtime: realtimeFlag)),
-                  \(Self.entry("voxtral-mini-transcribe-realtime-3", name: "voxtral-mini-transcribe-realtime-3-0", realtime: realtimeFlag))
+                  \(Self.entry("voxtral-mini-transcribe-realtime-3", name: "Voxtral Mini Transcribe Realtime 3.0", realtime: realtimeFlag)),
+                  \(Self.entry("voxtral-mini-transcribe-realtime-3-0", name: "Voxtral Mini Transcribe Realtime 3.0", realtime: realtimeFlag))
                 ]}
                 """
             let entries = MistralModelCatalog.pickerEntries(
@@ -141,6 +141,44 @@ final class MistralModelCatalogTests: XCTestCase {
                 "realtime flag \(realtimeFlag)")
             XCTAssertEqual(entries.last?.label, "Voxtral Mini Transcribe Realtime 3.0")
         }
+    }
+
+    /// The live listing names Voxtral models for people ("Voxtral Mini
+    /// Transcribe Realtime 3.0", 2026-10-21), and Mistral answers that name
+    /// in `?model=` with a 403 (owner's log, 2026-10-22). The row's tag is
+    /// an id, and a display name an earlier build stored is sent as its id.
+    func testAVoxtralDisplayNameIsNeverSentAsTheModel() throws {
+        let listing = """
+            {"object": "list", "data": [
+              \(Self.entry("voxtral-mini-transcribe-realtime-2602", name: "Voxtral Mini Transcribe Realtime", realtime: true)),
+              \(Self.entry("voxtral-mini-realtime-latest", name: "Voxtral Mini Transcribe Realtime", realtime: true)),
+              \(Self.entry("voxtral-mini-transcribe-realtime-3", name: "Voxtral Mini Transcribe Realtime 3.0", realtime: true)),
+              \(Self.entry("voxtral-mini-transcribe-realtime-3-0", name: "Voxtral Mini Transcribe Realtime 3.0", realtime: true))
+            ]}
+            """
+        let catalog = try MistralModelCatalog.models(fromListResponse: Data(listing.utf8))
+
+        XCTAssertEqual(
+            catalog.map(\.id),
+            ["voxtral-mini-transcribe-realtime-2602", "voxtral-mini-transcribe-realtime-3-0"])
+        let entries = MistralModelCatalog.pickerEntries(
+            for: .dictation, catalog: catalog, storedModel: "",
+            defaultModel: MistralRealtimeWebSocketClient.defaultModel)
+        XCTAssertEqual(entries.map(\.tag), ["", "voxtral-mini-transcribe-realtime-3-0"])
+
+        let stored = "Voxtral Mini Transcribe Realtime 3.0"
+        XCTAssertEqual(
+            MistralModelCatalog.requestModelID(for: stored, catalog: catalog),
+            "voxtral-mini-transcribe-realtime-3-0")
+        XCTAssertEqual(
+            MistralModelCatalog.selectionTag(
+                storedModel: stored, catalog: catalog,
+                defaultModel: MistralRealtimeWebSocketClient.defaultModel),
+            "voxtral-mini-transcribe-realtime-3-0")
+        XCTAssertEqual(
+            MistralModelCatalog.requestModelID(
+                for: "voxtral-mini-realtime-latest", catalog: catalog),
+            "voxtral-mini-realtime-latest")
     }
 
     /// No key yet, or the fetch failed on first run: the default is still
