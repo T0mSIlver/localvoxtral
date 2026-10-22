@@ -482,6 +482,60 @@ final class HFModelDownloaderTests: XCTestCase {
         }
     }
 
+    /// Offline, the row says to check the connection rather than only
+    /// "Model download failed.", which a tester cannot act on.
+    func testAnOfflineDownloadSaysToCheckTheConnection() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["model.safetensors"]),
+            payloads: [:],
+            downloadFailure: URLError(.notConnectedToInternet)
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+
+        do {
+            try await downloader.prepare(pausableRequest(pin: pin)) { _ in }
+            XCTFail("expected the offline prepare to throw")
+        } catch let error as ModelDownloadError {
+            XCTAssertEqual(error.errorDescription, "Model download failed: check your internet connection.")
+            XCTAssertNotNil(error.technicalDetails, "the cause stays in the details")
+        }
+    }
+
+    func testTheSummaryNamesNoNetworkAndAFullDiskAndNothingElse() {
+        let offline = "Model download failed: check your internet connection."
+        let full = "Model download failed: not enough disk space."
+        for code: URLError.Code in [.notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .timedOut] {
+            XCTAssertEqual(ModelDownloadError.transportSummary(for: URLError(code)), offline, "\(code)")
+        }
+        XCTAssertEqual(ModelDownloadError.transportSummary(for: CocoaError(.fileWriteOutOfSpace)), full)
+        XCTAssertEqual(ModelDownloadError.transportSummary(for: NSError(domain: NSPOSIXErrorDomain, code: 28)), full)
+        let wrapped = NSError(
+            domain: NSCocoaErrorDomain, code: CocoaError.Code.fileWriteUnknown.rawValue,
+            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 28)]
+        )
+        XCTAssertEqual(ModelDownloadError.transportSummary(for: wrapped), full, "ENOSPC under a move's error")
+        XCTAssertEqual(ModelDownloadError.transportSummary(for: URLError(.badServerResponse)), "Model download failed.")
+        XCTAssertEqual(
+            ModelDownloadError.transportSummary(for: NSError(domain: NSPOSIXErrorDomain, code: 13)),
+            "Model download failed."
+        )
+    }
+
+    /// A rate limit or a server error says to wait; the repository stays in
+    /// the details. Other statuses keep the long form.
+    func testABusyHuggingFaceSaysToTryAgainAndKeepsTheRepoInTheDetails() {
+        let limited = ModelDownloadError.repositoryRequestFailed(repoID: "org/model", statusCode: 429)
+        XCTAssertEqual(limited.errorDescription, "Hugging Face is busy (HTTP 429). Try again in a minute.")
+        XCTAssertEqual(limited.technicalDetails, "Model repository request failed for org/model (HTTP 429).")
+        let failing = ModelDownloadError.fileRequestFailed(path: "model.safetensors", statusCode: 503)
+        XCTAssertEqual(failing.errorDescription, "Hugging Face is busy (HTTP 503). Try again in a minute.")
+        let missing = ModelDownloadError.repositoryRequestFailed(repoID: "org/model", statusCode: 404)
+        XCTAssertEqual(missing.errorDescription, "Model repository request failed for org/model (HTTP 404).")
+    }
+
     // MARK: - A file that arrived but never reached the cache
 
     func testFileRequestFailureDeletesTheDownloadedTemporaryFile() async throws {

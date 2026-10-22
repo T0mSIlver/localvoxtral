@@ -54,6 +54,18 @@ package enum ModelDownloadError: LocalizedError, Sendable {
 
     package var errorDescription: String? {
         switch self {
+        case .repositoryRequestFailed(_, let statusCode) where Self.isBusy(statusCode),
+             .fileRequestFailed(_, let statusCode) where Self.isBusy(statusCode):
+            return "Hugging Face is busy (HTTP \(statusCode)). Try again in a minute."
+        default:
+            return longDescription
+        }
+    }
+
+    /// The description with the repository or file named, for the logs and
+    /// the alert's details.
+    private var longDescription: String {
+        switch self {
         case .repositoryRequestFailed(let repoID, let statusCode):
             return "Model repository request failed for \(repoID) (HTTP \(statusCode))."
         case .resolvedRevisionMismatch(let expected, let actual):
@@ -71,7 +83,46 @@ package enum ModelDownloadError: LocalizedError, Sendable {
 
     package var technicalDetails: String? {
         if case .transport(_, let detail) = self { return detail }
-        return errorDescription
+        return longDescription
+    }
+
+    /// Rate limited, or the server failing: waiting is the fix.
+    private static func isBusy(_ statusCode: Int) -> Bool {
+        statusCode == 429 || (500...599).contains(statusCode)
+    }
+
+    /// The download failure a person reads, naming the two causes they can
+    /// fix themselves: no network and a full disk. Anything else stays
+    /// generic; the cause is in the details.
+    package static func transportSummary(for error: any Error) -> String {
+        if let urlError = error as? URLError, offlineCodes.contains(urlError.code) {
+            return "Model download failed: check your internet connection."
+        }
+        if isOutOfSpace(error) {
+            return "Model download failed: not enough disk space."
+        }
+        return "Model download failed."
+    }
+
+    private static let offlineCodes: [URLError.Code] = [
+        .notConnectedToInternet, .networkConnectionLost, .cannotFindHost,
+        .cannotConnectToHost, .dnsLookupFailed, .timedOut,
+    ]
+
+    /// A write that met a full volume: Foundation's code, or ENOSPC (28 on
+    /// both Darwin and Linux), directly or as the underlying error.
+    private static func isOutOfSpace(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.Code.fileWriteOutOfSpace.rawValue
+        {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == 28 { return true }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return isOutOfSpace(underlying)
+        }
+        return false
     }
 }
 
@@ -532,7 +583,7 @@ package struct HFModelDownloader: ModelPreparing {
             throw error
         } catch {
             throw ModelDownloadError.transport(
-                message: "Model download failed.",
+                message: ModelDownloadError.transportSummary(for: error),
                 detail: error.localizedDescription
             )
         }

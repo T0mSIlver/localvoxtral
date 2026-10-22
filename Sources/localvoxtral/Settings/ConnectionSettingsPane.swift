@@ -179,7 +179,8 @@ struct ConnectionSettingsPane: View {
                         identifierPrefix: "engines.dictation",
                         onPause: { viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.speechd) },
                         onResume: { viewModel.engines.resumeManagedModelDownload(for: BackendCatalog.speechd) },
-                        onCancel: { viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.speechd) }
+                        onCancel: { viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.speechd) },
+                        onboardingCompleted: settings.onboardingCompleted
                     )
                 }
             }
@@ -287,7 +288,8 @@ struct ConnectionSettingsPane: View {
                         identifierPrefix: "engines.polishing",
                         onPause: { viewModel.engines.pauseManagedModelDownload(for: BackendCatalog.polishd) },
                         onResume: { viewModel.engines.resumeManagedModelDownload(for: BackendCatalog.polishd) },
-                        onCancel: { viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.polishd) }
+                        onCancel: { viewModel.engines.cancelManagedModelDownload(for: BackendCatalog.polishd) },
+                        onboardingCompleted: settings.onboardingCompleted
                     )
                 }
             }
@@ -453,6 +455,7 @@ struct ManagedBackendStatusRow: View {
     let onPause: () -> Void
     let onResume: () -> Void
     let onCancel: () -> Void
+    var onboardingCompleted = true
 
     var body: some View {
         SettingsFieldRow(title: title) {
@@ -463,22 +466,31 @@ struct ManagedBackendStatusRow: View {
                     identifierPrefix: identifierPrefix,
                     onPause: onPause,
                     onResume: onResume,
-                    onCancel: onCancel
+                    onCancel: onCancel,
+                    onboardingCompleted: onboardingCompleted
                 )
             }
         }
     }
 }
 
-/// Pause/Resume/Cancel for the automatic model download. Present only while
-/// there is a download to act on, so a ready or failed engine's row looks
-/// exactly as it did before.
-private struct ManagedBackendDownloadControls: View {
+/// Pause/Resume/Cancel for the automatic model download, and Try again for
+/// an engine that failed to download or start. Absent for a ready, starting
+/// or stopped engine.
+struct ManagedBackendDownloadControls: View {
     let status: ManagedBackendStatus
     let identifierPrefix: String
     let onPause: () -> Void
     let onResume: () -> Void
     let onCancel: () -> Void
+    let onboardingCompleted: Bool
+
+    /// Try again is the warmup, which waits for setup to finish; until then
+    /// the wizard's own Try again is the retry, so this one would do nothing.
+    static func offersRetry(for status: ManagedBackendStatus, onboardingCompleted: Bool) -> Bool {
+        guard case .failed = status else { return false }
+        return onboardingCompleted
+    }
 
     var body: some View {
         switch status {
@@ -488,7 +500,10 @@ private struct ManagedBackendDownloadControls: View {
         case .pausedModelDownload:
             button("Resume", identifier: "\(identifierPrefix).download.resume", action: onResume)
             button("Cancel", identifier: "\(identifierPrefix).download.cancel", action: onCancel)
-        case .starting, .ready, .stopped, .failed:
+        case .failed where Self.offersRetry(for: status, onboardingCompleted: onboardingCompleted):
+            // Resume is the warmup, which retries the download or the start.
+            button("Try again", identifier: "\(identifierPrefix).retry", action: onResume)
+        case .failed, .starting, .ready, .stopped:
             EmptyView()
         }
     }
