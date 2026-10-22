@@ -196,3 +196,8 @@ vLLM's venv already cached, and it runs on it. Two traps:
 `realtime_term_bench.py` streams a recording set through either server and
 writes `{"id", "text"}` rows for hypotheses mode. With `--paced` it sends the
 audio at 1x and prints time from speech onset to first text, by language.
+`--ids <file>` keeps only the case ids listed in the file, one per line.
+`--mistral` sends the set to Mistral's hosted API instead, with the app's
+frames and the key in `~/.config/localvoxtral/mistral_api_key`, and
+`--context-bias` adds each case's `sessionTerms` as the app would. Only use
+them on a set the owner has cleared to leave his machines.

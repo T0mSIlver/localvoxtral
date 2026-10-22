@@ -16,6 +16,17 @@ kyutai_realtime_shim.py reads.
 
 Works against vLLM (scripts/linux/voxtral-vllm.sh) and the Kyutai shim. The
 output holds transcripts: keep it under the gitignored EvalRecordings/.
+
+--mistral speaks Mistral's hosted protocol instead, the frames the app's
+MistralRealtimeWebSocketClient sends: the key from
+~/.config/localvoxtral/mistral_api_key as a Bearer header, the model in
+`?model=`, and with --context-bias the case's sessionTerms as `context_bias`
+normalized the way the app normalizes it (Realtime 3 only; 2602 ends the
+session with error 3051). No `target_streaming_delay_ms`, like the app,
+which leaves the server default. Each case retries once after a dropped
+socket or a refused upgrade. This sends the
+case audio and terms to api.mistral.ai, so run it only on a set the owner
+has cleared for that.
 """
 
 import argparse
@@ -93,6 +104,76 @@ async def run_case(url: str, model: str, pcm: bytes, paced: bool, terms: list[st
     }
 
 
+MISTRAL_URL = "wss://api.mistral.ai/v1/audio/transcriptions/realtime"
+MAX_CONTEXT_BIAS_TERMS = 100
+
+
+def context_bias(candidates: list[str]) -> list[str]:
+    """The list the app sends: a port of MistralRealtimeModels.contextBias(from:).
+    Whitespace runs collapse to one space, a case-insensitive key keeps the
+    first spelling, and the list stops at 100."""
+    seen: set[str] = set()
+    terms: list[str] = []
+    for candidate in candidates:
+        term = " ".join(candidate.split())
+        if not term or term.lower() in seen:
+            continue
+        seen.add(term.lower())
+        terms.append(term)
+        if len(terms) == MAX_CONTEXT_BIAS_TERMS:
+            break
+    return terms
+
+
+async def run_mistral_case(
+    model: str, key: str, pcm: bytes, paced: bool, terms: list[str] | None
+) -> dict:
+    step = CHUNK_SAMPLES * 2
+    first_delta = None
+    url = f"{MISTRAL_URL}?model={model}"
+    headers = {"Authorization": f"Bearer {key}"}
+    async with websockets.connect(url, max_size=None, additional_headers=headers) as ws:
+        created = json.loads(await ws.recv())
+        if created.get("type") != "session.created":
+            raise RuntimeError(f"unexpected first event: {created.get('type')}")
+        session: dict = {"audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000}}
+        if terms:
+            session["context_bias"] = terms
+        await ws.send(json.dumps({"type": "session.update", "session": session}))
+
+        async def reader() -> str:
+            nonlocal first_delta
+            parts: list[str] = []
+            while True:
+                event = json.loads(await ws.recv())
+                kind = event.get("type")
+                if kind == "transcription.text.delta" and event.get("text"):
+                    parts.append(event["text"])
+                    if first_delta is None and event["text"].strip():
+                        first_delta = time.monotonic()
+                elif kind == "transcription.done":
+                    return (event.get("text") or "".join(parts)).strip()
+                elif kind == "error":
+                    raise RuntimeError(f"mistral error: {event.get('error', event)}")
+
+        read = asyncio.create_task(reader())
+        started = time.monotonic()
+        for n, i in enumerate(range(0, len(pcm), step)):
+            if paced:
+                await asyncio.sleep(max(0.0, started + n * CHUNK_SAMPLES / 16000 - time.monotonic()))
+            chunk = base64.b64encode(pcm[i : i + step]).decode()
+            await ws.send(json.dumps({"type": "input_audio.append", "audio": chunk}))
+        await ws.send(json.dumps({"type": "input_audio.flush"}))
+        await ws.send(json.dumps({"type": "input_audio.end"}))
+        text = await asyncio.wait_for(read, timeout=120)
+        done = time.monotonic()
+    return {
+        "text": text,
+        "first_text": None if first_delta is None else first_delta - started,
+        "after_last_audio": done - started - len(pcm) / 32000 if paced else None,
+    }
+
+
 def summary(values: list[float]) -> str:
     if not values:
         return "n=0"
@@ -103,7 +184,10 @@ def summary(values: list[float]) -> str:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", required=True)
+    parser.add_argument("--url")
+    parser.add_argument("--mistral", action="store_true", help="Mistral's hosted protocol")
+    parser.add_argument("--context-bias", action="store_true", help="with --mistral")
+    parser.add_argument("--ids", type=Path, help="file of case ids to keep, one per line")
     parser.add_argument("--model", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--cases", type=Path, default=Path("EvalRecordings/term-recall/cases.json"))
@@ -114,25 +198,51 @@ async def main() -> None:
     parser.add_argument("--prompt-terms", action="store_true")
     parser.add_argument("--limit", type=int, help="first N cases per language")
     args = parser.parse_args()
+    if not args.mistral and not args.url:
+        parser.error("--url is required without --mistral")
+    key = ""
+    if args.mistral:
+        key = (Path.home() / ".config/localvoxtral/mistral_api_key").read_text().strip()
 
     case_file = json.loads(args.cases.read_text())
     manifest = json.loads((args.recordings / "manifest.json").read_text())
     files = {r["id"]: args.recordings / r["file"] for r in manifest["recordings"]}
     cases = [c for c in case_file["cases"] if c["id"] in files]
+    if args.ids:
+        keep = set(args.ids.read_text().split())
+        cases = [c for c in cases if c["id"] in keep]
     if args.limit:
         cases = [c for c in cases if c["language"] == "en"][: args.limit] + [
             c for c in cases if c["language"] == "fr"
         ][: args.limit]
-    print(f"cases={len(cases)} paced={args.paced} prompt={args.prompt_terms}", file=sys.stderr)
+    print(
+        f"cases={len(cases)} paced={args.paced} prompt={args.prompt_terms}"
+        f" mistral={args.mistral} context_bias={args.context_bias}",
+        file=sys.stderr,
+    )
 
     latency: dict[str, list[float]] = {"en": [], "fr": []}
     tail: dict[str, list[float]] = {"en": [], "fr": []}
     no_text = 0
+    normalized = 0
     with args.out.open("w") as out:
         for n, case in enumerate(cases, 1):
             pcm = read_pcm(files[case["id"]])
-            terms = case["sessionTerms"] if args.prompt_terms else None
-            result = await run_case(args.url, args.model, pcm, args.paced, terms)
+            if args.mistral:
+                terms = context_bias(case["sessionTerms"]) if args.context_bias else None
+                if terms is not None and terms != case["sessionTerms"][:MAX_CONTEXT_BIAS_TERMS]:
+                    normalized += 1
+                # One retry: a dropped socket or a 429 mid-run would otherwise
+                # throw away the minutes already paid for.
+                try:
+                    result = await run_mistral_case(args.model, key, pcm, args.paced, terms)
+                except (websockets.ConnectionClosed, websockets.InvalidStatus) as error:
+                    print(f"{case['id']}: retrying after {type(error).__name__}", file=sys.stderr)
+                    await asyncio.sleep(5)
+                    result = await run_mistral_case(args.model, key, pcm, args.paced, terms)
+            else:
+                terms = case["sessionTerms"] if args.prompt_terms else None
+                result = await run_case(args.url, args.model, pcm, args.paced, terms)
             out.write(json.dumps({"id": case["id"], "text": result["text"]}) + "\n")
             out.flush()
             if args.paced:
@@ -143,6 +253,8 @@ async def main() -> None:
                 tail[case["language"]].append(result["after_last_audio"])
             if n % 20 == 0:
                 print(f"{n}/{len(cases)}", file=sys.stderr, flush=True)
+    if args.mistral and args.context_bias:
+        print(f"cases whose context_bias differs from raw sessionTerms[:100]: {normalized}", file=sys.stderr)
     if args.paced:
         for lang in ("en", "fr"):
             print(f"{lang} first text after speech onset: {summary(latency[lang])}", file=sys.stderr)
