@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import Foundation
 import SwiftData
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtral
 
@@ -595,11 +596,79 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
-        await backendManager.waitUntilEnsureStarted()
+        await backendManager.waitForEnsureCallCount(2)
         backendManager.resumeEnsure()
         await viewModel.session.managedStartupTask?.value
 
-        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: true)])
+        // Each on its own, so the polishing one never holds the dictation
+        // (#1933).
+        XCTAssertEqual(backendManager.ensureCalls.count, 2)
+        XCTAssertTrue(backendManager.ensureCalls.contains(.init(dictation: true, polishing: false)))
+        XCTAssertTrue(backendManager.ensureCalls.contains(.init(dictation: false, polishing: true)))
+    }
+
+    /// A first dictation does not wait for the polishing model's download:
+    /// once the dictation engine is ready, the session connects while the
+    /// polishing model is still downloading (#1933).
+    func testAFirstDictationDoesNotWaitForThePolishingModelDownload() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        backendManager.suspendPolishingOnlyEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.session.isShowingConnectionFailureAlert = true
+        viewModel.fakeMicrophone.authorization = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitForEnsureCallCount(2)
+        XCTAssertNil(viewModel.session.sessionProvider, "the dictation engine is not ready yet")
+
+        backendManager.resumeEnsure()
+        await viewModel.session.managedStartupTask?.value
+
+        XCTAssertNotNil(viewModel.session.sessionProvider, "the session connected without the polishing model")
+        XCTAssertEqual(
+            backendManager.polishdStatus,
+            .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4)),
+            "the polishing model is still downloading"
+        )
+        XCTAssertNotEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertTrue(viewModel.session.managedPolishingSkippedAtStart, "its stop commits as spoken")
+        viewModel.session.abortConnectingSession()
+        backendManager.resumePolishingEnsure()
+    }
+
+    /// A polishing helper that is only starting is seconds away: the
+    /// dictation still waits for it.
+    func testADictationWaitsForAPolishingHelperThatIsOnlyStarting() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        backendManager.suspendPolishingOnlyEnsure = true
+        backendManager.polishingOnlyHoldStatus = .starting
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.session.isShowingConnectionFailureAlert = true
+        viewModel.fakeMicrophone.authorization = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitForEnsureCallCount(2)
+        backendManager.resumeEnsure()
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertNil(viewModel.session.sessionProvider, "the start went ahead of a starting polishing helper")
+
+        backendManager.resumePolishingEnsure()
+        await viewModel.session.managedStartupTask?.value
+
+        XCTAssertEqual(backendManager.polishdStatus, .ready)
+        XCTAssertNotNil(viewModel.session.sessionProvider)
+        XCTAssertFalse(viewModel.session.managedPolishingSkippedAtStart, "its stop polishes")
+        viewModel.session.abortConnectingSession()
     }
 
     func testStartDictationInManagedModeAwaitsBackendManagerAndSurfacesFailure() async {
@@ -1973,6 +2042,13 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     }
     var ensureError: Error?
     var suspendEnsure = false
+    /// Holds a polishing-only ensure as its model download would, apart from
+    /// `suspendEnsure`: the polishing model shows downloading until
+    /// `resumePolishingEnsure()`.
+    var suspendPolishingOnlyEnsure = false
+    /// What the held polishing ensure shows: a download unless told otherwise.
+    var polishingOnlyHoldStatus = ManagedBackendStatus.preparingModel(
+        progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4))
     var suspendStopDictation = false
     private(set) var ensureCalls: [EnsureCall] = []
     private(set) var stopAllCallCount = 0
@@ -1987,7 +2063,9 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     /// Throwing, so `pauseModelDownload` / `cancelModelDownload` can model what
     /// the real manager does to a caller waiting on the shared single-flight
     /// ensure: cancel it, so that `await ensureReady` throws `CancellationError`.
-    private var ensureResumeContinuation: CheckedContinuation<Void, Error>?
+    private var ensureResumeContinuations: [CheckedContinuation<Void, Error>] = []
+    private var polishingEnsureContinuations: [CheckedContinuation<Void, Error>] = []
+    private var ensureCallCountWaiters: [(count: Int, wait: BoundedWait)] = []
     private var stopDictationContinuation: CheckedContinuation<Void, Never>?
     private var stopDictationResumeContinuation: CheckedContinuation<Void, Never>?
     private var stopPolishingContinuation: CheckedContinuation<Void, Never>?
@@ -1997,10 +2075,18 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         finishedStopDictationsAtEnsure.append(finishedStopDictationCount)
         ensureStartedContinuation?.resume()
         ensureStartedContinuation = nil
+        let reached = ensureCallCountWaiters.filter { $0.count <= ensureCalls.count }
+        ensureCallCountWaiters.removeAll { $0.count <= ensureCalls.count }
+        reached.forEach { $0.wait.resolve() }
 
-        if suspendEnsure {
+        if polishing, !dictation, suspendPolishingOnlyEnsure {
+            emitStatus(spec: BackendCatalog.polishd, status: polishingOnlyHoldStatus)
             try await withCheckedThrowingContinuation { continuation in
-                ensureResumeContinuation = continuation
+                polishingEnsureContinuations.append(continuation)
+            }
+        } else if suspendEnsure {
+            try await withCheckedThrowingContinuation { continuation in
+                ensureResumeContinuations.append(continuation)
             }
         }
 
@@ -2053,9 +2139,10 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     /// awaiting it — a dictation session waiting on the download — sees a
     /// `CancellationError`.
     private func cancelSuspendedEnsure() {
-        let continuation = ensureResumeContinuation
-        ensureResumeContinuation = nil
-        continuation?.resume(throwing: CancellationError())
+        let continuations = ensureResumeContinuations + polishingEnsureContinuations
+        ensureResumeContinuations = []
+        polishingEnsureContinuations = []
+        continuations.forEach { $0.resume(throwing: CancellationError()) }
     }
 
     func recentOutput(for spec: ManagedBackendSpec) -> [String] {
@@ -2084,9 +2171,26 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         }
     }
 
+    /// Fails the test, instead of hanging it, when the calls never come.
+    func waitForEnsureCallCount(_ expected: Int) async {
+        guard ensureCalls.count < expected else { return }
+        let wait = BoundedWait()
+        ensureCallCountWaiters.append((expected, wait))
+        let reached = await wait.value(failAfter: 10)
+        XCTAssertTrue(reached, "\(ensureCalls.count) of \(expected) ensureReady calls: \(ensureCalls)")
+    }
+
     func resumeEnsure() {
-        ensureResumeContinuation?.resume()
-        ensureResumeContinuation = nil
+        let continuations = ensureResumeContinuations
+        ensureResumeContinuations = []
+        continuations.forEach { $0.resume() }
+    }
+
+    /// Ends the polishing model's download held by `suspendPolishingOnlyEnsure`.
+    func resumePolishingEnsure() {
+        let continuations = polishingEnsureContinuations
+        polishingEnsureContinuations = []
+        continuations.forEach { $0.resume() }
     }
 
     func resumeStopDictation() {

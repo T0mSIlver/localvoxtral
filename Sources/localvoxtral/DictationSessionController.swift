@@ -362,6 +362,10 @@ final class DictationSessionController {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
+    /// This session's start went ahead of a bundled polishing helper that
+    /// was not ready (#1933): its stop commits as spoken unless the helper
+    /// is ready by then.
+    var managedPolishingSkippedAtStart = false
     /// Counts session starts that reached `prepareDictationSession`. A start
     /// still capturing context when this moves on has been replaced, even
     /// once the replacement's startup task has cleared `managedStartupTaskID`.

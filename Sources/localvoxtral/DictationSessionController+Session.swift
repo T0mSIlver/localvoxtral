@@ -120,6 +120,7 @@ extension DictationSessionController {
         }
         let needsManagedDictation = settings.dictationBackendMode == .managedLocal
         let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
+        managedPolishingSkippedAtStart = false
 
         guard needsManagedDictation || needsManagedPolishing else {
             isConnectingRealtimeSession = true
@@ -173,11 +174,30 @@ extension DictationSessionController {
                     self.managedStartupTaskID = nil
                 }
             }
+            // With both helpers bundled, polishing gets ready beside the
+            // dictation engine and never holds it while its model downloads
+            // or after it failed: the dictation goes in unpolished instead of
+            // waiting for gigabytes or refusing (#1933).
+            let splitsPolishing = needsManagedDictation && needsManagedPolishing
+            let polishingReady: Task<Void, Never>? = splitsPolishing
+                ? Task { @MainActor [weak self] in
+                    try? await self?.backendManager.ensureReady(dictation: false, polishing: true)
+                }
+                : nil
             do {
-                try await self.backendManager.ensureReady(
-                    dictation: needsManagedDictation,
-                    polishing: needsManagedPolishing
-                )
+                try await withTaskCancellationHandler {
+                    try await self.backendManager.ensureReady(
+                        dictation: needsManagedDictation,
+                        polishing: needsManagedPolishing && !splitsPolishing
+                    )
+                    // A helper that is only starting is seconds away: the
+                    // dictation waits for it, as before.
+                    if let polishingReady, self.backendManager.polishdStatus == .starting {
+                        await polishingReady.value
+                    }
+                } onCancel: {
+                    polishingReady?.cancel()
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 self.abortConnectingSession()
@@ -203,6 +223,10 @@ extension DictationSessionController {
                           && self.settings.polishingBackendMode == .managedLocal)),
                   self.isConnectingRealtimeSession
             else { return }
+            if splitsPolishing, self.backendManager.polishdStatus != .ready {
+                Log.polishing.notice("dictation starts before the polishing helper is ready")
+                self.managedPolishingSkippedAtStart = true
+            }
             await self.beginDictationSession(outputMode: outputMode)
             // beginDictationSession re-checks secure input and may refuse
             // HERE — long after the initiating gesture ended (a toggle tap
@@ -241,6 +265,15 @@ extension DictationSessionController {
                 polishing: needsManagedPolishing
             )
         }
+    }
+
+    /// The start went ahead of the bundled polishing helper, polishing is
+    /// on for `outputMode`, and the helper is still not ready: the dictation
+    /// is committed as spoken.
+    func managedPolishingIsUnavailable(outputMode: DictationOutputMode) -> Bool {
+        managedPolishingSkippedAtStart
+            && isManagedPolishingRequired(outputMode: outputMode)
+            && backendManager.polishdStatus != .ready
     }
 
     func cancelManagedStartupTask() {
@@ -641,6 +674,7 @@ extension DictationSessionController {
         earlyPolishRun = nil
         guard outputMode == .overlayBuffer, settings.earlyPolishEnabled, !sessionHasStopSecondPass,
             !sessionIsQuickCapture, sessionDraftReview == nil,
+            !managedPolishingIsUnavailable(outputMode: outputMode),
             let configuration = settings.llmPolishingConfiguration
         else { return }
         earlyPolishRun = EarlyPolishRun(

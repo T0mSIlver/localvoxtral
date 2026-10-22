@@ -106,6 +106,9 @@ extension DictationSessionController {
         let record: StoppedSessionRecordFields
         let polishingConfig: LLMPolishingConfiguration?
         let capture: StopCommitCoordinator.Capture?
+        /// The bundled polishing helper was not ready at stop: no
+        /// configuration, and nothing to report as a failure.
+        var polishingUnavailable = false
     }
 
     /// An Overlay Buffer session that was not cancelled: transcribed again
@@ -137,7 +140,13 @@ extension DictationSessionController {
         let earlyPolish = earlyPolishRun
         earlyPolishRun = nil
         earlyPolish?.close()
-        let polishingConfig = settings.llmPolishingConfiguration
+        // A polishing model still downloading, or one that failed, does not
+        // hold the text back: it goes in as spoken (#1933).
+        let polishingUnavailable = managedPolishingIsUnavailable(outputMode: sessionMode)
+        if polishingUnavailable {
+            Log.polishing.notice("polishing helper not ready at stop; committing unpolished")
+        }
+        let polishingConfig = polishingUnavailable ? nil : settings.llmPolishingConfiguration
         let sample = OverlayStopSample(
             record: StoppedSessionRecordFields(
                 startedAt: sessionStartedAt ?? Date(),
@@ -158,7 +167,8 @@ extension DictationSessionController {
                     context: context,
                     pasteboardReader: dependencies.pasteboardReader
                 )
-            }
+            },
+            polishingUnavailable: polishingUnavailable
         )
         let proceed: @MainActor () -> Void = { [weak self] in
             guard let self else { return }
@@ -214,7 +224,8 @@ extension DictationSessionController {
             latchedReplacementDictionary: sessionReplacementDictionary,
             settings: settings,
             appConfigStore: appConfigStore,
-            pasteboardReader: dependencies.pasteboardReader
+            pasteboardReader: dependencies.pasteboardReader,
+            polishingUnavailable: sample.polishingUnavailable
         )
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -467,6 +478,9 @@ extension DictationSessionController {
             overlayCommitOutcome: overlayCommit.outcome,
             shouldCommitOverlay: true
         )
+        if preparation.polishingUnavailable, overlayCommit.succeeded {
+            statusText = StatusStrings.polishingNotReady
+        }
 
         saveSessionRecord(
             startedAt: record.startedAt,
