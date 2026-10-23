@@ -72,7 +72,12 @@ runs on every string before the write:
   service-prefixed keys (`sk-`, `ghp_`, `github_pat_`, `xox?-`, `AKIA`,
   `AIza`, `glpat-`, `hf_`, `sk_live_`, `npm_`, `pypi-`), uppercase
   `…KEY/TOKEN/SECRET/PASSWORD…=` shell assignments (a quoted value whole,
-  spaces included), runs of 32+ hex digits, and the 43-character
+  spaces included), the lowercase and colon forms config files use
+  (`aws_secret_access_key = …`, `password: …`, `"token": "…"`; a colon
+  value must hold a digit or a symbol, and a value that opens a call is code,
+  not a secret), the password in a URL's userinfo, `Authorization: Basic`,
+  curl's `-u user:password`, credential flags (`--password`, `--token=`),
+  runs of 32+ hex digits, and the 43-character
   remote-enrollment token. Each has a test in
   `DiagnosticRecordRedactionTests`. The harvest lists of the screen, session
   and clipboard sources are taken from the redacted text, since a single term
