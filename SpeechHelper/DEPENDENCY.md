@@ -21,14 +21,33 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
+    revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-`01dec7c` is upstream main at the merge of
+`902920c` is upstream main on 2026-10-23. Over the previous pin it carries:
+
+- Voxtral Realtime streaming: encoder KV rows written into preallocated storage
+  ([#272](https://github.com/Blaizzy/mlx-audio-swift/pull/272)), the mel Hann window reused per
+  append ([#271](https://github.com/Blaizzy/mlx-audio-swift/pull/271)), and one GPU sync per
+  decoded token instead of two ([#273](https://github.com/Blaizzy/mlx-audio-swift/pull/273)).
+  #273 also builds `generateStream`'s deltas from token bytes; the stream session already did,
+  and its `text` is still the full transcript, so the delta routing below is unchanged.
+- Nemotron streaming: only new mel frames computed
+  ([#274](https://github.com/Blaizzy/mlx-audio-swift/pull/274)) and unchanged decoder and encoder
+  work reused ([#275](https://github.com/Blaizzy/mlx-audio-swift/pull/275)). The session now
+  keeps MLX's buffer cache between steps and clears it only in `finish()`; the helper still
+  clears it when a session ends.
+- Downloads: a partial snapshot no longer counts as cached
+  ([#291](https://github.com/Blaizzy/mlx-audio-swift/pull/291)), and `loadModel` forwards its
+  cache to every loader ([#293](https://github.com/Blaizzy/mlx-audio-swift/pull/293)).
+- The graph: mlx-swift-lm is gone ([#287](https://github.com/Blaizzy/mlx-audio-swift/pull/287)),
+  and mlx-swift's floor is 0.32.3.
+
+The pin before, `01dec7c`, was upstream main at the merge of
 [Blaizzy/mlx-audio-swift#265](https://github.com/Blaizzy/mlx-audio-swift/pull/265), the last of
 three PRs that bound streaming memory over long sessions: #263 drops conv and adapter rows once
 consumed, #264 appends decoder KV rows in place instead of rebuilding the window, #265 decodes
@@ -114,22 +133,24 @@ casts; `VoxtralRealtimeStreamSession.swift` differed only in the delta routing b
 Upstream's manifest uses `.upToNextMajor` for every dependency, so unconstrained resolution can
 drift onto known-bad versions. We pin the two risky ones exactly:
 
-- **mlx-swift `exact: "0.31.3"`** — matches upstream's own `Package.resolved` (what the engine
-  and our downstream spike were validated against) and, critically, **avoids 0.31.4 and
-  0.31.5**, which carry the `evalLock` deadlock ([mlx-swift#428](https://github.com/ml-explore/mlx-swift/issues/428),
-  fixed in 0.31.6).
+- **mlx-swift `exact: "0.32.3"`** — matches upstream's own `Package.resolved` and its manifest
+  floor. Never resolve to 0.31.4 or 0.31.5, which carry the `evalLock` deadlock
+  ([mlx-swift#428](https://github.com/ml-explore/mlx-swift/issues/428), fixed in 0.31.6). Its
+  manifest needs swift-tools-version 6.3.
 - **swift-transformers `exact: "1.1.9"`** — must stay **< 1.2**: 1.2+ fails to compile under
-  Xcode 26 (the xcodebuild packaging lane that produces the shippable Metal binary). Not
-  directly imported here — it's a transitive dep of mlx-audio-swift — so SPM warns it's
-  "unused"; that's expected, the pin exists to freeze the whole graph below 1.2.
+  Xcode 26 (the xcodebuild packaging lane that produces the shippable Metal binary). Upstream
+  requires only 1.1.6 or later, though its own resolved graph runs 1.3.4. Not directly imported
+  here — it's a transitive dep of mlx-audio-swift — so SPM warns it's "unused"; that's expected,
+  the pin exists to freeze the whole graph below 1.2.
 
-`mlx-swift-lm` (`exact: "3.31.3"`) and `swift-huggingface` (`exact: "0.8.1"`) also match
-upstream's resolved graph. `Package.resolved` is checked in (as in `PolishHelper`) to lock the
-full transitive closure.
+`swift-huggingface` (`exact: "0.12.0"`) matches upstream's resolved graph. Its swift-xet
+dependency sits behind the `Xet` trait, which nothing here enables, so the graph no longer pulls
+swift-xet or the swift-nio stack. `Package.resolved` is checked in (as in `PolishHelper`) to lock
+the full transitive closure.
 
 ## Upgrade procedure
 
-1. Bump the `revision:` to the new upstream SHA (and re-pin the four graph deps to whatever the
+1. Bump the `revision:` to the new upstream SHA (and re-pin the three graph deps to whatever the
    new upstream `Package.resolved` uses, keeping the two `exact` constraints above satisfied —
    never let mlx-swift reach 0.31.4/0.31.5 or swift-transformers reach 1.2).
 2. Re-run the equivalence checklist: diff the new `Models/VoxtralRealtime/` and
