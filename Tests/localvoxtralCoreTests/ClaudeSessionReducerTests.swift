@@ -115,6 +115,38 @@ final class ClaudeSessionReducerTests: XCTestCase {
         XCTAssertEqual(snapshot.firstSeen, epoch, "firstSeen is immutable")
     }
 
+    // MARK: Open dialog (#1914)
+
+    private func notification(_ type: ClaudeNotificationType) -> ClaudeHookRecord {
+        ClaudeHookRecord(event: .notification, sessionID: "s1", timestamp: 0, notificationType: type)
+    }
+
+    func testANotificationOpensADialogTheTurnKeepsRunning() {
+        var snapshot = newSnapshot()
+        reduce(&snapshot, record(.userPromptSubmit, prompt: "run it"), at: 1)
+        reduce(&snapshot, notification(.permissionPrompt), at: 2)
+        XCTAssertEqual(snapshot.openDialog, .permissionPrompt)
+        XCTAssertEqual(snapshot.activity, .working, "a wait inside a turn")
+    }
+
+    func testTheDialogClosesWithTheNextSubmitToolRunTurnEndOrSessionStart() {
+        for closing: ClaudeHookEvent in [.userPromptSubmit, .postToolUse, .stop, .sessionStart] {
+            var snapshot = newSnapshot()
+            reduce(&snapshot, notification(.elicitationDialog), at: 1)
+            reduce(&snapshot, record(closing), at: 2)
+            XCTAssertNil(snapshot.openDialog, "\(closing)")
+        }
+    }
+
+    func testAFileChangeOrACwdChangeLeavesTheDialogOpen() {
+        for event: ClaudeHookEvent in [.fileChanged, .cwdChanged] {
+            var snapshot = newSnapshot()
+            reduce(&snapshot, notification(.permissionPrompt), at: 1)
+            reduce(&snapshot, record(event, cwd: "/repo"), at: 2)
+            XCTAssertEqual(snapshot.openDialog, .permissionPrompt, "\(event)")
+        }
+    }
+
     // MARK: Workspace
 
     func testCwdChangedUpdatesWorkspaceWithoutChangingTurnState() {

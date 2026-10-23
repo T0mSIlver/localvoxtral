@@ -231,6 +231,11 @@ public enum ClaudeModChannelWire {
         /// (#1803): not submitted and not in the box. The mod keeps trying,
         /// then puts it on the clipboard.
         public static let notRestoredReason = "not_restored"
+        /// The refusals of a `send` whose text the app may type instead: a
+        /// box only keys can submit as typed (`needsKeys` in the mod's
+        /// channel.ts), or a mod older than `send`. Any other refusal may
+        /// be a dialog holding the box, and keys would answer it (#1914).
+        public static let keyedReasons: Set<String> = ["placeholder", "command", "mention", "unknown_kind"]
 
         public init(
             sessionID: String,

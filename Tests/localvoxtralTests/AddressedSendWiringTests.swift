@@ -585,6 +585,7 @@ final class AddressedSendWiringTests: XCTestCase {
             DictationSessionController.AddressedSendStatus.unsupported,
             DictationSessionController.AddressedSendStatus.notSent,
             DictationSessionController.AddressedSendStatus.typedNotSubmitted,
+            DictationSessionController.AddressedSendStatus.showsDialog,
         ] {
             XCTAssertLessThanOrEqual(sentence.count, 44, sentence)
         }
@@ -666,14 +667,15 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
     }
 
-    /// The mod refused (a dialog holds the box): nothing changed in the
-    /// session, so the focus path runs as it does without a mod.
+    /// The mod refused a text only keys can enter (a slash command):
+    /// nothing changed in the session, so the focus path runs as it does
+    /// without a mod.
     func testAModRefusalFallsBackToTheFocusPath() async {
         let harness = makeHarness(
             text: "Run the tests, send that to payments.",
             sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
         )
-        let mod = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+        let mod = attachMod(harness, sessionID: "pay", answer: .refused("command"))
 
         await harness.stop()
 
@@ -691,7 +693,7 @@ final class AddressedSendWiringTests: XCTestCase {
             text: "Run the tests, send that to payments.",
             sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
         )
-        _ = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+        _ = attachMod(harness, sessionID: "pay", answer: .refused("command"))
         // The build host has no GUI session to register the Carbon hotkey in.
         EscapeCancelHandler.debugConfigureRegistration(status: noErr)
         let escape = harness.viewModel.session.escapeCancelHandler
@@ -712,6 +714,76 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
         XCTAssertEqual(harness.returns.value, [], "the cancel stops the Return")
         XCTAssertEqual(harness.records.value.count, 1)
+    }
+
+    /// A dialog holds the box, so the mod refused the fill (#1914): keys
+    /// and a Return would answer the dialog, so nothing is typed by any path
+    /// and the text is kept.
+    func testAModDialogRefusalTypesNothingAndKeepsTheText() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"])
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [], "the pane is not brought forward")
+        XCTAssertEqual(harness.inserted.value.map(\.text), [], "no key typed")
+        XCTAssertEqual(harness.returns.value, [], "no Return")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// The session's last hook was a permission prompt (#1914): its pane
+    /// shows the dialog where the prompt was. Without a mod, the terminal
+    /// route would type into it and press Return, which picks "Yes".
+    func testASessionShowingAPermissionPromptGetsNoKeyOrReturn() async {
+        var waiting = session("pay", cwd: "/r/payments", tty: "/dev/ttys001")
+        waiting.openDialog = .permissionPrompt
+        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [waiting])
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [], "the pane is not brought forward")
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.showsDialog)
+    }
+
+    /// A mod refusal that leaves the text to keys still meets the dialog
+    /// check: a box holding a command, under a permission prompt, gets no key.
+    func testAKeyedModRefusalForASessionShowingADialogTypesNothing() async {
+        var waiting = session("pay", cwd: "/r/payments", tty: "/dev/ttys001")
+        waiting.openDialog = .permissionPrompt
+        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [waiting])
+        _ = attachMod(harness, sessionID: "pay", answer: .refused("command"))
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+    }
+
+    /// A permission prompt opened while the text was typed: the Return
+    /// would confirm it, so none is pressed.
+    func testADialogOpenedDuringTheTypingGetsNoReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let live = harness.live
+        harness.focuser.onReadBack = { _ in live.value[0].openDialog = .permissionPrompt }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "no Return into the dialog")
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.typedNotSubmitted)
     }
 
     /// The channel is there but the write fails: the mod never got the

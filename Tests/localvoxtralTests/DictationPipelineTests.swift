@@ -2416,6 +2416,51 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["run the tests."])
     }
 
+    /// The session's last hook reported a permission prompt, and the mod
+    /// refused the fill: the keys would land in the dialog, and a digit or
+    /// Return would answer it (#1914). The words stay in History.
+    func testAFillTheModRefusesUnderAPermissionPromptIsKeptNotTyped() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.refuse], openDialog: .permissionPrompt)
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(typed.text, "", "nothing typed into the dialog")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// A spoken send under a permission prompt: the mod refused, and
+    /// neither the words nor a Return go into the dialog (#1914).
+    func testASpokenSendUnderAPermissionPromptTypesNothingAndPressesNoReturn() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse], returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            }, openDialog: .permissionPrompt
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests, send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(returns, [], "no Return into the dialog")
+    }
+
     /// The user switched to another tab of the same terminal before the mod
     /// refused. The app pid still matches, but keys would reach the other
     /// tab's prompt, so the words stay in History.
@@ -2698,6 +2743,7 @@ final class DictationPipelineTests: XCTestCase {
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
         remote: Bool = false,
         overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
+        openDialog: ClaudeNotificationType? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer, overlayCoordinator: overlayCoordinator)
@@ -2713,7 +2759,23 @@ final class DictationPipelineTests: XCTestCase {
         } else {
             var focusedTTY: (@Sendable () -> String)?
             if let focus { focusedTTY = { focus.tty } }
-            _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
+            let registry = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
+            if let openDialog {
+                // The session's hook says a dialog holds its pane (#1914).
+                XCTAssertNotNil(registry.ingest(
+                    ClaudeHookRecord(
+                        event: .notification, sessionID: "s1", timestamp: 1, notificationType: openDialog
+                    ),
+                    origin: .localAuthenticated(peerUID: 501)
+                ))
+                pipeline.viewModel.session.sessionNavigator = SessionNavigator(
+                    liveSessions: { registry.liveSessions() },
+                    repositoryRoot: { _ in .unknown },
+                    focuser: FakeSessionPaneFocuser(),
+                    sleep: ManualSessionClock().sleep,
+                    ttyForegroundPIDs: { _ in [9001] }
+                )
+            }
         }
         let typed = recordTypedText(pipeline, returnKeyPoster: returnKeyPoster)
 

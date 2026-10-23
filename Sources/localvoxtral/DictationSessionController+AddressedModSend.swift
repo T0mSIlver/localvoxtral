@@ -6,8 +6,8 @@ import os
 /// (#1693; owner ruling 2026-10-04, overriding #723's focus-before-Return
 /// for these sessions only): the mod fills at its cursor and submits, by
 /// session id, so the pane need not be in front and no key is posted. A mod
-/// that refused, or never got the request, leaves the send to the session's
-/// usual route. docs/agent/invariants.md, "Send that to <name> writes only
+/// that refused for a text only keys can enter, or never got the request,
+/// leaves the send to the session's usual route. docs/agent/invariants.md, "Send that to <name> writes only
 /// into the named session".
 extension DictationSessionController {
     /// How an addressed send through the mod ended.
@@ -111,6 +111,16 @@ extension DictationSessionController {
             ))
         case .unanswered:
             Log.backends.error("send to session: the mod did not answer; it may have submitted, so the text is kept")
+            return .finished(AddressedCommit(
+                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent,
+                superseded: superseded, handedOff: handedOff
+            ))
+        case .replied(let reply) where !ClaudeModChannelWire.Reply.keyedReasons.contains(reply.reason ?? ""):
+            // Any other refusal may be a dialog holding the box: keys and a
+            // Return would answer it (#1914).
+            Log.backends.error(
+                "send to session: the mod refused (\(reply.reason ?? "no reason", privacy: .public)); nothing typed, text kept"
+            )
             return .finished(AddressedCommit(
                 outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent,
                 superseded: superseded, handedOff: handedOff
