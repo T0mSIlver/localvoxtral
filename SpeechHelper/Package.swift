@@ -21,29 +21,28 @@ let package = Package(
         .executable(name: "localvoxtral-speechd", targets: ["localvoxtral-speechd"]),
     ],
     dependencies: [
-        // Pinned to mlx-audio-swift's own resolved graph (its Package.resolved): mlx-swift
-        // 0.31.3 (the last version before the #428 evalLock deadlock in 0.31.4) and
-        // swift-transformers 1.1.9 (>=1.2 fails to compile under Xcode 26).
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.3"),
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.3"),
+        // Pinned to mlx-audio-swift's own resolved graph (its Package.resolved), except
+        // swift-transformers. mlx-swift 0.32.3 is upstream's floor; it is past the #428
+        // evalLock deadlock that 0.31.4 and 0.31.5 carry.
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3"),
         // Pinned but not directly imported: it's a transitive dep of mlx-audio-swift, and
         // >=1.2 fails to compile under Xcode 26 (the xcodebuild packaging lane). Pinning it
         // here freezes the whole graph to 1.1.9. (SPM warns it's "unused" — expected.)
         .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
-        .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.12.0"),
         // The streaming ASR engines, consumed as a dependency (Voxtral Realtime was
         // vendored+patched before #226). Pinned to a full-SHA revision, not a tag, so the
         // exact reviewed tree is reproducible — see DEPENDENCY.md for the upgrade procedure.
         //
-        // 01dec7c is upstream main at the merge of Blaizzy/mlx-audio-swift#265. It carries
-        // #232 (quantized-tied-embedding loader, required by the catalog's -qhead model,
-        // SpeechModelCatalog), #263-#265 (bounded streaming memory: consumed conv/adapter
-        // rows dropped, KV appended in place, incremental detokenize), and #195/#196/#208/#236
-        // (the Nemotron ASR model, its incremental `NemotronASRStreamSession`, and the wider
-        // checkpoint loader) — so the second catalog entry needs no pin change.
+        // 902920c is upstream main on 2026-10-23. Over the previous pin (01dec7c, #265) it
+        // carries the streaming speedups (#271, #272, #273 for Voxtral Realtime; #274, #275
+        // for Nemotron), the partial-download fix (#291), the loader-cache forwarding (#293),
+        // and the removal of mlx-swift-lm from the graph (#287). It still carries #232
+        // (quantized-tied-embedding loader, required by the catalog's -qhead model,
+        // SpeechModelCatalog) and the Nemotron streaming session the second entry loads.
         .package(
             url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
+            revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
         ),
     ],
     targets: [
