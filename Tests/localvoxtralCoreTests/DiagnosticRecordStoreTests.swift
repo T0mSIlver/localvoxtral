@@ -472,6 +472,97 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         )
     }
 
+    /// Config files and CLI output write secret names in lowercase, and YAML
+    /// and JSON put a colon after them (#1918). The AWS value is AWS's
+    /// documented example, joined at run time like the service keys.
+    func testRedactsLowercaseAndColonSecretAssignments() {
+        let awsSecret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+        assertRedacts(
+            awsSecret,
+            in: "[default]\naws_secret_access_key = \(awsSecret)\nregion = eu-west-3",
+            keeping: "aws_secret_access_key = "
+        )
+        assertRedacts("hunter2x", in: "password=hunter2x\nport=5432", keeping: "password=")
+        assertRedacts("vK8q2mZ9wQ", in: "api_key=vK8q2mZ9wQ make test", keeping: "api_key=")
+        assertRedacts(
+            "c0ffee-Shop.42",
+            in: #"{"token": "c0ffee-Shop.42", "user": "app"}"#,
+            keeping: #"{"token": "<redacted>", "user": "app"}"#
+        )
+        assertRedacts(
+            "s3cret pass phrase",
+            in: #"{"accessToken":"s3cret pass phrase"}"#,
+            keeping: #"{"accessToken":"<redacted>"}"#
+        )
+        assertRedacts("hunter2", in: "db:\n  password: hunter2\n  host: db", keeping: "  host: db")
+        assertRedacts(
+            "Pg-s3cret!",
+            in: "environment:\n  POSTGRES_PASSWORD: Pg-s3cret!\n  POSTGRES_DB: app",
+            keeping: "POSTGRES_PASSWORD: "
+        )
+    }
+
+    /// The password in a connection string sits between the user's colon and
+    /// the `@`; the user, host and path stay readable.
+    func testRedactsThePasswordInURLUserinfo() {
+        assertRedacts(
+            "s3cretpw",
+            in: "DATABASE_URL is postgres://app:s3cretpw@db:5432/app",
+            keeping: "postgres://app:<redacted>@db:5432/app"
+        )
+        assertRedacts(
+            "tok3n-xyz",
+            in: "git clone https://oauth2:tok3n-xyz@gitlab.example.com/team/repo.git",
+            keeping: "@gitlab.example.com/team/repo.git"
+        )
+    }
+
+    func testRedactsBasicAuthAndCredentialFlags() {
+        assertRedacts(
+            "s3cretPw",
+            in: "curl -u admin:s3cretPw https://api.example.com",
+            keeping: "curl -u admin:<redacted> https://api.example.com"
+        )
+        assertRedacts(
+            "YWRtaW46czNjcmV0UHc=",
+            in: "Authorization: Basic YWRtaW46czNjcmV0UHc=\nAccept: */*",
+            keeping: "Authorization: Basic "
+        )
+        assertRedacts("hunter22", in: "mysql --password hunter22 -h db", keeping: "-h db")
+        assertRedacts("abc123def", in: "tool login --token=abc123def --verbose", keeping: "--verbose")
+        assertRedacts(
+            "my long secret",
+            in: "deploy --api-key \"my long secret\" now",
+            keeping: "--api-key \"<redacted>\" now"
+        )
+    }
+
+    /// The lowercase and colon rules must not eat code that reads a secret,
+    /// a flag that names a file, or prose with a label.
+    func testLeavesCodeAndProseThatNameASecretAlone() {
+        let texts = [
+            "let password = readPassword(prompt)",
+            "the token: expired yesterday",
+            "Password: required for this step",
+            "gh auth login --with-token < token.txt",
+            "docker login --password-stdin registry.example.com",
+            "sort_key: created",
+            "https://user@example.com/repo.git and mailto:someone@example.com",
+            "basic setup is done",
+        ]
+        for text in texts {
+            var count = 0
+            XCTAssertEqual(DiagnosticRecordRedaction.redacting(text, count: &count), text)
+            XCTAssertEqual(count, 0, text)
+        }
+    }
+
+    /// A value another rule already replaced is not counted a second time.
+    func testCountsAQuotedJWTUnderASecretNameOnce() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"
+        assertRedacts(jwt, in: #"{"id_token": "\#(jwt)"}"#, keeping: #""id_token": "<redacted>""#)
+    }
+
     /// The harvest lists single terms, which have lost the `NAME=` that
     /// marked them as secrets, so it is taken from the redacted text.
     func testSecretAssignmentValuesNeverReachTheHarvest() {
