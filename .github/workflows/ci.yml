@@ -392,7 +392,7 @@ jobs:
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-test-log-${{ runner.os }}
           path: ${{ runner.temp }}/localvoxtral-unit-tests.log
@@ -475,7 +475,7 @@ jobs:
         # Not `error` on a missing file: the step that writes it is skipped
         # when the unit suite above fails, and the job is already red then.
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cost-budget-test-log-${{ runner.os }}
           path: ${{ runner.temp }}/localvoxtral-cost-budget-tests.log
@@ -516,7 +516,7 @@ jobs:
 
       - name: Upload app artifact
         if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: localvoxtral-app
           path: dist/localvoxtral-app.zip
@@ -540,7 +540,7 @@ jobs:
         # Longer retention than the app: field crashes surface days after the
         # try-pr build that produced them.
         if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: localvoxtral-dsym
           path: |
@@ -1336,7 +1336,7 @@ jobs:
 
       - name: Upload app artifact
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: localvoxtral-app
           path: dist/localvoxtral-app.zip
@@ -1360,7 +1360,7 @@ jobs:
         # Longer retention than the app: field crashes surface days after the
         # try-pr build that produced them.
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.package_scope.outputs.run != 'false'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: localvoxtral-dsym
           path: |
@@ -1467,7 +1467,7 @@ jobs:
 
       - name: Upload herdr lane diagnostics
         if: always() && steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: herdr-lane-diagnostics
           path: ${{ runner.temp }}/herdr-lane-diagnostics
