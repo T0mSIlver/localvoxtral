@@ -513,7 +513,7 @@ extension LLMPolishingConfiguration {
             return PolishWireReply(
                 text: content as? String ?? Self.text(ofBlocks: content),
                 stoppedAtOutputLimit: finishReason == "length" || finishReason == "model_length",
-                refused: false,
+                refused: finishReason == "content_filter",
                 usage: usage
             )
         }

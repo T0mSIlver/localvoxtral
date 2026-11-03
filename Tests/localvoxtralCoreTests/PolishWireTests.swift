@@ -81,6 +81,34 @@ final class PolishWireTests: XCTestCase {
         XCTAssertFalse(refusal.stoppedAtOutputLimit)
     }
 
+    /// A filtered reply carries the text before the cut: it must read as a
+    /// refusal so the service falls back to the transcript, not commit a prefix.
+    func testContentFilteredReplyIsRefusedOnChatShapes() {
+        for shape in [LLMPolishingRequestShape.openAICompatible, .mistral] {
+            let reply = Self.configuration(shape).reply(toResponseObject: [
+                "choices": [["message": ["content": "The first sentence."], "finish_reason": "content_filter"]],
+            ])
+            XCTAssertTrue(reply.refused, "\(shape)")
+            XCTAssertFalse(reply.stoppedAtOutputLimit, "\(shape)")
+        }
+    }
+
+    /// The provider's error sentence can quote the request, and so the dictated
+    /// text. The summary the session logs `.public` carries the status only.
+    func testRejectionPublicSummaryOmitsProviderErrorText() throws {
+        let canary = "private dictation: Project RedPanda acquisition"
+        let body = String(
+            decoding: try JSONSerialization.data(withJSONObject: ["error": ["message": "Invalid input: \(canary)"]]),
+            as: UTF8.self)
+        let failure = try XCTUnwrap(
+            PolishOutcomeClassifier.failure(
+                for: LLMPolishingError.requestFailed(statusCode: 400, body: body),
+                endpointURL: URL(string: "http://127.0.0.1:8080")!))
+        XCTAssertTrue(failure.message.contains(canary), "the alert copy keeps the provider's reason")
+        XCTAssertTrue(failure.publicSummary.contains("HTTP 400"))
+        XCTAssertFalse(failure.publicSummary.contains(canary))
+    }
+
     /// Each shape reads its own server's keys only: no guessing the dialect
     /// from what a reply happens to contain.
     func testEachShapeReadsOnlyItsOwnReply() {
