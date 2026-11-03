@@ -480,13 +480,19 @@ extension DictationSessionController {
     /// proposals where repo vocabulary may go, and the session's terms. Not
     /// the screen's, which hold the most terms nobody is about to say. The
     /// project's git root is waited for at most
-    /// `StopSecondPass.repositoryRootBound`, as at stop.
+    /// `StopSecondPass.repositoryRootBound`, as at stop, through the lookup
+    /// the capture already started when it needs one.
     func realtimeStartContextBias(
         endpoint: URL, capabilities: DictationModelCapabilities
     ) async -> [String] {
         guard capabilities != .audioOnly else { return [] }
         let contextTrusted = PolishContextClipboardReader.isPermittedContextEndpoint(
             endpoint, trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled)
+        // The capture started the join's own root lookup, which holds the
+        // single-flight gate: wait for its answer (bounded like any lookup)
+        // rather than race it, or the project's group stays unknown and the
+        // list takes every group's terms (Codex review, 2026-11-04).
+        if contextTrusted { await joinedRepositoryRootLookup?.value }
         let join = context.claudeSessionJoin
         var terms = StopSecondPass.ContextTerms()
         if contextTrusted {

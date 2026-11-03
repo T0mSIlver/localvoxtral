@@ -376,6 +376,30 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertTrue(unjoined.systemPrompt.contains("acme") && unjoined.systemPrompt.contains("garden"))
     }
 
+    /// The start's list waits for the join's own git-root lookup, which the
+    /// capture starts: read before it answers, a Work worktree outside its
+    /// checkout finds no group, and the start sent the Personal project's
+    /// terms too (Codex review of #1968).
+    func testARealtime3StartWaitsForTheJoinsRootLookupBeforePickingTheGroup() async {
+        let harness = makeHarness(transcriber: FakeBatchTranscriber(.text(Self.batchText)))
+        let session = harness.viewModel.session
+        harness.viewModel.settings.polishContextTrustedEndpointEnabled = true
+        harness.viewModel.learnedTermStore = groupedStore()
+        let worktree = Self.workProject + "-feature"
+        let grounding = FakeRepoVocabularyGrounding(outcome: nil)
+        grounding.secondPassRoot = .root(worktree, mainCheckout: Self.workProject)
+        harness.viewModel.dependencies.repoVocabularyGrounding = grounding
+        join(harness, cwd: worktree + "/Sources")
+        session.joinedRepositoryRootLookup = Task { await session.lookUpJoinedRepositoryRoot() }
+
+        let terms = await session.realtimeStartContextBias(
+            endpoint: MistralRealtimeWebSocketClient.defaultEndpoint,
+            capabilities: MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3))
+
+        XCTAssertTrue(terms.contains("Kubrix"), "\(terms)")
+        XCTAssertFalse(terms.contains("Florabel"), "a Personal term reached a Work start: \(terms)")
+    }
+
     /// A session in a `git worktree add` checkout outside its Work main
     /// checkout: no recorded checkout holds its directory, so only the git
     /// root the start looked up puts it in Work (#1155).

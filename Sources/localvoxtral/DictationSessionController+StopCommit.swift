@@ -1376,8 +1376,13 @@ extension DictationSessionController {
         var context = request.context
         var learnedTerms: [String] = []
         if request.contextTrusted {
-            var repositoryRoot = LearnedTermProjectResolver.RepositoryRoot.unknown
-            if request.repositoryTermsPermitted, needsRepositoryRoot(request.workspace) {
+            // A root the start already found for this join is reused: a
+            // second lookup while that one holds the single-flight gate
+            // would answer `.unknown` at once.
+            var repositoryRoot = request.joinedRepositoryRoot
+            if repositoryRoot == .unknown, request.repositoryTermsPermitted,
+                needsRepositoryRoot(request.workspace)
+            {
                 let started = ContinuousClock.now
                 repositoryRoot = await repoVocabularyGrounding.repositoryRoot(
                     joinedWorkspace: request.workspace?.localPath,
