@@ -1196,7 +1196,8 @@ extension DictationViewModel {
             contextBias: DictationSessionController.realtimeContextBias(
                 settings: settings,
                 dictionary: StopCommitCoordinator.effectiveReplacementDictionary(
-                    settings: settings, appConfigStore: appConfigStore))
+                    settings: settings, appConfigStore: appConfigStore),
+                capabilities: settings.dictationModelCapabilities)
         )
         if mode == .mistralAPI {
             return (configuration, nil, {
