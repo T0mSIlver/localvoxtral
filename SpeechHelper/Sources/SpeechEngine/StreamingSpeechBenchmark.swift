@@ -102,12 +102,18 @@ public enum StreamingSpeechBenchmark {
         // the whole transcript. After `BENCH done`, so the timings above exclude it;
         // its own line times the stop: what the helper spends between the final
         // commit and the last words.
+        // `finish_tokens` counts the decoder steps the flush ran and `eos` whether the
+        // model ended the stream inside it: with no EOS, the flush decodes every row of
+        // its zero pad.
         let wordsBeforeStop = wordCount(session.text)
+        let tokensBeforeStop = session.decodedTokenCount
         let stop = ContinuousClock().measure { _ = session.finish() }
         print(
             String(
-                format: "BENCH stop finish_ms=%.1f tail_words=%d",
-                milliseconds(stop), wordCount(session.text) - wordsBeforeStop
+                format: "BENCH stop finish_ms=%.1f tail_words=%d finish_tokens=%d eos=%d",
+                milliseconds(stop), wordCount(session.text) - wordsBeforeStop,
+                session.decodedTokenCount - tokensBeforeStop,
+                session.utteranceStop == nil ? 0 : 1
             )
         )
         print(BenchTranscriptDigest.line(for: session.text))
