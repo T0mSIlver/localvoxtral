@@ -234,7 +234,7 @@ say what that night has to run.
 
 | Label | Waits for | Added by | Removed by |
 |---|---|---|---|
-| `waits:mac-voxtral` | Voxtral inference on the Mac: the speechd or live STT lane, an ASR eval, a speech helper replay | CI from the lane filters, or the worker | the scheduler, once the night run passed |
+| `waits:mac-speech` | Speech-model inference on the Mac: the speechd or live STT lane, an ASR eval, a speech helper replay | CI from the lane filters, or the worker | the scheduler, once the night run passed |
 | `waits:mac-llm` | LLM inference on the Mac: the LLM lane, the eval-e2e scoreboard, a polish helper replay or bench | CI from the lane filters, or the worker | the scheduler, once the night run passed |
 | `waits:mac-e2e` | a scored UI Smoke e2e dictation on the final diff, which the owner starts | the worker | the scheduler, once a run scored |
 | `waits:stack` | its base PR to merge | CI when the base is not `main` | the scheduler, after the retarget |
