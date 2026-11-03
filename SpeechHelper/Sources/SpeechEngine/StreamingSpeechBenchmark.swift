@@ -12,17 +12,30 @@ public enum StreamingSpeechBenchmark {
         guard let benchmark = options.benchmark else { return }
 
         Memory.cacheLimit = options.cacheLimitMB * 1024 * 1024
+        let clock = ContinuousClock()
+        let loadStart = clock.now
         let engine = try await SpeechModelLoader.load(
             modelID: options.modelID,
             modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
             engine: options.engine
         )
+        let loaded = clock.now
         let audio = try BenchmarkAudio.make(
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
         )
+        let warmUpStart = clock.now
         warmUp(engine: engine, audio: audio, options: options, benchmark: benchmark)
+        // What a helper start costs before its first dictation runs at full speed: the
+        // load (weights are read lazily, so most of it lands in the first steps) and the
+        // throwaway first dictation, which the server does not run.
+        print(
+            String(
+                format: "BENCH load load_ms=%.1f warmup_ms=%.1f",
+                milliseconds(loaded - loadStart), milliseconds(clock.now - warmUpStart)
+            )
+        )
         // The warm-up session is gone by now; clear after the drop, as the server
         // does between dictations, so its buffers do not start the measured one.
         Memory.clearCache()
