@@ -79,6 +79,9 @@ extension DictationSessionController {
         // `build` is nonisolated, so this await hops off the main actor the
         // same way the preparations it mirrors do.
         var record = await Self.assembleDiagnosticRecord(id: historyID, inputs: inputs)
+        #if DEBUG
+        debugDuringDiagnosticAssembly?()
+        #endif
         let elapsed = (ContinuousClock.now - started).components
         record.timings.captureMilliseconds =
             Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15

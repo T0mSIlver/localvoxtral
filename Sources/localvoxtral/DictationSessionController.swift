@@ -243,6 +243,16 @@ final class DictationSessionController {
     /// backups" still reaches it; with History open, History owns it.
     @ObservationIgnored
     var quarantineWithoutHistory: DictationHistoryQuarantine?
+    #if DEBUG
+    /// Runs where a second app copy's delete could land: after the record is
+    /// assembled, before it is written.
+    @ObservationIgnored
+    var debugDuringDiagnosticAssembly: (() -> Void)?
+    #endif
+    /// The recordings folder, held here so audio deletes still work when
+    /// History did not open (`sessionStore` is nil then).
+    @ObservationIgnored
+    var audioStoreWithoutHistory: DictationAudioStore?
     /// Watches the seconds after a commit for an immediate erase, and patches
     /// that dictation's record with what it saw. `var` for the same reason as
     /// the store: tests inject the clock and the event source.
