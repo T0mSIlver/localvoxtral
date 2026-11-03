@@ -4,7 +4,7 @@
 #
 # The daily release skips green when no main commit has passed the e2e
 # dictation check (daily-release-plan.sh), and its job can sit unclaimed in
-# the queue until GitHub cancels it, because it needs the MacBook's runner.
+# the queue until GitHub cancels it, because it needs the Mac Mini's runner.
 # Between 2026-10-22 and 2026-11-03 both happened: no release for 12 days,
 # every skip green, the rest cancelled, and nothing told anyone. The release
 # job cannot report its own absence, so this runs on a hosted runner
@@ -57,7 +57,7 @@ echo "oldest_days=$OLDEST_DAYS"
 
 if [[ "$OLDEST_DAYS" -ge "$LIMIT_DAYS" ]]; then
   echo "stale=true"
-  echo "reason=$WAITING commit(s) on main have waited for a release since $BASE_TAG; the oldest landed $OLDEST_DAYS days ago (limit $LIMIT_DAYS). Look at: gh run list -w release.yml (skipped green, cancelled, or queued), gh api repos/\$GITHUB_REPOSITORY/actions/runners (is macbook-pro online and idle), and whether UI Smoke ran on main (gh workflow run ui-smoke.yml with the Mac unlocked)"
+  echo "reason=$WAITING commit(s) on main have waited for a release since $BASE_TAG; the oldest landed $OLDEST_DAYS days ago (limit $LIMIT_DAYS). Look at: gh run list -w release.yml (skipped green, cancelled, or queued), gh api repos/\$GITHUB_REPOSITORY/actions/runners (is mac-mini online and idle), and whether UI Smoke ran on main (gh workflow run ui-smoke.yml with the Mac unlocked)"
   exit 1
 fi
 

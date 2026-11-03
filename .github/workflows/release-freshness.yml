@@ -1,7 +1,7 @@
 name: Release Freshness
 
 # Goes red when main has gone more than three days without a stable release.
-# Hosted, because the release job runs on the MacBook's runner and cannot
+# Hosted, because the release job runs on the Mac Mini's runner and cannot
 # report its own absence: between 2026-10-22 and 2026-11-03 the daily release
 # skipped green (no commit had passed the e2e dictation check) or sat in the
 # runner's queue until GitHub cancelled it, and nothing said so.

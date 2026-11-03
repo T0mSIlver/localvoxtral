@@ -324,7 +324,7 @@ Two things silence it today: the daily release skips green when no commit
 has passed the e2e dictation check, and its job waits in the runner's queue
 until GitHub cancels it after a day. Between 2026-10-22 and 2026-11-03 both
 happened and nothing said so. A red run means: look at `gh run list -w
-release.yml`, at whether `macbook-pro` is online and idle in
+release.yml`, at whether `mac-mini` is online and idle in
 `gh api repos/<owner>/<repo>/actions/runners`, and at whether UI Smoke ran on
 `main`.
 
