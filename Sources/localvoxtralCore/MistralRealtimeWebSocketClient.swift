@@ -836,9 +836,10 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 for frame in s.pendingMessages {
                     if let audio = frame.audio { s.unsentAudio.append(audio) }
                 }
-                if !s.unsentAudio.isEmpty {
+                let unsentSeconds = Double(s.unsentAudio.count) / Double(AudioChunkBuffer.bytesPerSecond)
+                if unsentSeconds > 0 {
                     Log.backends.notice(
-                        "mistral realtime connection \(generation.description, privacy: .public) closed with \(String(format: "%.1f", Double(s.unsentAudio.count) / Double(AudioChunkBuffer.bytesPerSecond)), privacy: .public)s of audio it never sent; kept for the next socket"
+                        "mistral realtime connection \(generation.description, privacy: .public) closed with \(String(format: "%.1f", unsentSeconds), privacy: .public)s of audio it never sent; kept for the next socket"
                     )
                 }
                 closeSocketLocked(&s, cancelTask: false)
