@@ -94,7 +94,7 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { _ in nil },
-            focusedDesktopSessionURL: { _ in shownURL.get() }
+            focusedDesktopSessionURL: { _ in ClaudeDesktopFocusRead(address: shownURL.get()) }
         )
         let target = desktopTarget
         let registry = registry!

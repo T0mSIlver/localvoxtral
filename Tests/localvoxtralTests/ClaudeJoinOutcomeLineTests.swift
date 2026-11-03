@@ -50,7 +50,7 @@ final class ClaudeJoinOutcomeLineTests: XCTestCase {
             registry: registry,
             focusedDesktopSessionURL: { _ in
                 desktopReads?.increment()
-                return address
+                return ClaudeDesktopFocusRead(address: address)
             }
         )
         context.joinOutcomeLog = { [weak self] in self?.lines.append($0) }
