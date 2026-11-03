@@ -18,6 +18,39 @@ final class LocalvoxtralDataDirectoryTests: XCTestCase {
             XCTAssertEqual(LocalvoxtralDataDirectory.url(environment: environment).lastPathComponent, "localvoxtral")
         }
     }
+
+    /// A build dictating from a WAV is a test, whoever launched it. Opened by
+    /// hand without a data folder, it wrote its dictations into the owner's
+    /// History; it now gets a temporary folder of its own.
+    func testADictationFromAFileNeverOpensTheOwnersFolder() {
+        let environment = [DogfoodAudioFileSource.environmentKey: "/tmp/utterance.wav"]
+        let folder = LocalvoxtralDataDirectory.url(environment: environment)
+        XCTAssertNotEqual(folder.lastPathComponent, "localvoxtral")
+        XCTAssertTrue(folder.path.hasPrefix(FileManager.default.temporaryDirectory.path), folder.path)
+        XCTAssertTrue(LocalvoxtralDataDirectory.isOverridden(environment: environment))
+        XCTAssertEqual(LocalvoxtralDataDirectory.url(environment: environment), folder)
+    }
+
+    func testTheHarnessBundleNeverOpensTheOwnersFolder() {
+        let harness = LocalvoxtralDataDirectory.harnessBundleIdentifier
+        let folder = LocalvoxtralDataDirectory.url(environment: [:], bundleIdentifier: harness)
+        XCTAssertTrue(folder.path.hasPrefix(FileManager.default.temporaryDirectory.path), folder.path)
+        XCTAssertTrue(LocalvoxtralDataDirectory.isOverridden(environment: [:], bundleIdentifier: harness))
+        XCTAssertEqual(
+            LocalvoxtralDataDirectory.url(environment: [:], bundleIdentifier: "com.localvoxtral.app").lastPathComponent,
+            "localvoxtral"
+        )
+    }
+
+    func testALanesFolderStillWinsForATestLaunch() {
+        let environment = [
+            LocalvoxtralDataDirectory.environmentKey: "/tmp/lv-lane-data",
+            DogfoodAudioFileSource.environmentKey: "/tmp/utterance.wav",
+        ]
+        let folder = LocalvoxtralDataDirectory.url(
+            environment: environment, bundleIdentifier: LocalvoxtralDataDirectory.harnessBundleIdentifier)
+        XCTAssertEqual(folder.path, "/tmp/lv-lane-data")
+    }
 }
 
 /// The widget reads the snapshot from the real home. A lane's app writes its
