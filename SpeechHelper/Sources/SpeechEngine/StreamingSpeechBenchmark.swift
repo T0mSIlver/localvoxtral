@@ -99,8 +99,17 @@ public enum StreamingSpeechBenchmark {
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
         )
         // Flush the held-back tail as a dictation's stop does, so the digest covers
-        // the whole transcript. After `BENCH done`, so the timings above exclude it.
-        _ = session.finish()
+        // the whole transcript. After `BENCH done`, so the timings above exclude it;
+        // its own line times the stop: what the helper spends between the final
+        // commit and the last words.
+        let wordsBeforeStop = wordCount(session.text)
+        let stop = ContinuousClock().measure { _ = session.finish() }
+        print(
+            String(
+                format: "BENCH stop finish_ms=%.1f tail_words=%d",
+                milliseconds(stop), wordCount(session.text) - wordsBeforeStop
+            )
+        )
         print(BenchTranscriptDigest.line(for: session.text))
     }
 
@@ -168,14 +177,21 @@ public enum StreamingSpeechBenchmark {
         let duration = ContinuousClock().measure {
             session.step(samples)
         }
-        let components = duration.components
-        let milliseconds = Double(components.seconds) * 1_000
-            + Double(components.attoseconds) / 1_000_000_000_000_000
         return StepRecord(
             audioSamples: audioSamples,
-            latencyMilliseconds: milliseconds,
+            latencyMilliseconds: milliseconds(duration),
             memory: Memory.snapshot()
         )
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) * 1_000
+            + Double(components.attoseconds) / 1_000_000_000_000_000
+    }
+
+    private static func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
     }
 
     /// What the Engines pane's two settings promise: the memory limit bounds what the
