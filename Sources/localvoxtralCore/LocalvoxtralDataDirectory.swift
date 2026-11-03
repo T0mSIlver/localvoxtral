@@ -55,8 +55,12 @@ package enum LocalvoxtralDataDirectory {
     }
 
     private static func isTestLaunch(environment: [String: String], bundleIdentifier: String?) -> Bool {
-        bundleIdentifier == harnessBundleIdentifier
-            || !(environment[DogfoodAudioFileSource.environmentKey] ?? "").isEmpty
+        if bundleIdentifier == harnessBundleIdentifier { return true }
+        // Only these builds can dictate from a file; a release never reads the variable.
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
+        if !(environment[DogfoodAudioFileSource.environmentKey] ?? "").isEmpty { return true }
+        #endif
+        return false
     }
 
     /// One folder per process, so every store of one launch shares it.
