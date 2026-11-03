@@ -560,7 +560,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
 
     /// A client mid-rollover with the stop in and nothing carried, its
     /// retiring socket neither answered nor failed yet.
-    private func stoppedMidRolloverWithNothingCarried() -> (
+    private func stoppedMidRollover(carryingAudio: Bool = false) -> (
         client: RealtimeAPIWebSocketClient, clock: ManualSessionClock, task: URLSessionWebSocketTask,
         events: LockedBox<[String]>, session: URLSession
     ) {
@@ -582,6 +582,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
         client.debugHandleFrameForTesting(json: ["type": "session.created"])
         client.setContextBudget(RealtimeContextBudget(maxModelLen: 100))
         XCTAssertTrue(client.sendAudioChunk(Data(repeating: 1, count: 217_600)))
+        if carryingAudio { XCTAssertTrue(client.sendAudioChunk(Data(repeating: 1, count: 3_200))) }
         client.sendCommit(final: true)
         return (client, clock, task, events, session)
     }
@@ -591,7 +592,21 @@ final class RealtimeContextRolloverTests: XCTestCase {
     /// its missing-end warning and records the endpoint as one that answers
     /// final commits (LVX-73).
     func testAStopDuringTheRolloverWhoseRetiringSocketFailsDoesNotClaimAFinal() {
-        let fixture = stoppedMidRolloverWithNothingCarried()
+        let fixture = stoppedMidRollover()
+        defer { fixture.session.invalidateAndCancel(); fixture.client.disconnect() }
+
+        fixture.client.debugHandleTerminalSocketErrorForTesting(
+            task: fixture.task, errorMessage: "server died before done")
+
+        XCTAssertEqual(fixture.events.value, ["error", "disconnected"])
+    }
+
+    /// Audio was carried, and the client has no configuration to dial the
+    /// next socket with: the stop's final commit has nowhere to go, so no
+    /// final is claimed either.
+    func testAStopDuringTheRolloverWithCarriedAudioAndNothingToDialDoesNotClaimAFinal() {
+        let fixture = stoppedMidRollover(carryingAudio: true)
+        fixture.client.debugClearConfigurationForTesting()
         defer { fixture.session.invalidateAndCancel(); fixture.client.disconnect() }
 
         fixture.client.debugHandleTerminalSocketErrorForTesting(
@@ -602,7 +617,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
 
     /// Same stop, the watchdog fires instead of a failure.
     func testAStopDuringTheRolloverThatTimesOutDoesNotClaimAFinal() async {
-        let fixture = stoppedMidRolloverWithNothingCarried()
+        let fixture = stoppedMidRollover()
         defer { fixture.session.invalidateAndCancel(); fixture.client.disconnect() }
         await fixture.clock.waitForSleepers(2)
 

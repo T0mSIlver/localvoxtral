@@ -427,7 +427,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case switched(
             next: RealtimeConnectionGeneration, dial: RealtimeSessionConfiguration?, usage: SocketUsage?,
             carriedBytes: Int)
-        case noConfiguration(stopRequested: Bool)
+        case noConfiguration
     }
 
     /// The retiring socket answered (or will not): close it, open the next
@@ -467,7 +467,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             // Every socket the client opens latches one; nothing to dial
             // without it, and the carried audio has nowhere to go.
             guard let configuration = s.configuration else {
-                return .noConfiguration(stopRequested: rollover.stopRequested)
+                if rollover.stopRequested {
+                    // The stop's final commit had nowhere to go: no claim of
+                    // a final, the stop ends as a closed socket does.
+                    let usage = takeUsageLocked(&s)
+                    closeSocketLocked(&s, cancelTask: true)
+                    return .endedWithoutDone(usage: usage)
+                }
+                return .noConfiguration
             }
 
             let usage = takeUsageLocked(&s)
@@ -522,11 +529,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         switch end {
         case nil:
             return
-        case .noConfiguration(let stopRequested):
+        case .noConfiguration:
             Log.backends.error(
                 "realtime rollover has no configuration to dial; staying on connection \(retiring.description, privacy: .public), carried audio dropped"
             )
-            if stopRequested { emit(.transcriptionFinalized, from: retiring) }
         case .finalized:
             Log.backends.notice("realtime rollover ended by the stop, with no audio to carry")
             emit(.transcriptionFinalized, from: retiring)
@@ -1271,6 +1277,11 @@ extension RealtimeAPIWebSocketClient {
             startPingTimerLocked(&s)
             startSessionReadyTimerLocked(&s)
         }
+    }
+
+    /// A client whose socket opened without latching a configuration.
+    package func debugClearConfigurationForTesting() {
+        state.withLock { $0.configuration = nil }
     }
 
     package func debugHandleTerminalSocketErrorForTesting(
