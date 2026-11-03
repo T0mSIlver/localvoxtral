@@ -967,6 +967,31 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.count, 1, "the polish answering later saves nothing more")
     }
 
+    /// With History off, a quit before the final transcript copies the text
+    /// so far: History keeps nothing and the process is about to exit, so
+    /// the clipboard is the only place it survives (#1915).
+    func testWithHistoryOffAQuitBeforeTheFinalTranscriptCopiesTheTextSoFar() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
+
+        // What `applicationWillTerminate` runs before it drains History.
+        pipeline.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(
+            copied.values.map { $0.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece],
+            "the quit lost the dictation")
+        XCTAssertTrue(pipeline.records.all.isEmpty, "History off keeps no record")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted on the way out")
+    }
+
     /// Quit after the stop, before the final transcript arrives: the text
     /// received so far reaches the History write queue, with its audio, as
     /// not inserted (#1296).
