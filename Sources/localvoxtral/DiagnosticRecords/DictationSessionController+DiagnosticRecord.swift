@@ -78,6 +78,7 @@ extension DictationSessionController {
         // Assembly walks complete retained buffers (harvest re-derivation);
         // `build` is nonisolated, so this await hops off the main actor the
         // same way the preparations it mirrors do.
+        let epoch = store.deletionEpoch()
         var record = await Self.assembleDiagnosticRecord(id: historyID, inputs: inputs)
         #if DEBUG
         debugDuringDiagnosticAssembly?()
@@ -87,9 +88,9 @@ extension DictationSessionController {
             Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
         // Asked again: the switch or History may have gone off during the
         // assembly, and that deleted the folder this would write into. The
-        // epoch covers a delete that lands between here and the write.
+        // epoch, read before the assembly, covers a delete that lands during
+        // it or before the write.
         guard diagnosticRecordsWanted else { return }
-        let epoch = store.deletionEpoch()
         // The watch is already open; this only tells it which record to patch.
         // A failed write leaves it open until its window closes, where it finds
         // no record and flushes nothing — the signal costs the record, never

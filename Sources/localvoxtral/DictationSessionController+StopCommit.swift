@@ -1190,6 +1190,12 @@ extension DictationSessionController {
         if let sessionStore {
             return sessionStore.deleteAllAudio(removingBackups: removingBackups)
         }
+        if historyOpenFailed, let audioStoreWithoutHistory {
+            let removed = audioStoreWithoutHistory.removeAll()
+            if removingBackups { quarantineWithoutHistory?.removeAll(of: "dictation-audio") }
+            Log.persistence.info(
+                "History did not open: deleted \(removed, privacy: .public) recording(s) directly")
+        }
         return nil
     }
 
