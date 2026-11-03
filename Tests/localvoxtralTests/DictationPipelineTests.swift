@@ -988,7 +988,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(
             copied.values.map { $0.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece],
             "the quit lost the dictation")
-        XCTAssertTrue(pipeline.records.all.isEmpty, "History off keeps no record")
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], "saved as not inserted")
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted on the way out")
     }
 
