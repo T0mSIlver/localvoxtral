@@ -20,10 +20,19 @@
 #                     SUPublicEDKey in package_app.sh)
 # LV_UPDATE_BASE_DIR  the kept releases (default
 #                     ~/Library/Application Support/localvoxtral-release/update-bases)
-# SPARKLE_BIN         Sparkle's tools (default: the SwiftPM artifact under .build)
+# SPARKLE_BIN         Sparkle's tools (default: the SwiftPM artifact under
+#                     ./.build, else a pinned copy kept in the runner's home,
+#                     downloaded and checksummed on first use)
+#
+# release.yml runs this from its snapshot of scripts/ci ($RELEASE_CI), in the
+# workspace: a daily release may check out a commit older than this script,
+# whose app has no Sparkle and whose .build has no tools.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+SPARKLE_VERSION=2.10.1
+SPARKLE_SHA256=1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
+TOOLS_DIR="$HOME/Library/Application Support/localvoxtral-release/sparkle-$SPARKLE_VERSION"
 KEY_FILE="${LV_UPDATE_KEY_FILE:-$HOME/.config/localvoxtral-release/sparkle-ed25519.key}"
 BASE_DIR="${LV_UPDATE_BASE_DIR:-$HOME/Library/Application Support/localvoxtral-release/update-bases}"
 KEEP=3
@@ -38,9 +47,24 @@ sparkle_bin() {
     return
   fi
   local tool
-  tool="$(find "$ROOT_DIR/.build/artifacts" -type f -path '*/Sparkle/bin/sign_update' 2>/dev/null | head -n 1)"
-  [[ -n "$tool" ]] || die "no Sparkle tools under .build/artifacts; build the app first, or set SPARKLE_BIN"
-  dirname "$tool"
+  tool="$(find "$PWD/.build/artifacts" -type f -path '*/Sparkle/bin/sign_update' 2>/dev/null | head -n 1)"
+  if [[ -n "$tool" ]]; then
+    dirname "$tool"
+    return
+  fi
+  if [[ ! -x "$TOOLS_DIR/bin/sign_update" ]]; then
+    local tmp
+    tmp="$(mktemp -d)"
+    curl -fsSL --retry 3 -o "$tmp/sparkle.tar.xz" \
+      "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" \
+      || die "could not download Sparkle $SPARKLE_VERSION's tools"
+    [[ "$(shasum -a 256 "$tmp/sparkle.tar.xz" | cut -d' ' -f1)" == "$SPARKLE_SHA256" ]] \
+      || die "Sparkle $SPARKLE_VERSION's tarball does not match its pinned checksum"
+    mkdir -p "$TOOLS_DIR"
+    tar -xf "$tmp/sparkle.tar.xz" -C "$TOOLS_DIR"
+    rm -rf "$tmp"
+  fi
+  echo "$TOOLS_DIR/bin"
 }
 
 plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist"; }
@@ -104,7 +128,7 @@ feed() {
   done < <(kept_builds)
   (( count > 0 )) || echo "  no earlier release kept in $BASE_DIR: full download only"
 
-  python3 "$ROOT_DIR/scripts/ci/render-appcast.py" "${args[@]}" >"$dist/appcast.xml"
+  python3 "$HERE/render-appcast.py" "${args[@]}" >"$dist/appcast.xml"
   echo "Wrote $dist/appcast.xml"
 }
 

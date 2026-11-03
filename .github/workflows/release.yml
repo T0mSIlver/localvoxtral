@@ -524,14 +524,16 @@ jobs:
         # below). Stable and daily only, and only notarized: a feed must
         # never offer an ad-hoc build. A rehearsal builds it too, so a change
         # here is proved before it merges. The key and the kept releases
-        # live in the runner account's home, never in the workspace.
+        # live in the runner account's home, never in the workspace. From
+        # $RELEASE_CI: a daily release may build a commit older than the
+        # feed script.
         if: >-
           steps.plan.outputs.proceed != 'false'
           && steps.signing.outputs.notarize == 'true'
           && steps.meta.outputs.prerelease == 'false'
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-        run: ./scripts/ci/build-update-feed.sh feed "$TAG" dist
+        run: '"$RELEASE_CI/build-update-feed.sh" feed "$TAG" dist'
 
       - name: Upload rehearsal artifacts (no tag, no release)
         # The rehearsal's whole output. Named so it can never be mistaken for
@@ -680,7 +682,7 @@ jobs:
           && steps.signing.outputs.notarize == 'true'
           && steps.meta.outputs.prerelease == 'false'
         continue-on-error: true
-        run: ./scripts/ci/build-update-feed.sh keep dist
+        run: '"$RELEASE_CI/build-update-feed.sh" keep dist'
 
       - name: Keep the assets of a release that did not publish
         # A failure or cancel after the tag went up leaves a tagged commit

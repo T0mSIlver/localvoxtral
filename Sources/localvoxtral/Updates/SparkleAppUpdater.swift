@@ -16,12 +16,15 @@ import Sparkle
 @MainActor
 final class SparkleAppUpdater: NSObject {
     private let model: AppUpdateModel
+    private let isDictationIdle: @MainActor () -> Bool
     private let pending: PendingUpdateInstall
     private var controller: SPUStandardUpdaterController?
 
     init(model: AppUpdateModel, isDictationIdle: @escaping @MainActor () -> Bool) {
         self.model = model
+        self.isDictationIdle = isDictationIdle
         self.pending = PendingUpdateInstall(
+            installsAutomatically: true,
             environment: .init(
                 isDictationIdle: isDictationIdle,
                 secondsSinceUserInput: {
@@ -57,14 +60,20 @@ final class SparkleAppUpdater: NSObject {
         }
         self.controller = controller
         let updater = controller.updater
+        pending.installsAutomatically = updater.automaticallyDownloadsUpdates
         model.connect(
             installsAutomatically: updater.automaticallyDownloadsUpdates,
             setInstallsAutomatically: { [weak self] on in
                 updater.automaticallyDownloadsUpdates = on
-                if !on { self?.pending.cancel() }
+                // An update already downloaded stays held either way: Sparkle
+                // keeps its cycle open for it (see PendingUpdateInstall).
+                self?.pending.installsAutomatically = on
                 Log.backends.info("updates: install automatically \(on ? "on" : "off", privacy: .public)")
             },
-            checkForUpdates: { [weak controller] in controller?.checkForUpdates(nil) }
+            checkForUpdates: { [weak self, weak controller] in
+                guard let self else { return }
+                if !self.pending.installHeldUpdateForUser() { controller?.checkForUpdates(nil) }
+            }
         )
         Log.backends.info(
             "updates: Sparkle started, feed \(updater.feedURL?.absoluteString ?? "none", privacy: .public)"
@@ -101,9 +110,29 @@ extension SparkleAppUpdater: SPUUpdaterDelegate {
         let version = item.displayVersionString
         let install = UncheckedSendableBox(immediateInstallHandler)
         MainActor.assumeIsolated {
+            // Read again: the user may have turned automatic installs off
+            // while this update was downloading.
+            pending.installsAutomatically = updater.automaticallyDownloadsUpdates
             pending.hold(version: version) { install.value() }
         }
         return true
+    }
+
+    /// Every install Sparkle runs while the app is open passes here, the
+    /// one the user starts from Sparkle's window included: it waits for the
+    /// dictation to end instead of cutting it off.
+    nonisolated func updater(
+        _ updater: SPUUpdater,
+        shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+        untilInvokingBlock installHandler: @escaping () -> Void
+    ) -> Bool {
+        let version = item.displayVersionString
+        let install = UncheckedSendableBox(installHandler)
+        return MainActor.assumeIsolated {
+            guard !isDictationIdle() else { return false }
+            pending.installWhenDictationIdle(version: version) { install.value() }
+            return true
+        }
     }
 
     nonisolated func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: (any Error)?) {

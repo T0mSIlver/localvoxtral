@@ -40,9 +40,10 @@ final class PendingUpdateInstallTests: XCTestCase {
         installed = []
     }
 
-    private func makeInstall() -> PendingUpdateInstall {
+    private func makeInstall(automatic: Bool = true) -> PendingUpdateInstall {
         let clock = clock!
         return PendingUpdateInstall(
+            installsAutomatically: automatic,
             environment: .init(
                 isDictationIdle: { [unowned self] in dictationIdle },
                 secondsSinceUserInput: { [unowned self] in clock.now.timeIntervalSince(lastInput) },
@@ -61,7 +62,7 @@ final class PendingUpdateInstallTests: XCTestCase {
         await Task.yield()
         await Task.yield()
         XCTAssertEqual(installs, 1)
-        XCTAssertFalse(pending.isWaiting)
+        XCTAssertFalse(pending.isHolding)
     }
 
     func testWaitsForTheUserToBeAwayThenInstallsOnce() async {
@@ -73,12 +74,12 @@ final class PendingUpdateInstallTests: XCTestCase {
             clock.advance(by: retry)
         }
         XCTAssertEqual(installs, 0)
-        XCTAssertTrue(pending.isWaiting)
+        XCTAssertTrue(pending.isHolding)
         await clock.waitForSleeper(dueIn: retry)
         clock.advance(by: retry)
         await waitUntil { self.installs == 1 }
         XCTAssertEqual(installs, 1)
-        XCTAssertFalse(pending.isWaiting)
+        XCTAssertFalse(pending.isHolding)
     }
 
     func testNeverInstallsDuringADictation() async {
@@ -108,6 +109,57 @@ final class PendingUpdateInstallTests: XCTestCase {
         clock.advance(by: retry)
         await waitUntil { !self.installed.isEmpty }
         XCTAssertEqual(installed, ["0.19.0"])
+    }
+
+    func testWithAutomaticInstallsOffTheUpdateWaitsForTheUser() async {
+        lastInput = clock.now.addingTimeInterval(-3600)
+        let pending = makeInstall(automatic: false)
+        pending.hold(version: "0.18.0") { [unowned self] in installs += 1 }
+        await waitUntil { false }
+        XCTAssertEqual(installs, 0, "away for an hour, but automatic installs are off")
+        XCTAssertEqual(clock.pendingSleepers, 0, "nothing polls while it waits for the user")
+        XCTAssertTrue(pending.isHolding)
+
+        // Check for Updates… installs the held update, without waiting for
+        // the user to be away (they just clicked), but not mid-dictation.
+        lastInput = clock.now
+        dictationIdle = false
+        XCTAssertTrue(pending.installHeldUpdateForUser())
+        await clock.waitForSleeper(dueIn: retry)
+        XCTAssertEqual(installs, 0)
+        dictationIdle = true
+        clock.advance(by: retry)
+        await waitUntil { self.installs == 1 }
+        XCTAssertEqual(installs, 1)
+        XCTAssertFalse(pending.installHeldUpdateForUser(), "nothing held after the install")
+    }
+
+    func testTurningAutomaticInstallsOffKeepsTheHeldUpdateAndOnResumesIt() async {
+        let pending = makeInstall()
+        pending.hold(version: "0.18.0") { [unowned self] in installs += 1 }
+        await clock.waitForSleeper(dueIn: retry)
+        pending.installsAutomatically = false
+        XCTAssertTrue(pending.isHolding, "Sparkle's handler is never dropped")
+        lastInput = clock.now.addingTimeInterval(-3600)
+        clock.advance(by: retry)
+        await waitUntil { false }
+        XCTAssertEqual(installs, 0)
+        pending.installsAutomatically = true
+        await waitUntil { self.installs == 1 }
+        XCTAssertEqual(installs, 1)
+    }
+
+    func testAnInstallTheUserStartedWaitsOnlyForTheDictation() async {
+        lastInput = clock.now
+        dictationIdle = false
+        let pending = makeInstall(automatic: false)
+        pending.installWhenDictationIdle(version: "0.18.0") { [unowned self] in installs += 1 }
+        await clock.waitForSleeper(dueIn: retry)
+        XCTAssertEqual(installs, 0)
+        dictationIdle = true
+        clock.advance(by: retry)
+        await waitUntil { self.installs == 1 }
+        XCTAssertEqual(installs, 1)
     }
 
     /// Yields the main actor until `condition` holds; bounded by a count of
