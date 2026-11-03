@@ -672,19 +672,21 @@ extension DictationSessionController {
             // no edit watch: nil outcome. Superseded, the capture tap already
             // belongs to the new dictation, and consuming it here would take
             // that dictation's facts.
+            // The failure goes first: the await below can outlast the next
+            // dictation's start (LVX-68).
+            if let llmConnectionFailure, !addressed.superseded {
+                self.handleLLMPolishingConnectionFailure(
+                    title: llmConnectionFailure.title,
+                    message: llmConnectionFailure.message,
+                    technicalDetails: llmConnectionFailure.technicalDetails
+                )
+            }
             if !addressed.superseded {
                 await self.writeDiagnosticRecordIfEnabled(
                     recordInputs,
                     historyID: historyID,
                     commitOutcome: nil,
                     committedTextForWatch: ""
-                )
-            }
-            if let llmConnectionFailure, !addressed.superseded {
-                self.handleLLMPolishingConnectionFailure(
-                    title: llmConnectionFailure.title,
-                    message: llmConnectionFailure.message,
-                    technicalDetails: llmConnectionFailure.technicalDetails
                 )
             }
             return
@@ -761,6 +763,18 @@ extension DictationSessionController {
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
+        // Before the diagnostic record's await: cleanup already reset the
+        // status, and a next dictation can start while the record waits
+        // behind History's writes. Reported after it, the failure would
+        // land on that dictation (LVX-68).
+        if let llmConnectionFailure {
+            self.handleLLMPolishingConnectionFailure(
+                title: llmConnectionFailure.title,
+                message: llmConnectionFailure.message,
+                technicalDetails: llmConnectionFailure.technicalDetails
+            )
+        }
+
         // AFTER the commit and the session record: record latency
         // can only ever land on the tail of this task, never on the
         // user's paste. `writeDiagnosticRecordIfEnabled` checks the
@@ -777,14 +791,6 @@ extension DictationSessionController {
                 payload: preparation.clipboardPayload
             )
         )
-
-        if let llmConnectionFailure {
-            self.handleLLMPolishingConnectionFailure(
-                title: llmConnectionFailure.title,
-                message: llmConnectionFailure.message,
-                technicalDetails: llmConnectionFailure.technicalDetails
-            )
-        }
     }
 
     /// What the user sees of a polished reply before the commit: the text in

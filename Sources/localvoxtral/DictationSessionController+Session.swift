@@ -216,14 +216,27 @@ extension DictationSessionController {
                 return
             }
 
-            guard !Task.isCancelled,
-                  (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
+            guard !Task.isCancelled else { return }
+            // Polishing turned off while the helpers started: nothing is left
+            // to wait for, so the dictation goes ahead unpolished. A backend
+            // mode that moved off managed unwinds the connect; returning with
+            // the latch set would refuse every later start (LVX-72).
+            let polishingStillManaged = self.settings.llmPolishingEnabled
+                && self.settings.polishingBackendMode == .managedLocal
+            guard (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
                   (!needsManagedPolishing
-                      || (self.settings.llmPolishingEnabled
-                          && self.settings.polishingBackendMode == .managedLocal)),
+                      || !self.settings.llmPolishingEnabled
+                      || polishingStillManaged),
                   self.isConnectingRealtimeSession
-            else { return }
-            if splitsPolishing, self.backendManager.polishdStatus != .ready {
+            else {
+                if self.isConnectingRealtimeSession {
+                    Log.backends.notice("managed startup superseded by a settings change; connect aborted")
+                    self.abortConnectingSession()
+                    self.statusText = StatusStrings.ready
+                }
+                return
+            }
+            if splitsPolishing, polishingStillManaged, self.backendManager.polishdStatus != .ready {
                 Log.polishing.notice("dictation starts before the polishing helper is ready")
                 self.managedPolishingSkippedAtStart = true
             }
