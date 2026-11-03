@@ -1,6 +1,7 @@
 import Carbon.HIToolbox
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// A left-and-right-Shift chord in an action slot (#831): Settings stores it,
@@ -229,12 +230,7 @@ final class ModifierChordShortcutTests: XCTestCase {
     }
 
     private func makeShortcuts() -> (ShortcutController, FakeShortcutSession) {
-        let suiteName = "localvoxtral.ModifierChordShortcutTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.modifierOnlyHotKeyEnabled = false

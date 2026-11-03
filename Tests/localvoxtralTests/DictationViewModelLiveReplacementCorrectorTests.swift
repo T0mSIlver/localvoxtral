@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 #if DEBUG
@@ -204,12 +205,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         field: TestField,
         typed: Box<[String]>
     ) {
-        let suiteName = "localvoxtral.DictationViewModelLiveReplacementCorrectorTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = .liveAutoPaste

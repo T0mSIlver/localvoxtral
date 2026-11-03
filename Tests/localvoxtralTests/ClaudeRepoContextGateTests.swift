@@ -2,6 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Records every collection attempt. The question these tests ask is not "did
@@ -54,10 +55,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     )
 
     private func makeContext() -> SessionContextResolver {
-        let suiteName = "localvoxtral.ClaudeRepoContextGateTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         return SessionContextResolver(settings: settings, textInsertion: TextInsertionService())
     }

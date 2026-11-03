@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -76,19 +77,14 @@ final class SecretStoreTests: XCTestCase {
     private static let migratedFlagKey = "settings.api_keys_migrated_to_keychain"
 
     private var defaults: UserDefaults!
-    private var suiteName = ""
 
     override func setUp() async throws {
         try await super.setUp()
-        suiteName = "localvoxtral.SecretStoreTests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: suiteName)
         defaults = nil
-        suiteName = ""
         try await super.tearDown()
     }
 

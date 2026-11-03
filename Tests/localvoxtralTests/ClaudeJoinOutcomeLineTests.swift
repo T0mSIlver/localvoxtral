@@ -2,6 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Counts reads of the Claude Desktop address, so "never asked" assertions are
@@ -34,10 +35,7 @@ final class ClaudeJoinOutcomeLineTests: XCTestCase {
     private func makeContext(registry: ClaudeSessionRegistry, desktopReads: OutcomeDesktopReadCounter? = nil)
         -> SessionContextResolver
     {
-        let suiteName = "localvoxtral.ClaudeJoinOutcomeLineTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.llmPolishingEnabled = true
         settings.terminalScreenContextEnabled = true
