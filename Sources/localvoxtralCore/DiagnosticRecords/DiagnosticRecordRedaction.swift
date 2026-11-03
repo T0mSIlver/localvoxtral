@@ -75,7 +75,7 @@ package enum DiagnosticRecordRedaction {
         // subscript is code reading the secret: `let apiKey = settings.key`
         // and `password = getpass()` stay.
         (#"(?<![\w.-])((?:"# + lowercaseSecretName + #")[ \t]*=[ \t]*["']?)"#
-            + unlessRedacted + quotedOr(#"[^\s"'()\[\]{}<>,;&]{6,}(?![(\[\w])"#),
+            + unlessRedacted + quotedOr(#"(?:[^\s"'()\[\]{}<>,;&]|&(?![A-Za-z0-9_.-]+=)){6,}(?![(\[\w])"#),
          "$1" + placeholder),
         // A YAML or `.env`-style colon after a lowercase or uppercase secret
         // name: `password: hunter2`, `POSTGRES_PASSWORD: …`. Prose puts a
@@ -87,7 +87,7 @@ package enum DiagnosticRecordRedaction {
          "$1" + placeholder),
         // A quoted JSON, YAML or TOML key in any case: `"token": "…"`,
         // `"accessToken":"…"`, `'api-key' = '…'`.
-        (#"((["'])(?i:[a-z0-9_.-]*(?:token|secret|password|passwd|credentials?|api[_-]?key|access[_-]?key|private[_-]?key))(?:[_.-][A-Za-z0-9_.-]*|(?-i:[A-Z])[A-Za-z0-9_.-]*)?\2[ \t]*[:=][ \t]*["']?)"#
+        (#"((["'])(?i:[a-z0-9_.-]*(?:token|secret|password|passwd|credentials?|api[_-]?key|access[_-]?key|private[_-]?key))(?:[_.-][A-Za-z0-9_.-]*|(?-i:[A-Z])[A-Za-z0-9_.-]*|s)?\2[ \t]*[:=][ \t]*["']?)"#
             + unlessRedacted + quotedOr(#"[^\s"',}\]]{6,}"#),
          "$1" + placeholder),
         // The password in a URL's userinfo: `postgres://app:pw@db/app`.

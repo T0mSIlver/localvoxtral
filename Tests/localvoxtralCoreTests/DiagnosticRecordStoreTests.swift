@@ -568,6 +568,14 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             in: "GET /v1/items?api_key=abc123secret&page=2",
             keeping: "api_key=<redacted>&page=2"
         )
+        // A '&' that starts no parameter is part of the secret.
+        assertRedacts("my&secret123", in: "password=my&secret123", keeping: "password=<redacted>")
+    }
+
+    /// A plural secret key holds secrets too; "tokenizer" does not.
+    func testRedactsAPluralQuotedSecretKey() {
+        assertRedacts("hunter2x9", in: #"{"passwords": "hunter2x9"}"#, keeping: #""passwords": "<redacted>""#)
+        assertRedacts("abc123tok", in: #"{"api_keys": "abc123tok"}"#, keeping: #""api_keys": "<redacted>""#)
     }
 
     /// The URL rule starts once per run of scheme characters: on a long
