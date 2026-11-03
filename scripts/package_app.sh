@@ -27,7 +27,9 @@ CONFIGURATION="${1:-release}"
 # .git) make git exit 128, which pipefail+set -e turns into a silent death
 # before the first echo — the fallback below never got a chance (broke
 # `remote-build.sh package` when #67 introduced git-derived versions).
-GIT_VERSION="$(git describe --tags 2>/dev/null | sed 's/^v//' || true)"
+# Only release tags name a version: any other tag (an archive/ tag kept for a
+# removed feature) made this an invalid version and failed every package.
+GIT_VERSION="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//' || true)"
 GIT_BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || true)"
 APP_VERSION="${2:-${GIT_VERSION:-0.0.0-dev}}"
 BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
