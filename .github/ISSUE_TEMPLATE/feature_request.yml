@@ -1,0 +1,16 @@
+name: Idea or request
+description: Something you'd like localvoxtral to do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What you'd like
+      description: What you were trying to do, and what got in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: now
+    attributes:
+      label: What you do today instead
+      description: Optional. A workaround, another app, or nothing.

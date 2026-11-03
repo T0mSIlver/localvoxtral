@@ -50,21 +50,32 @@ logs. Spend them only where nothing else can do the job:
   helpers. Read `PolishHelper/AGENTS.md` or `SpeechHelper/AGENTS.md` before
   touching either.
 
-## Working an issue
+## Working an item
 
-1. **Claim it.** `gh pr list --state open --search <n>` before you start and
-   again before you open the PR; parallel sessions have duplicated work. If
-   another open PR carries the same area label and touches the same files,
-   stop and report instead of racing it.
-2. **Check the spec.** Work starts from an issue that states scope,
+The maintainer's own work (features, bugs found in-house, audits, research,
+CI, flaky tests) is an item in the private Plane project `LVX`; its ids,
+conventions and API helper are in `ops-plane.md` of the private
+`localvoxtral-planning` repo. Public GitHub issues are for users and outside
+contributors: never open one for your own work, and never paste a Plane URL
+into public text. An outside contributor works from a GitHub issue: read
+"item" below as that issue, and `Closes #<n>` as its link.
+
+1. **Claim it.** Before you start and again before you open the PR, check the
+   item is still Todo and `gh pr list --state open --search '"LVX-<n>"'` is
+   empty; parallel sessions have duplicated work. If another open PR carries
+   the same area label and touches the same files, stop and report instead
+   of racing it. Set the item to In progress.
+2. **Check the spec.** Work starts from an item that states scope,
    constraints and the proof its PR must carry. If one is missing, write it
-   into the issue and wait for the maintainer's OK.
+   into the item and wait for the maintainer's OK.
 3. **Iterate** on Linux and with filtered Mac suites (Build and test). Push
    the draft for the full suite on hosted `build-test`.
-4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes #<n>` in
-   the body. The link moves the issue's card on the project board
-   (github.com/users/T0mSIlver/projects/1) to In progress, and the merge moves
-   it to Done. Keep one `waits:` label on it per reason it can't merge yet
+4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes LVX-<n>`
+   in the body (`Part of LVX-<n>` when it does only part), plus
+   `Closes #<n>` when a public issue reported it. The planning repo's
+   `plane-sync.sh` reads that line: draft moves the item to In progress, ready
+   to In review, the merge to Done. Keep one `waits:` label on the PR per
+   reason it can't merge yet
    (a Mac night run, the UI Smoke dictation, a stack, a known red, an outside
    key). CI adds the lane and stack ones, the scheduler removes a Mac one
    after the night run, and you remove the rest when they clear. The set: `docs/agent/test-tiers.md`, "Why a PR
@@ -72,11 +83,10 @@ logs. Spend them only where nothing else can do the job:
 5. **Mark it ready** (`gh pr ready <n>`) only once `build-test` is green and
    none of your other PRs is waiting on `mac-lanes`. Ready starts the Mac
    lanes; see CI below.
-6. **After the merge**, move each issue your issue was blocking
-   (`gh api repos/T0mSIlver/localvoxtral/issues/<n>/dependencies/blocking`)
-   from Blocked to Todo once all its blockers are closed; GitHub does not.
-   Stopping before the merge? Leave a handoff comment: state, what's left,
-   decisions made.
+6. **After the merge**, move each item whose description says
+   `Blocked by LVX-<n>` from Backlog to Todo once all its blockers are Done;
+   Plane does not. Stopping before the merge? Leave a handoff comment on the
+   item: state, what's left, decisions made.
 
 No AI attribution, whatever your harness asks: no Co-Authored-By or
 Claude-Session trailers in commits, no "Requested by" line or "Generated with"
@@ -87,17 +97,19 @@ through the API with your own `commit_message`. The `linux` job's attribution
 step fails a PR or a main push that carries a trailer.
 
 The owner dogfoods every daily release, so no PR waits on a hand check. The
-owner gives the OK to merge in chat or through the merge classes, never
-through the board. A failed check in a release becomes a `bug` issue that
-links the PR.
+owner gives the OK to merge in chat or through the merge classes, never by
+moving a Plane item. A failed check in a release becomes a public `bug` issue
+that links the PR, since users hit it too, and an item that links the issue.
 
-New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
-`mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
-and order it with blocked-by links, not prose.
+Items get one area label (`asr`, `polish`, `session`, `mistral`,
+`claude-join`, `ci`, `docs`), one kind (`bug`, `feature`, `reliability`,
+`research`, `audit`) and one module. Group work with sub-items (`parent`) and
+order it with `Blocked by LVX-<n>` lines; the API has no relations. Public
+issues and PRs keep GitHub's area labels plus `bug` or `enhancement`.
 
-Found work outside your issue's scope (a gap, a weakened check, a stale doc)?
-Open the follow-up issue yourself, with scope, constraints and proof, link it
-from your issue and say so in your report. Don't ask whether to file it.
+Found work outside your item's scope (a gap, a weakened check, a stale doc)?
+Create the follow-up item yourself in Backlog, with scope, constraints and
+proof, name it in your item and in your report. Don't ask whether to file it.
 
 ## Proof
 
