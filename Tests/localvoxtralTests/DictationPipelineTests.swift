@@ -833,7 +833,7 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.settings.dictationHistoryRetention = .forever
         viewModel.settings.diagnosticRecordsEnabled = true
         // Not `.succeeded`: that arms the edit watcher's real timer.
-        pipeline.overlay.commitOutcome = .copiedToClipboard
+        pipeline.overlay.commitOutcome = .copiedToClipboard(message: "copied")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
