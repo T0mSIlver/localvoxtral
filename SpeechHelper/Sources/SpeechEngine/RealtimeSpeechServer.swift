@@ -59,6 +59,14 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             + Double(warmUp.components.attoseconds) / 1e15
         FileHandle.standardError.write(Data(
             String(format: "speechd: warmed up in %.0f ms\n", warmUpMilliseconds).utf8))
+        // Keep the weights wired, for the life of the helper. macOS otherwise compresses
+        // or swaps an idle helper's weights (2.5 of 2.6 GB on the owner's MacBook after
+        // two idle days, LVX-33), and the next dictation sends nothing for seconds while
+        // they page back in. After the warm-up, active memory is the weights.
+        let weights = Memory.snapshot().activeMemory
+        let wiredLimit = await WiredSumPolicy().ticket(size: weights).start()
+        FileHandle.standardError.write(Data(
+            "speechd: \(weights / 1_048_576) MB of weights kept wired (limit \(wiredLimit / 1_048_576) MB)\n".utf8))
         return try RealtimeSpeechServer(
             engine: engine,
             port: port,
