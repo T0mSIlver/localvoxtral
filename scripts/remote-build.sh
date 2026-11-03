@@ -1320,8 +1320,8 @@ reject_gate_blocked_args "${REMOTE_CMD[@]}"
 
 # From here the run loads the host (a warm test server, the sync, the payload):
 # wait for the build host's lock first, and hold it until the script exits.
-lv_lock_acquire "$CMD"
 on_exit lv_lock_release
+lv_lock_acquire "$CMD"
 
 if [[ -n "$ENSURE_SERVER" ]]; then
   ensure_remote_server "$ENSURE_SERVER"

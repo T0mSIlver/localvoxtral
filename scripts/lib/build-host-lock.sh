@@ -25,8 +25,33 @@ LV_LOCK_POLL_SECONDS="${LV_LOCK_POLL_SECONDS:-30}"
 LV_LOCK_OWNER_LINE=""
 LV_LOCK_TAKEN=0
 
+# The holder's owner line, empty while it has not written one (or just left).
 lv_lock_holder() {
-  cat "$LV_LOCK_DIR/owner" 2>/dev/null | head -n 1
+  local line=""
+  if [[ -f "$LV_LOCK_DIR/owner" ]]; then
+    IFS= read -r line <"$LV_LOCK_DIR/owner" 2>/dev/null || true
+  fi
+  printf '%s' "$line"
+}
+
+# Removes the lock left by $1, a dead holder, under a short reclaim mutex: two
+# waiters that both found it dead recheck the line one at a time, so the second
+# sees the lock the first then took and leaves it.
+lv_lock_reclaim() {
+  local holder="$1" mutex="$LV_LOCK_DIR.reclaim" mutex_pid
+  if ! mkdir "$mutex" 2>/dev/null; then
+    IFS= read -r mutex_pid <"$mutex/pid" 2>/dev/null || mutex_pid=""
+    if [[ "$mutex_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$mutex_pid" 2>/dev/null; then
+      rm -rf "$mutex"
+    fi
+    return 0
+  fi
+  printf '%s\n' "$$" >"$mutex/pid"
+  if [[ "$(lv_lock_holder)" == "$holder" ]]; then
+    echo "==> Clearing the build host lock left by a remote-build.sh that is gone: $holder" >&2
+    rm -rf "$LV_LOCK_DIR"
+  fi
+  rm -rf "$mutex"
 }
 
 # Whether the holder is a remote-build.sh on this machine whose process is gone.
@@ -62,16 +87,17 @@ lv_lock_acquire() {
   local started=$SECONDS said_at=-1 said_holder="" holder age
   while :; do
     if mkdir "$LV_LOCK_DIR" 2>/dev/null; then
-      printf '%s\n' "$LV_LOCK_OWNER_LINE" >"$LV_LOCK_DIR/owner"
+      # Taken from here on, so a signal before the owner line is written still
+      # releases it (the caller registers lv_lock_release before acquiring).
       LV_LOCK_TAKEN=1
+      printf '%s\n' "$LV_LOCK_OWNER_LINE" >"$LV_LOCK_DIR/owner"
       export LV_LOCK_HELD="$LV_LOCK_DIR"
       echo "==> Holding the build host lock $LV_LOCK_DIR"
       return 0
     fi
     holder="$(lv_lock_holder)"
     if lv_lock_holder_is_dead "$holder"; then
-      echo "==> Clearing the build host lock left by a remote-build.sh that is gone: $holder" >&2
-      [[ "$(lv_lock_holder)" == "$holder" ]] && rm -rf "$LV_LOCK_DIR"
+      lv_lock_reclaim "$holder"
       continue
     fi
     if [[ "$holder" != "$said_holder" ]] || (( said_at < 0 || SECONDS - said_at >= 300 )); then
@@ -91,11 +117,14 @@ lv_lock_acquire() {
   done
 }
 
-# Releases the lock this run took, and only while the line in it is still ours.
+# Releases the lock this run took, and only while the line in it is still ours
+# (or not yet written: a signal right after the mkdir).
 lv_lock_release() {
   [[ "$LV_LOCK_TAKEN" == 1 ]] || return 0
   LV_LOCK_TAKEN=0
-  if [[ "$(lv_lock_holder)" == "$LV_LOCK_OWNER_LINE" ]]; then
+  local holder
+  holder="$(lv_lock_holder)"
+  if [[ "$holder" == "$LV_LOCK_OWNER_LINE" || -z "$holder" ]]; then
     rm -rf "$LV_LOCK_DIR"
     echo "==> Released the build host lock $LV_LOCK_DIR"
   else

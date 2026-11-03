@@ -101,6 +101,35 @@ rm -r "$LOCK"
 wait "$waiter" || fail "the waiting run failed after the lock was released: $(cat "$TMP_DIR/wait.out")"
 grep -q '^held: lock-test ' "$payload_log" || fail "the waiting run did not take the lock"
 
+# --- a lock whose holder has not written its line yet is waited for ---------
+
+mkdir -p "$LOCK"
+: >"$payload_log"
+env "${common_env[@]}" "$REMOTE_BUILD" build >"$TMP_DIR/wait.out" 2>&1 &
+waiter=$!
+for _ in $(seq 1 100); do
+  grep -q 'Waiting for the build host lock' "$TMP_DIR/wait.out" 2>/dev/null && break
+  /bin/sleep 0.1
+done
+grep -q 'held by: an owner that wrote no line' "$TMP_DIR/wait.out" \
+  || fail "an ownerless lock did not make the run wait: $(cat "$TMP_DIR/wait.out")"
+rm -r "$LOCK"
+wait "$waiter" || fail "the run failed after an ownerless lock went: $(cat "$TMP_DIR/wait.out")"
+
+# --- a reclaim that finds the lock already retaken leaves it -----------------
+
+mkdir -p "$LOCK"
+echo "live-thread $(date -u +%Y-%m-%dT%H:%M:%SZ) package" >"$LOCK/owner"
+(
+  LV_LOCK_DIR="$LOCK"
+  # shellcheck source=../lib/build-host-lock.sh
+  . "$ROOT_DIR/scripts/lib/build-host-lock.sh"
+  lv_lock_reclaim "dead-thread 2026-01-01T00:00:00Z remote-build.sh test host=$(hostname) pid=1"
+)
+[[ "$(cat "$LOCK/owner")" == live-thread* ]] || fail "a late reclaim removed the lock another run had just taken"
+[[ ! -e "$LOCK.reclaim" ]] || fail "the reclaim left its mutex behind"
+rm -r "$LOCK"
+
 # --- a lock left by a remote-build.sh that died is cleared -------------------
 
 mkdir -p "$LOCK"
