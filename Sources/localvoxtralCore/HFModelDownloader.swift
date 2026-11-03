@@ -506,6 +506,17 @@ package struct HFModelDownloader: ModelPreparing {
                 deliver
             )
 
+            // Until the record below is written, the offline fallback must
+            // not mistake the files that already landed for a whole model.
+            let inProgress = inProgressMarkerURL(repoID: request.repoID, sha: info.sha)
+            if !missing.isEmpty {
+                try fileManager.createDirectory(
+                    at: inProgress.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try Data().write(to: inProgress, options: .atomic)
+            }
+
             var downloaded: Int64 = 0
             for fileName in missing {
                 try Task.checkCancellation()
@@ -601,6 +612,9 @@ package struct HFModelDownloader: ModelPreparing {
                 )
             }
             try recordComplete(request, sha: info.sha, files: wanted)
+            if fileManager.fileExists(atPath: inProgress.path) {
+                try fileManager.removeItem(at: inProgress)
+            }
         } catch let error where Self.isCancellation(error) {
             throw CancellationError()
         } catch let error as ModelDownloadError {
@@ -720,6 +734,12 @@ package struct HFModelDownloader: ModelPreparing {
             .appendingPathComponent("\(sha).json")
     }
 
+    private func inProgressMarkerURL(repoID: String, sha: String) -> URL {
+        completionRecordURL(repoID: repoID, sha: sha)
+            .deletingPathExtension()
+            .appendingPathExtension("downloading")
+    }
+
     private func recordComplete(_ request: ModelPreparationRequest, sha: String, files: [String]) throws {
         let url = completionRecordURL(repoID: request.repoID, sha: sha)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -757,6 +777,9 @@ package struct HFModelDownloader: ModelPreparing {
             guard !sha.isEmpty, !sha.contains("/") else { return nil }
         }
         if isRecordedComplete(request, sha: sha) { return sha }
+        if fileManager.fileExists(atPath: inProgressMarkerURL(repoID: request.repoID, sha: sha).path) {
+            return nil
+        }
         let snapshot = snapshotDirectory(repoID: request.repoID, revision: sha)
         func exists(_ name: String) -> Bool {
             fileManager.fileExists(atPath: snapshot.appendingPathComponent(name).path)
@@ -771,8 +794,35 @@ package struct HFModelDownloader: ModelPreparing {
             else { return nil }
             return sha
         }
-        let names = (try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? []
-        return names.contains { fnmatch("model*.safetensors", $0, 0) == 0 } ? sha : nil
+        let names = Set((try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? [])
+        let weights = names.filter { fnmatch("model*.safetensors", $0, 0) == 0 }
+        guard !weights.isEmpty else { return nil }
+        // Without an index, shard names still say how many there are.
+        for name in weights {
+            guard let total = Self.shardCount(name) else { continue }
+            for part in 1...total where !names.contains(Self.shardName(part, of: total)) {
+                return nil
+            }
+        }
+        return sha
+    }
+
+    /// The `N` of a `model-0000k-of-0000N.safetensors` shard name.
+    private static func shardCount(_ name: String) -> Int? {
+        let parts = name.split(separator: "-")
+        guard parts.count == 4, parts[0] == "model", parts[2] == "of",
+              parts[3].hasSuffix(".safetensors"),
+              let total = Int(parts[3].dropLast(".safetensors".count)), total > 0, total < 10_000
+        else { return nil }
+        return total
+    }
+
+    private static func shardName(_ part: Int, of total: Int) -> String {
+        func pad(_ n: Int) -> String {
+            let digits = String(n)
+            return String(repeating: "0", count: max(0, 5 - digits.count)) + digits
+        }
+        return "model-\(pad(part))-of-\(pad(total)).safetensors"
     }
 
     private func repositoryDirectory(repoID: String) -> URL {

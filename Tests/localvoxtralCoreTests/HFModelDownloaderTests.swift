@@ -682,6 +682,47 @@ final class HFModelDownloaderTests: XCTestCase {
         XCTAssertTrue(transport.downloadedFileNames.isEmpty)
     }
 
+    /// A download paused or cut off mid-model leaves finished files behind:
+    /// offline, they must not pass for the whole model, nor must one shard
+    /// of a model with no index (review of #1951).
+    func testOfflineAnInterruptedDownloadOrAMissingShardDoesNotStart() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["config.json", "model.safetensors", "tekken.json"]),
+            payloads: ["config.json": Data("{}".utf8), "model.safetensors": Data("w".utf8)],
+            downloadFailure: URLError(.networkConnectionLost)
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+        let request = offlineRequest(revision: pin, patterns: ["*.json", "model*.safetensors"])
+        let snapshot = cache.appendingPathComponent("models--org--model/snapshots/\(pin)", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data("w".utf8).write(to: snapshot.appendingPathComponent("model.safetensors"))
+        // The connection drops during tekken.json.
+        _ = try? await downloader.prepare(request) { _ in }
+
+        transport.repositoryFailure = URLError(.notConnectedToInternet)
+        do {
+            try await downloader.prepare(request) { _ in }
+            XCTFail("an interrupted download must not start offline")
+        } catch is ModelDownloadError {}
+
+        let sharded = "fedcba9876543210fedcba9876543210fedcba98"
+        let shards = cache.appendingPathComponent("models--org--model/snapshots/\(sharded)", isDirectory: true)
+        try FileManager.default.createDirectory(at: shards, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: shards.appendingPathComponent("config.json"))
+        try Data("w".utf8).write(to: shards.appendingPathComponent("model-00001-of-00002.safetensors"))
+        let shardedRequest = offlineRequest(revision: sharded, patterns: ["*.json", "model*.safetensors"])
+        do {
+            try await downloader.prepare(shardedRequest) { _ in }
+            XCTFail("one shard of two must not start offline")
+        } catch is ModelDownloadError {}
+        try Data("w".utf8).write(to: shards.appendingPathComponent("model-00002-of-00002.safetensors"))
+        try await downloader.prepare(shardedRequest) { _ in }
+    }
+
     /// A custom repo tracks `main`: online it still asks every start, and
     /// offline it starts from the revision `refs/main` last resolved to.
     func testOfflineAnUnpinnedRepoStartsFromItsLastResolvedRevision() async throws {
