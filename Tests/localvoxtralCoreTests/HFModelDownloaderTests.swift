@@ -608,6 +608,152 @@ final class HFModelDownloaderTests: XCTestCase {
         }
     }
 
+    // MARK: Starting without Hugging Face (#1949)
+
+    /// Regression (#1949): with the pinned model already downloaded, the app
+    /// failed to start offline because every start asked Hugging Face first.
+    func testACompletedPinnedSnapshotStartsWithoutAskingHuggingFace() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["config.json", "model.safetensors"]),
+            payloads: ["config.json": Data("{}".utf8), "model.safetensors": Data("weights".utf8)]
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+        let request = offlineRequest(revision: pin, patterns: ["config.json", "model*.safetensors"])
+        try await downloader.prepare(request) { _ in }
+
+        transport.repositoryFailure = URLError(.notConnectedToInternet)
+        try await downloader.prepare(request) { _ in }
+
+        XCTAssertEqual(transport.repositoryInfoURLs.count, 1, "the second start must not ask Hugging Face")
+        XCTAssertEqual(transport.downloadedFileNames.count, 2)
+    }
+
+    /// The completion record covers one set of include patterns: an app
+    /// update that needs another file asks Hugging Face again.
+    func testNewIncludePatternsAskHuggingFaceAgain() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["config.json", "model.safetensors", "tekken.json"]),
+            payloads: ["config.json": Data("{}".utf8), "model.safetensors": Data("w".utf8), "tekken.json": Data("t".utf8)]
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+        try await downloader.prepare(offlineRequest(revision: pin, patterns: ["config.json", "model*.safetensors"])) { _ in }
+
+        try await downloader.prepare(
+            offlineRequest(revision: pin, patterns: ["config.json", "model*.safetensors", "tekken.json"])
+        ) { _ in }
+
+        XCTAssertEqual(transport.repositoryInfoURLs.count, 2)
+        XCTAssertEqual(transport.downloadedFileNames.last, "tekken.json")
+    }
+
+    /// A cache filled before the completion record existed, or copied in by
+    /// hand for an air-gapped Mac: offline, a snapshot with a config and every
+    /// weight file its index names starts; one missing a shard still fails.
+    func testOfflineAnUnrecordedSnapshotStartsOnlyWhenItsWeightsAreComplete() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let snapshot = cache.appendingPathComponent("models--org--model/snapshots/\(pin)", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data(#"{"weight_map":{"a":"model-1.safetensors","b":"model-2.safetensors"}}"#.utf8)
+            .write(to: snapshot.appendingPathComponent("model.safetensors.index.json"))
+        try Data("w".utf8).write(to: snapshot.appendingPathComponent("model-1.safetensors"))
+        let transport = FakeHFModelDownloadTransport(repositoryJSON: Data(), payloads: [:])
+        transport.repositoryFailure = URLError(.cannotFindHost)
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+        let request = offlineRequest(revision: pin, patterns: ["*.json", "model*.safetensors"])
+
+        do {
+            try await downloader.prepare(request) { _ in }
+            XCTFail("a snapshot missing a shard must not start")
+        } catch let error as ModelDownloadError {
+            XCTAssertEqual(error.errorDescription, "Model download failed: check your internet connection.")
+        }
+
+        try Data("w".utf8).write(to: snapshot.appendingPathComponent("model-2.safetensors"))
+        try await downloader.prepare(request) { _ in }
+        XCTAssertTrue(transport.downloadedFileNames.isEmpty)
+    }
+
+    /// A download paused or cut off mid-model leaves finished files behind:
+    /// offline, they must not pass for the whole model, nor must one shard
+    /// of a model with no index (review of #1951).
+    func testOfflineAnInterruptedDownloadOrAMissingShardDoesNotStart() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["config.json", "model.safetensors", "tekken.json"]),
+            payloads: ["config.json": Data("{}".utf8), "model.safetensors": Data("w".utf8)],
+            downloadFailure: URLError(.networkConnectionLost)
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+        let request = offlineRequest(revision: pin, patterns: ["*.json", "model*.safetensors"])
+        let snapshot = cache.appendingPathComponent("models--org--model/snapshots/\(pin)", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data("w".utf8).write(to: snapshot.appendingPathComponent("model.safetensors"))
+        // The connection drops during tekken.json.
+        _ = try? await downloader.prepare(request) { _ in }
+
+        transport.repositoryFailure = URLError(.notConnectedToInternet)
+        do {
+            try await downloader.prepare(request) { _ in }
+            XCTFail("an interrupted download must not start offline")
+        } catch is ModelDownloadError {}
+
+        let sharded = "fedcba9876543210fedcba9876543210fedcba98"
+        let shards = cache.appendingPathComponent("models--org--model/snapshots/\(sharded)", isDirectory: true)
+        try FileManager.default.createDirectory(at: shards, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: shards.appendingPathComponent("config.json"))
+        try Data("w".utf8).write(to: shards.appendingPathComponent("model-00001-of-00002.safetensors"))
+        let shardedRequest = offlineRequest(revision: sharded, patterns: ["*.json", "model*.safetensors"])
+        do {
+            try await downloader.prepare(shardedRequest) { _ in }
+            XCTFail("one shard of two must not start offline")
+        } catch is ModelDownloadError {}
+        try Data("w".utf8).write(to: shards.appendingPathComponent("model-00002-of-00002.safetensors"))
+        try await downloader.prepare(shardedRequest) { _ in }
+    }
+
+    /// A custom repo tracks `main`: online it still asks every start, and
+    /// offline it starts from the revision `refs/main` last resolved to.
+    func testOfflineAnUnpinnedRepoStartsFromItsLastResolvedRevision() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let resolved = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: resolved, files: ["config.json", "model.safetensors"]),
+            payloads: ["config.json": Data("{}".utf8), "model.safetensors": Data("w".utf8)]
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+        let request = offlineRequest(revision: nil, patterns: ["*.json", "model*.safetensors"])
+        try await downloader.prepare(request) { _ in }
+        try await downloader.prepare(request) { _ in }
+        XCTAssertEqual(transport.repositoryInfoURLs.count, 2, "online, main is checked every start")
+
+        transport.repositoryFailure = URLError(.notConnectedToInternet)
+        try await downloader.prepare(request) { _ in }
+        XCTAssertEqual(transport.downloadedFileNames.count, 2)
+    }
+
+    private func offlineRequest(revision: String?, patterns: [String]) -> ModelPreparationRequest {
+        ModelPreparationRequest(
+            backendID: "speechd",
+            displayName: "Dictation engine",
+            repoID: "org/model",
+            revision: revision,
+            includePatterns: patterns
+        )
+    }
+
     private func makePausableTransport(pin: String) -> FakeHFModelDownloadTransport {
         FakeHFModelDownloadTransport(
             repositoryJSON: repositoryJSON(
@@ -688,6 +834,7 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         var downloadStartedContinuation: CheckedContinuation<Void, Never>?
         var pauseContinuation: CheckedContinuation<Void, Error>?
         var deliveredTemporaryURLs: [URL] = []
+        var repositoryFailure: Error?
     }
 
     private let repositoryJSON: Data
@@ -701,6 +848,11 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     private let downloadFailure: Error?
     /// HTTP status reported with each completed transfer.
     private let downloadStatusCode: Int
+    /// Thrown by the repository API call, standing in for no network.
+    var repositoryFailure: Error? {
+        get { state.withLock { $0.repositoryFailure } }
+        set { state.withLock { $0.repositoryFailure = newValue } }
+    }
     private let state = Mutex(State())
 
     init(
@@ -756,7 +908,11 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     }
 
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
-        state.withLock { $0.repositoryInfoURLs.append(url) }
+        let failure: Error? = state.withLock {
+            $0.repositoryInfoURLs.append(url)
+            return $0.repositoryFailure
+        }
+        if let failure { throw failure }
         return (repositoryJSON, 200)
     }
 

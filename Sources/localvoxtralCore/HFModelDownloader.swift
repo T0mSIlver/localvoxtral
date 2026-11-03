@@ -420,8 +420,31 @@ package struct HFModelDownloader: ModelPreparing {
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
     ) async throws {
+        // A pinned revision never changes, so a snapshot this downloader
+        // finished needs no Hugging Face request: the app starts offline and
+        // skips a round trip on every launch (#1949).
+        if let revision = request.revision, isRecordedComplete(request, sha: revision) {
+            Log.backends.info(
+                "\(request.repoID, privacy: .public)@\(revision, privacy: .public) is complete in the cache; skipping the Hugging Face check"
+            )
+            return
+        }
         do {
-            let info = try await repositoryInfo(for: request)
+            let info: HFModelRepositoryInfo
+            do {
+                info = try await repositoryInfo(for: request)
+            } catch {
+                if Self.isCancellation(error) { throw error }
+                if case ModelDownloadError.resolvedRevisionMismatch = error { throw error }
+                // Hugging Face unreachable, failing, or behind a captive
+                // portal: a cached snapshot the helper can load beats a
+                // failed start.
+                guard let sha = usableCachedSnapshot(for: request) else { throw error }
+                Log.backends.error(
+                    "Hugging Face check failed for \(request.repoID, privacy: .public) (\(error.localizedDescription, privacy: .public)); starting from cached snapshot \(sha, privacy: .public)"
+                )
+                return
+            }
             let wanted = info.fileNames.filter { fileName in
                 request.includePatterns.contains { fnmatch($0, fileName, 0) == 0 }
             }
@@ -482,6 +505,17 @@ package struct HFModelDownloader: ModelPreparing {
                 ModelDownloadProgress(downloadedBytes: 0, totalBytes: effectiveTotal()),
                 deliver
             )
+
+            // Until the record below is written, the offline fallback must
+            // not mistake the files that already landed for a whole model.
+            let inProgress = inProgressMarkerURL(repoID: request.repoID, sha: info.sha)
+            if !missing.isEmpty {
+                try fileManager.createDirectory(
+                    at: inProgress.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try Data().write(to: inProgress, options: .atomic)
+            }
 
             var downloaded: Int64 = 0
             for fileName in missing {
@@ -576,6 +610,10 @@ package struct HFModelDownloader: ModelPreparing {
                     to: refs.appendingPathComponent("main"),
                     options: .atomic
                 )
+            }
+            try recordComplete(request, sha: info.sha, files: wanted)
+            if fileManager.fileExists(atPath: inProgress.path) {
+                try fileManager.removeItem(at: inProgress)
             }
         } catch let error where Self.isCancellation(error) {
             throw CancellationError()
@@ -680,6 +718,111 @@ package struct HFModelDownloader: ModelPreparing {
             fileNames: response.siblings.map(\.rfilename),
             sizesByFileName: sizesByFileName
         )
+    }
+
+    /// What a finished `prepare` leaves next to the snapshot: the include
+    /// patterns it served and the files they matched. A later `prepare` with
+    /// the same patterns trusts the snapshot while every file is still there.
+    private struct CompletionRecord: Codable, Equatable {
+        let includePatterns: [String]
+        let files: [String]
+    }
+
+    private func completionRecordURL(repoID: String, sha: String) -> URL {
+        repositoryDirectory(repoID: repoID)
+            .appendingPathComponent(".localvoxtral-complete", isDirectory: true)
+            .appendingPathComponent("\(sha).json")
+    }
+
+    private func inProgressMarkerURL(repoID: String, sha: String) -> URL {
+        completionRecordURL(repoID: repoID, sha: sha)
+            .deletingPathExtension()
+            .appendingPathExtension("downloading")
+    }
+
+    private func recordComplete(_ request: ModelPreparationRequest, sha: String, files: [String]) throws {
+        let url = completionRecordURL(repoID: request.repoID, sha: sha)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let record = CompletionRecord(includePatterns: request.includePatterns, files: files)
+        try JSONEncoder().encode(record).write(to: url, options: .atomic)
+    }
+
+    private func isRecordedComplete(_ request: ModelPreparationRequest, sha: String) -> Bool {
+        guard let data = try? Data(contentsOf: completionRecordURL(repoID: request.repoID, sha: sha)),
+              let record = try? JSONDecoder().decode(CompletionRecord.self, from: data),
+              record.includePatterns == request.includePatterns,
+              !record.files.isEmpty
+        else { return false }
+        let snapshot = snapshotDirectory(repoID: request.repoID, revision: sha)
+        return record.files.allSatisfy { fileName in
+            guard let destination = try? safeDestination(for: fileName, under: snapshot) else { return false }
+            return fileManager.fileExists(atPath: destination.path)
+        }
+    }
+
+    /// The revision to start from when Hugging Face cannot be asked: the pin,
+    /// or what `refs/main` last resolved to. Its snapshot must be recorded
+    /// complete, or, for caches filled before the record existed or by
+    /// another tool, hold a config and every weight file its index names.
+    private func usableCachedSnapshot(for request: ModelPreparationRequest) -> String? {
+        let sha: String
+        if let revision = request.revision {
+            sha = revision
+        } else {
+            let ref = repositoryDirectory(repoID: request.repoID)
+                .appendingPathComponent("refs", isDirectory: true)
+                .appendingPathComponent("main")
+            guard let text = try? String(contentsOf: ref, encoding: .utf8) else { return nil }
+            sha = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sha.isEmpty, !sha.contains("/") else { return nil }
+        }
+        if isRecordedComplete(request, sha: sha) { return sha }
+        if fileManager.fileExists(atPath: inProgressMarkerURL(repoID: request.repoID, sha: sha).path) {
+            return nil
+        }
+        let snapshot = snapshotDirectory(repoID: request.repoID, revision: sha)
+        func exists(_ name: String) -> Bool {
+            fileManager.fileExists(atPath: snapshot.appendingPathComponent(name).path)
+        }
+        guard exists("config.json") else { return nil }
+        let index = snapshot.appendingPathComponent("model.safetensors.index.json")
+        if let data = try? Data(contentsOf: index) {
+            struct WeightIndex: Decodable { let weight_map: [String: String] }
+            guard let shards = try? JSONDecoder().decode(WeightIndex.self, from: data).weight_map.values,
+                  !shards.isEmpty,
+                  Set(shards).allSatisfy({ (try? safeDestination(for: $0, under: snapshot)).map { fileManager.fileExists(atPath: $0.path) } ?? false })
+            else { return nil }
+            return sha
+        }
+        let names = Set((try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? [])
+        let weights = names.filter { fnmatch("model*.safetensors", $0, 0) == 0 }
+        guard !weights.isEmpty else { return nil }
+        // Without an index, shard names still say how many there are.
+        for name in weights {
+            guard let total = Self.shardCount(name) else { continue }
+            for part in 1...total where !names.contains(Self.shardName(part, of: total)) {
+                return nil
+            }
+        }
+        return sha
+    }
+
+    /// The `N` of a `model-0000k-of-0000N.safetensors` shard name.
+    private static func shardCount(_ name: String) -> Int? {
+        let parts = name.split(separator: "-")
+        guard parts.count == 4, parts[0] == "model", parts[2] == "of",
+              parts[3].hasSuffix(".safetensors"),
+              let total = Int(parts[3].dropLast(".safetensors".count)), total > 0, total < 10_000
+        else { return nil }
+        return total
+    }
+
+    private static func shardName(_ part: Int, of total: Int) -> String {
+        func pad(_ n: Int) -> String {
+            let digits = String(n)
+            return String(repeating: "0", count: max(0, 5 - digits.count)) + digits
+        }
+        return "model-\(pad(part))-of-\(pad(total)).safetensors"
     }
 
     private func repositoryDirectory(repoID: String) -> URL {

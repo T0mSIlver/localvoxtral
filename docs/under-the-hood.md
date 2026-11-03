@@ -103,6 +103,10 @@ model are pinned to an exact Hugging Face commit. The app downloads and loads
 that commit, never the repo's moving main branch, so an upstream edit to a
 model repo can never change what your install runs.
 
+Once a pinned model is downloaded, the app starts it without asking Hugging
+Face, so it works offline. If Hugging Face is unreachable, it starts from the
+model already on disk.
+
 The app supervises both helpers, and a watchdog stops them even if the app
 crashes.
 
