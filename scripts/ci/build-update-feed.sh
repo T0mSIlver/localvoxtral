@@ -71,9 +71,15 @@ feed() {
 
   codesign --verify -R="$TEAM_REQUIREMENT" "$app" \
     || die "$app is not signed by the release team; an update feed must never offer it"
-  local build minimum
+  local build minimum short
   build="$(plist "$app" CFBundleVersion)"
   minimum="$(plist "$app" LSMinimumSystemVersion)"
+  # package_app.sh takes the version from the newest tag; the feed names the
+  # release's own. A mismatch would offer users an app that calls itself
+  # another version (a non-release tag did that once, #1974).
+  short="$(plist "$app" CFBundleShortVersionString)"
+  [[ "$short" == "${tag#v}" ]] || die "$app calls itself $short, not ${tag#v}"
+  [[ "$build" =~ ^[0-9]+$ ]] || die "$app has no numeric build number: $build"
   echo "Feed for $tag (build $build, macOS $minimum+)"
 
   local args=(--tag "$tag" --build "$build" --minimum-system "$minimum"
