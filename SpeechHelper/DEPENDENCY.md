@@ -143,6 +143,12 @@ drift onto known-bad versions. We pin the two risky ones exactly:
   here — it's a transitive dep of mlx-audio-swift — so SPM warns it's "unused"; that's expected,
   the pin exists to freeze the whole graph below 1.2.
 
+This mlx-swift may differ from `PolishHelper`'s (0.31.6). Both helpers share the app's
+`mlx-swift_Cmlx.bundle`, which holds the polishing helper's Metal kernels. So `package_app.sh`
+ships this helper's kernels as `localvoxtral-speechd.metallib`, and the helper sets
+`GPU.metallib` to them at launch (`SpeechMetalLibrary`, which needs mlx-swift 0.32 or later).
+On the shared kernels, Nemotron emitted no tokens with mlx-swift 0.32.3 (#1947).
+
 `swift-huggingface` (`exact: "0.12.0"`) matches upstream's resolved graph. Its swift-xet
 dependency sits behind the `Xet` trait, which nothing here enables, so the graph no longer pulls
 swift-xet or the swift-nio stack. `Package.resolved` is checked in (as in `PolishHelper`) to lock

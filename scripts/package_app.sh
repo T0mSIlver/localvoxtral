@@ -654,15 +654,32 @@ fi # speech helper fingerprint match
 cp "$SPEECH_HELPER_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-speechd"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-speechd"
 
-# Copy every package resource bundle (Metal kernels, tokenizer/model assets)
-# beside the app resources, matching the proven PolishHelper layout above.
+# Copy the package resource bundles (tokenizer/model assets) beside the app
+# resources, matching the PolishHelper layout above. A bundle the polishing
+# helper already put there is kept: `cp -R` into an existing directory nests
+# the copy one level down, where nothing looks.
 while IFS= read -r speech_helper_bundle; do
-  cp -R "$speech_helper_bundle" "$APP_DIR/Contents/Resources/$(basename "$speech_helper_bundle")"
+  dest="$APP_DIR/Contents/Resources/$(basename "$speech_helper_bundle")"
+  [[ -e "$dest" ]] && continue
+  cp -R "$speech_helper_bundle" "$dest"
 done < <(find "$SPEECH_HELPER_PRODUCTS_DIR" -maxdepth 1 -type d -name "*.bundle" -print)
 
-if [[ ! -d "$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle" ]]; then
-  echo "mlx-swift_Cmlx.bundle missing from speech helper build products; the"
-  echo "helper would abort at runtime loading Metal kernels."
+# MLX finds its kernels in mlx-swift_Cmlx.bundle, which holds the polishing
+# helper's. The speech helper may pin another mlx-swift, whose code on those
+# kernels decodes garbage (#1947), so its own ship under their own name and
+# localvoxtral-speechd points MLX at them (SpeechMetalLibrary).
+SPEECH_HELPER_METALLIB="$SPEECH_HELPER_PRODUCTS_DIR/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+SHARED_METALLIB="$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+if [[ ! -f "$SPEECH_HELPER_METALLIB" ]]; then
+  echo "default.metallib missing from the speech helper's mlx-swift_Cmlx.bundle at"
+  echo "  $SPEECH_HELPER_METALLIB"
+  echo "the helper would run on another version's Metal kernels."
+  exit 1
+fi
+cp "$SPEECH_HELPER_METALLIB" "$APP_DIR/Contents/Resources/localvoxtral-speechd.metallib"
+if [[ "${LOCALVOXTRAL_SKIP_POLISHD:-0}" != "1" ]] \
+  && ! cmp -s "$HELPER_PRODUCTS_DIR/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib" "$SHARED_METALLIB"; then
+  echo "The app's mlx-swift_Cmlx.bundle kernels are not the polishing helper's own."
   exit 1
 fi
 
