@@ -86,6 +86,30 @@ package enum DiagnosticRecordRedaction {
         return ClipboardVocabulary.entities(inExcerpt: redacting(text, count: &count))
     }
 
+    /// `entries` without those whose term the redaction took out of its
+    /// source. A matcher runs on the text as captured, so a term can be the
+    /// value of `DB_PASSWORD=…` or a line of the withheld prompt; once the
+    /// text is redacted nothing marks the bare term. A term that was in
+    /// `capturedText` and is not in `keptText` goes.
+    package static func droppingEntries(
+        _ entries: [DiagnosticRecord.Source.Entry], capturedText: String, keptText: String
+    ) -> [DiagnosticRecord.Source.Entry] {
+        entries.filter { entry in
+            entry.term.isEmpty || !capturedText.contains(entry.term) || keptText.contains(entry.term)
+        }
+    }
+
+    /// `droppingEntries` for a record whose texts are already withheld: the
+    /// captured text is what the person wrote, the kept text the same with
+    /// every `Withheld` taken out.
+    private static func droppingWithheldEntries(
+        _ entries: [DiagnosticRecord.Source.Entry], withheld: [Withheld], text: String
+    ) -> [DiagnosticRecord.Source.Entry] {
+        droppingEntries(
+            entries, capturedText: text,
+            keptText: withholding(withheld, in: text, softWrapped: false))
+    }
+
     /// Replaces every maximal base64url run of exactly `tokenLength`
     /// characters. Runs of any other length are left alone: a token is fixed
     /// width, and "any long base64-ish thing" would shred identifiers.
@@ -211,13 +235,31 @@ package enum DiagnosticRecordRedaction {
         }
 
         withholdOptional(&record.text.systemPrompt)
-        record.text.userPrompts = record.text.userPrompts.map(withhold)
+        // The user prompts quote the screen and the terminal source's excerpt
+        // is a cut of it, so both can hold a prompt soft-wrapped across rows
+        // (LVX-64). Both are bounded by the screen cap; a clipboard excerpt
+        // is not, and keeps the cheap pass.
+        record.text.userPrompts = record.text.userPrompts.map(withholdScreen)
         if var screen = record.screen {
             screen.sanitizedText = screen.sanitizedText.map(withholdScreen)
             record.screen = screen
         }
+        let withheldText = withheld.map(\.needles).joined(separator: "\n")
         for index in record.sources.indices {
-            withholdOptional(&record.sources[index].renderedExcerpt)
+            if record.sources[index].source == "terminal" {
+                record.sources[index].renderedExcerpt =
+                    record.sources[index].renderedExcerpt.map(withholdScreen)
+            } else {
+                withholdOptional(&record.sources[index].renderedExcerpt)
+            }
+            // A matched term may be an identifier of the withheld text
+            // (LVX-65); the harvest is taken from the withheld text already.
+            record.sources[index].entries = droppingWithheldEntries(
+                record.sources[index].entries, withheld: withheld, text: withheldText)
+            record.sources[index].phoneticEntries = droppingWithheldEntries(
+                record.sources[index].phoneticEntries, withheld: withheld, text: withheldText)
+            record.sources[index].verificationEntries = droppingWithheldEntries(
+                record.sources[index].verificationEntries, withheld: withheld, text: withheldText)
         }
     }
 
