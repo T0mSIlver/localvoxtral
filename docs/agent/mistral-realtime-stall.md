@@ -28,7 +28,7 @@ To find a failed dictation, look for a `connect` without a later `transcription.
 
 ## Tools
 
-- `MistralRealtimeSoakTests`: real-time-paced sessions of real speech through our client. It needs `.mistral-soak-enable.json` (`{"apiKey","sessions","concurrency","seconds"}`, mode 0600) and 16 kHz mono s16le speech at `local-notes/mistral-soak/soak.pcm`. Run it with `./scripts/remote-build.sh exec swift test --filter MistralRealtimeSoakTests` and delete the marker afterwards. It costs 0.006 USD per minute of audio.
+- `MistralRealtimeSoakTests`: real-time-paced sessions of real speech through our client. It needs `.mistral-soak-enable.json` (`{"apiKey","sessions","concurrency","seconds"}`, optionally `"model"`, `"contextBias"` and `"startSeconds"` for one fixed window such as B's 1410 s clip; mode 0600) and 16 kHz mono s16le speech at `local-notes/mistral-soak/soak.pcm`. Run it with `./scripts/remote-build.sh exec swift test --filter MistralRealtimeSoakTests` and delete the marker afterwards. Each `SOAK` line carries the request id, the first delta's time after the first audio, and every gap of 5 s or more (D's size). It costs the model's per-minute price: 0.006 USD for 2602, 0.008 for Realtime 3.
 - The speech used so far is LibriVox, *William Again* chapter 1 (`https://archive.org/download/williamagain_1902_librivox/williamagain_01_crompton_64kb.mp3`), converted with `ffmpeg -i in.mp3 -ac 1 -ar 16000 -f s16le out.pcm`.
 - `repro.py` inside the report below reproduces symptom B with the official SDK.
 

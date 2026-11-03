@@ -1253,13 +1253,6 @@ extension DictationSessionController {
         let repositoryTermsPermitted: Bool
     }
 
-    /// The list the pass is biased with, and the terms before
-    /// `contextBias` joined their phrases, to put the spaces back.
-    struct StopSecondPassTerms {
-        let contextBias: [String]
-        let candidates: [String]
-    }
-
     /// Nil when this stop gets no second pass; every reason but "not this
     /// kind of session" is logged.
     ///
@@ -1348,7 +1341,7 @@ extension DictationSessionController {
     /// terminal has no project. The repository pipeline itself is not run:
     /// it can take 3 s, and it nominates only what the realtime text nearly
     /// spells.
-    func stopSecondPassTerms(for request: StopSecondPassRequest) async -> StopSecondPassTerms {
+    func stopSecondPassTerms(for request: StopSecondPassRequest) async -> [String] {
         var context = request.context
         var learnedTerms: [String] = []
         if request.contextTrusted {
@@ -1407,7 +1400,7 @@ extension DictationSessionController {
         Log.backends.info(
             "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
         )
-        return StopSecondPassTerms(contextBias: contextBias, candidates: candidates)
+        return contextBias
     }
 
     /// A remote session's project is its label, whatever this Mac's
@@ -1472,10 +1465,10 @@ extension DictationSessionController {
         let sleep = dependencies.clock.sleep
         let usageRecorder = secondPassUsageRecorder
         polishAndCommitTask = Task { @MainActor [weak self] in
-            guard let terms = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
+            guard let contextBias = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
             else { return }
             Log.backends.info(
-                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public), last upload rate \(Self.describeUploadRate(measuredRate), privacy: .public)"
+                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public), last upload rate \(Self.describeUploadRate(measuredRate), privacy: .public)"
             )
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
                 // Here, off the main actor: the ledger appends to its file
@@ -1490,10 +1483,10 @@ extension DictationSessionController {
                     costEUR: MistralPricing.dictationCost(
                         model: MistralBatchTranscription.model, audioSeconds: request.audioSeconds)
                 ))
-                let text = try await transcriber.transcribe(
+                return try await transcriber.transcribe(
                     wav: request.wav,
                     language: nil,
-                    contextBias: terms.contextBias,
+                    contextBias: contextBias,
                     apiKey: request.apiKey,
                     endpoint: request.endpoint,
                     onUpload: { measurement in
@@ -1503,8 +1496,6 @@ extension DictationSessionController {
                         )
                     }
                 ).text
-                return MistralBatchTranscription.restoringPhrases(
-                    in: text, candidates: terms.candidates)
             }
             guard let self, outcome != .cancelled, !Task.isCancelled,
                   await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode)

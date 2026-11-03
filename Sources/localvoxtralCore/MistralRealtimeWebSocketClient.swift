@@ -23,7 +23,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 {
     package static let defaultEndpoint = URL(
         string: "wss://api.mistral.ai/v1/audio/transcriptions/realtime")!
-    package static let defaultModel = "voxtral-mini-transcribe-realtime-2602"
+    /// Voxtral Realtime 3. Mistral deprecated the hosted 2602 on 2026-10-31
+    /// and retires it on 2027-04-30.
+    package static let defaultModel = MistralRealtimeModels.voxtral3
 
     /// PCM encoding this client always produces (16 kHz mono little-endian S16).
     static let audioEncoding = "pcm_s16le"
@@ -984,6 +986,12 @@ extension MistralRealtimeWebSocketClient {
 
     package func debugRecordedFrames() -> [String] {
         state.withLock { $0.recordedFrames }
+    }
+
+    /// The open socket's `session.created` request id, nil before it or once
+    /// the socket closed. The soak lane reports it per session.
+    package func debugRequestIDForTesting() -> String? {
+        state.withLock { $0.health?.requestID }
     }
 
     package func debugClearRecordedFrames() {

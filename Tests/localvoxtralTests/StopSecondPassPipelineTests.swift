@@ -31,7 +31,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(transcriber.calls, [FakeBatchTranscriber.Call(
             wav: DictationAudioRecording.wav(fromPCM16: Self.pcm),
             language: nil,
-            contextBias: ["localvoxtral", "Claude_Code"],
+            contextBias: ["localvoxtral", "Claude Code"],
             apiKey: "session-key",
             endpoint: URL(string: "https://api.mistral.ai/v1/audio/transcriptions")!
         )])
@@ -43,7 +43,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let usage = ledger.entries()
         XCTAssertEqual(usage.map(\.feature), [.secondPass])
         XCTAssertEqual(usage.first?.audioSeconds, 1)
-        XCTAssertEqual(usage.first?.costEUR ?? 0, 0.0026 / 60, accuracy: 1e-12)
+        XCTAssertEqual(usage.first?.costEUR ?? 0, 0.0031 / 60, accuracy: 1e-12)
     }
 
     /// #1649: the batch model left out a sentence the realtime stream had,
@@ -237,7 +237,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
     /// The terms one dictation joined to a Claude Code session in a project
     /// whose agent proposed `inkwell` sends, polished or not.
     private func contextBias(trusted: Bool, polish: Bool) async -> [String]? {
-        let transcriber = FakeBatchTranscriber(.text("Ask Claude_Code about inkwell."))
+        let transcriber = FakeBatchTranscriber(.text("Ask Claude Code about inkwell."))
         let harness = makeHarness(
             transcriber: transcriber, polisher: polish ? FakePolishingService() : nil)
         let settings = harness.viewModel.settings
@@ -249,9 +249,6 @@ final class StopSecondPassPipelineTests: XCTestCase {
 
         harness.stop()
         await awaitStoppedSessionCommit(harness.viewModel)
-        XCTAssertEqual(
-            harness.records.first?.rawText, "Ask Claude Code about inkwell.",
-            "a phrase the model wrote as sent gets its space back")
         return transcriber.calls.first?.contextBias
     }
 
@@ -261,9 +258,9 @@ final class StopSecondPassPipelineTests: XCTestCase {
     func testARepositoryTermLeavesOnlyWithTheTrustedEndpointOptInPolishedOrNot() async {
         for polish in [false, true] {
             let untrusted = await contextBias(trusted: false, polish: polish)
-            XCTAssertEqual(untrusted, ["localvoxtral", "Claude_Code"], "polish: \(polish)")
+            XCTAssertEqual(untrusted, ["localvoxtral", "Claude Code"], "polish: \(polish)")
             let trusted = await contextBias(trusted: true, polish: polish)
-            XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"], "polish: \(polish)")
+            XCTAssertEqual(trusted, ["localvoxtral", "Claude Code", "inkwell"], "polish: \(polish)")
         }
     }
 
@@ -285,7 +282,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         await awaitStoppedSessionCommit(harness.viewModel)
 
         XCTAssertEqual(grounding.rootLookups, ["/nonexistent-647/quillmark-wt/Sources/Quill"])
-        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code", "inkwell"])
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude Code", "inkwell"])
     }
 
     // MARK: - Project groups (#1005)
@@ -379,7 +376,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         trusted: Bool,
         lookup: @escaping @Sendable () async -> LearnedTermProjectResolver.RepositoryRoot
     ) -> (Harness, FakeBatchTranscriber, FakePolishingService) {
-        let transcriber = FakeBatchTranscriber(.text("Ask Claude_Code about page composer dot swift."))
+        let transcriber = FakeBatchTranscriber(.text("Ask Claude Code about page composer dot swift."))
         let polisher = FakePolishingService()
         let harness = makeHarness(transcriber: transcriber, polisher: polisher)
         let viewModel = harness.viewModel
@@ -415,7 +412,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         harness.stop()
         await awaitStoppedSessionCommit(harness.viewModel)
 
-        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code", "inkwell"])
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude Code", "inkwell"])
         XCTAssertEqual(lookups.withLock { $0 }, 1)
         let polishHadVocabulary = await polishHadRepositoryVocabulary(polisher)
         XCTAssertTrue(polishHadVocabulary, "the lookup left the polish's gate free")
@@ -431,7 +428,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         harness.stop()
         await awaitStoppedSessionCommit(harness.viewModel)
 
-        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"])
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude Code"])
         XCTAssertEqual(lookups.withLock { $0 }, 0)
     }
 
@@ -458,7 +455,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
             release.resolve()
             await commit?.value
 
-            XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"], name)
+            XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude Code"], name)
         }
     }
 
@@ -483,7 +480,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         harness.clock.advance(by: 0.25)
         await commit?.value
 
-        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"])
+        XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude Code"])
         let polishHadVocabulary = await polishHadRepositoryVocabulary(polisher)
         XCTAssertTrue(polishHadVocabulary)
         XCTAssertEqual(harness.overlay.committedTexts.count, 1)
