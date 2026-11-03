@@ -517,6 +517,22 @@ jobs:
             shasum -a 256 "localvoxtral-$TAG.dmg" > "localvoxtral-$TAG.dmg.sha256"
           )
 
+      - name: Build the update feed
+        # The Sparkle appcast the installed apps read through
+        # /releases/latest/download/appcast.xml (LVX-57), and deltas from the
+        # last three releases the Mini kept (the "Keep this release" step
+        # below). Stable and daily only, and only notarized: a feed must
+        # never offer an ad-hoc build. A rehearsal builds it too, so a change
+        # here is proved before it merges. The key and the kept releases
+        # live in the runner account's home, never in the workspace.
+        if: >-
+          steps.plan.outputs.proceed != 'false'
+          && steps.signing.outputs.notarize == 'true'
+          && steps.meta.outputs.prerelease == 'false'
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: ./scripts/ci/build-update-feed.sh feed "$TAG" dist
+
       - name: Upload rehearsal artifacts (no tag, no release)
         # The rehearsal's whole output. Named so it can never be mistaken for
         # a release: it lives on the run, not on a tag, and expires in a week.
@@ -529,6 +545,8 @@ jobs:
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip.sha256
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256
+            dist/appcast.xml
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}-from-*.delta
           if-no-files-found: error
           retention-days: 7
 
@@ -635,7 +653,8 @@ jobs:
       - name: Publish GitHub release
         # scripts/ci/publish-release.sh creates the release as a draft whose
         # body is the notes above GitHub's generated PR list, uploads the
-        # seven assets with retries, checks them, and only then publishes.
+        # seven assets with retries (a stable release adds the update feed
+        # and its deltas), checks them, and only then publishes.
         # A nightly or rc is a prerelease and never marked Latest, so
         # /releases/latest, which install.sh's stable path and the README
         # follow, keeps pointing at the newest stable release.
@@ -651,6 +670,18 @@ jobs:
           NOTES: ${{ steps.notes.outputs.path }}
         run: '"$RELEASE_CI/publish-release.sh" "$TAG" dist "$NOTES"'
 
+      - name: Keep this release as a base for the next deltas
+        # After the publish, so a release that never went out is never a
+        # delta base. A failure here costs the next releases their delta
+        # from this one, nothing else.
+        if: >-
+          steps.plan.outputs.proceed != 'false'
+          && steps.plan.outputs.publish == 'true'
+          && steps.signing.outputs.notarize == 'true'
+          && steps.meta.outputs.prerelease == 'false'
+        continue-on-error: true
+        run: ./scripts/ci/build-update-feed.sh keep dist
+
       - name: Keep the assets of a release that did not publish
         # A failure or cancel after the tag went up leaves a tagged commit
         # whose notarized assets exist only in this workspace, which the next
@@ -660,7 +691,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: localvoxtral-release-${{ steps.meta.outputs.tag }}
-          path: dist/localvoxtral-*${{ steps.meta.outputs.tag }}*
+          path: |
+            dist/localvoxtral-*${{ steps.meta.outputs.tag }}*
+            dist/appcast.xml
           if-no-files-found: error
           retention-days: 14
 

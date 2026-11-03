@@ -212,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "Open localvoxtral at login". Built here so the pane reads the login
     /// item once per launch rather than on every view update.
     let loginItemController = LoginItemController()
+    /// Installs each release while nobody is dictating (LVX-57).
+    private var appUpdater: SparkleAppUpdater?
     /// SwiftUI's own `openSettings`, handed over by the menu bar label
     /// (`SettingsOpenerHandoff`). Nil until the label has appeared.
     var settingsOpener: (@MainActor () -> Void)?
@@ -370,6 +372,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startDogfoodControlSocket()
         #endif
         reconcileBundledConfigDefaults()
+        let updater = SparkleAppUpdater(model: viewModel.updates) { [weak viewModel] in
+            viewModel?.engines.isDictationIdle() ?? true
+        }
+        updater.start()
+        appUpdater = updater
         widgetSnapshotWriter = WidgetSnapshotWriter(viewModel: viewModel)
         widgetSnapshotWriter?.start()
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
