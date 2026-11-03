@@ -25,7 +25,7 @@ package enum DiagnosticRecordRedaction {
     /// `api_key`). A bare `key` is not one: `key: app.title` is everywhere.
     private static let lowercaseSecretName =
         #"(?:[a-z0-9]+[_.-])*(?:token|secret|password|passwd|pwd|credentials?|apikey)(?:[_.-][a-z0-9]+)*"#
-        + #"|(?:[a-z0-9]+[_.-])+key(?:[_.-][a-z0-9]+)*"#
+        + #"|(?:[a-z0-9]+[_.-])*(?:api|access|secret|private|signing|encryption|master|client|auth|license|account|service)[_.-]?key(?:[_.-][a-z0-9]+)*"#
     private static let uppercaseSecretName =
         #"[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*"#
     /// Put before a value: a value an earlier rule already replaced is not
@@ -75,7 +75,7 @@ package enum DiagnosticRecordRedaction {
         // subscript is code reading the secret: `let apiKey = settings.key`
         // and `password = getpass()` stay.
         (#"(?<![\w.-])((?:"# + lowercaseSecretName + #")[ \t]*=[ \t]*["']?)"#
-            + unlessRedacted + quotedOr(#"[^\s"'()\[\]{}<>,;]{6,}(?![(\[\w])"#),
+            + unlessRedacted + quotedOr(#"[^\s"'()\[\]{}<>,;&]{6,}(?![(\[\w])"#),
          "$1" + placeholder),
         // A YAML or `.env`-style colon after a lowercase or uppercase secret
         // name: `password: hunter2`, `POSTGRES_PASSWORD: …`. Prose puts a
@@ -87,11 +87,11 @@ package enum DiagnosticRecordRedaction {
          "$1" + placeholder),
         // A quoted JSON, YAML or TOML key in any case: `"token": "…"`,
         // `"accessToken":"…"`, `'api-key' = '…'`.
-        (#"((["'])(?i:[a-z0-9_.-]*(?:token|secret|password|passwd|credentials?|api[_-]?key|access[_-]?key|private[_-]?key)[a-z0-9_.-]*)\2[ \t]*[:=][ \t]*["']?)"#
+        (#"((["'])(?i:[a-z0-9_.-]*(?:token|secret|password|passwd|credentials?|api[_-]?key|access[_-]?key|private[_-]?key))(?:[_.-][A-Za-z0-9_.-]*|(?-i:[A-Z])[A-Za-z0-9_.-]*)?\2[ \t]*[:=][ \t]*["']?)"#
             + unlessRedacted + quotedOr(#"[^\s"',}\]]{6,}"#),
          "$1" + placeholder),
         // The password in a URL's userinfo: `postgres://app:pw@db/app`.
-        (#"(?i)(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)"# + unlessRedacted + #"[^\s/@]+(?=@)"#,
+        (#"(?i)((?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}://[^\s:/@]+:)"# + unlessRedacted + #"[^\s/@]+(?=@)"#,
          "$1" + placeholder),
         // `Authorization: Basic <base64 user:password>`.
         (#"(?i)(\bauthorization:[ \t]*basic[ \t]+)[A-Za-z0-9+/=]{8,}"#, "$1" + placeholder),

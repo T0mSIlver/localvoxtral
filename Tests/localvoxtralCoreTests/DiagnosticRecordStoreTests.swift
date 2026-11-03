@@ -549,12 +549,37 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             "sort_key: created",
             "https://user@example.com/repo.git and mailto:someone@example.com",
             "basic setup is done",
+            // Keys that hold no secret: a sort or cache key, a tokenizer.
+            "GET /items?sort_key=created_at&order=desc",
+            "cache_key=abcdef123456 idempotency_key = req-2026-11-03",
+            #"{"tokenizer": "bert-base-uncased", "tokenizer_class": "LlamaTokenizer"}"#,
         ]
         for text in texts {
             var count = 0
             XCTAssertEqual(DiagnosticRecordRedaction.redacting(text, count: &count), text)
             XCTAssertEqual(count, 0, text)
         }
+    }
+
+    /// A query string's secret goes, and the parameter after it stays.
+    func testRedactsASecretInAQueryStringUpToTheNextParameter() {
+        assertRedacts(
+            "abc123secret",
+            in: "GET /v1/items?api_key=abc123secret&page=2",
+            keeping: "api_key=<redacted>&page=2"
+        )
+    }
+
+    /// The URL rule starts once per run of scheme characters: on a long
+    /// dotted or dashed run it used to retry after every dot, quadratic in
+    /// the run's length (80 KB took 10 s on Linux).
+    func testALongDottedRunIsLeftAloneAndStillAURLAfterItIsRedacted() {
+        var run = ""
+        while run.utf8.count < 40_000 { run += "a1b2.c3d4-" }
+        var count = 0
+        XCTAssertEqual(DiagnosticRecordRedaction.redacting(run, count: &count), run)
+        XCTAssertEqual(count, 0)
+        assertRedacts("s3cretpw", in: run + " postgres://app:s3cretpw@db/app", keeping: "postgres://app:<redacted>@db/app")
     }
 
     /// A value another rule already replaced is not counted a second time.
