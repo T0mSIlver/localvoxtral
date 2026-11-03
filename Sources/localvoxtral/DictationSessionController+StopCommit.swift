@@ -114,14 +114,6 @@ extension DictationSessionController {
     /// An Overlay Buffer session that was not cancelled: transcribed again
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
-        if let review = sessionDraftReview {
-            commitDraftReview(review, sessionMode: sessionMode)
-            return
-        }
-        if sessionIsQuickCapture {
-            commitQuickCapture(sessionMode: sessionMode)
-            return
-        }
         // A stop phrase is a command to the joined session, not text for
         // the destination: the destination's guards would keep it as text.
         if isSpokenAbort(transcript.currentDictationEventText) {
@@ -958,8 +950,6 @@ extension DictationSessionController {
         // transcript, polishing disabled, cancelled overlay.
         context.discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
-        // A stop is a break: drafts held for one show now (#927).
-        agentAttention?.reachedBreak()
         if holdFailureIndicatorUntilStopCompletes {
             holdFailureIndicatorUntilStopCompletes = false
             markRecentConnectionFailureIndicator()
@@ -1068,45 +1058,6 @@ extension DictationSessionController {
     }
 
 
-    /// A quick capture's stop (#725): the words are saved in History first,
-    /// then handed to the Inbox; nothing is inserted, polished or sampled
-    /// from the screen or the clipboard. The overlay closes as a cancelled
-    /// one does.
-    private func commitQuickCapture(sessionMode: DictationOutputMode) {
-        let sessionAudio = audio.sessionRecording.finish()
-        let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Read before the cleanup lets the join go: the capture is polished
-        // and routed among its group's projects only (#1005).
-        let group = learnedTermStore?.snapshot().group(ofJoin: context.claudeSessionJoin)
-        // The id the save returns, not one decided before it: the save
-        // re-reads History's setting, which another copy may have changed.
-        let historyRecordID = saveSessionRecord(
-            startedAt: sessionStartedAt ?? Date(),
-            rawText: text,
-            polishedText: nil,
-            polishingDuration: nil,
-            provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
-            model: sessionModelName ?? settings.effectiveModelName,
-            outputMode: DictationSessionRecord.quickCaptureOutputMode,
-            targetAppBundleID: nil,
-            status: .sttCompleted,
-            commitSucceeded: true,
-            quickCaptureDestination: "Inbox",
-            audio: sessionStoresAudio ? sessionAudio : nil,
-            joined: nil
-        )
-        overlayBufferCoordinator.reset()
-        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
-        guard !text.isEmpty else {
-            Log.dictation.info("quick capture: nothing was said")
-            return
-        }
-        Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
-        statusText = StatusStrings.quickCaptureSaved
-        onQuickCapture?(text, sessionStore == nil ? nil : historyRecordID, group)
-    }
-
     /// Returns the saved entry's id, or nil when nothing was saved.
     @discardableResult
     func saveSessionRecord(
@@ -1127,7 +1078,6 @@ extension DictationSessionController {
         stoppedAt: Date? = nil,
         polish: LLMPolishingConfiguration? = nil,
         clipboardPayload: String? = nil,
-        quickCaptureDestination: String? = nil,
         audio: Data? = nil,
         joined: AgentCLIJoin?
     ) -> UUID? {
@@ -1151,8 +1101,7 @@ extension DictationSessionController {
             status: status,
             commitSucceeded: commitSucceeded,
             polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary,
-            quickCaptureDestination: quickCaptureDestination
+            polishContextSummary: polishContextSummary
         )
         // What `localvoxtral history` and `status` report (#721): the
         // session's own directory or remote label, nothing read from disk.

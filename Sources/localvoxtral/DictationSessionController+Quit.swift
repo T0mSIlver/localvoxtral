@@ -57,14 +57,6 @@ extension DictationSessionController {
         saveHandedOffAddressedCommitsForQuit()
         if cancelPolishingForNewSessionIfNeeded() { return }
         guard isFinalizingStop, !isCompletingStoppedSession, !wasCancelled else { return }
-        if sessionIsQuickCapture, sessionDraftReview == nil {
-            // A capture's commit is local and synchronous: the words so far
-            // go to History and the Inbox, as the stop would file them.
-            Log.persistence.notice("quit before the final transcript; filing the quick capture so far")
-            finishStoppedSession(promotePendingSegment: true)
-            return
-        }
-        // A draft review is not applied: its spoken command may be cut short.
         Log.persistence.notice("quit before the final transcript; saving the text so far as not inserted")
 
         stopFinalizationTask?.cancel()

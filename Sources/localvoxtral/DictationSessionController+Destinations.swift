@@ -58,12 +58,12 @@ enum DestinationCommitGuard: Equatable {
 }
 
 /// Tab and ⇧Tab (or → and ←, or a click) during an Overlay Buffer dictation
-/// move its words to the focused app, the Inbox, or a session that needs
+/// move its words to the focused app or a session that needs
 /// you, and open the overlay's list of them for a moment. The words go only
 /// where the overlay shows: a session is picked only once its terminal
 /// confirmed the pane is in front (`.focused`), the way the answer shortcut
 /// starts a dictation (#785), and the stop then commits into that pane like
-/// any dictation. The Inbox is a quick capture (#751): never inserted.
+/// any dictation.
 extension DictationSessionController {
     enum DestinationStatus {
         static let cantGoBack = "Can't bring that window back"
@@ -88,7 +88,7 @@ extension DictationSessionController {
             list: DictationDestinationList(
                 waitingSessionIDs: waiting.map(\.sessionID),
                 focusedSessionID: originSessionID,
-                selected: sessionIsQuickCapture ? .inbox : .focusedApp
+                selected: .focusedApp
             ),
             originPID: originPID,
             originSessionID: originSessionID,
@@ -103,7 +103,7 @@ extension DictationSessionController {
     }
 
     /// Called wherever the dictation stops listening. What the pick decided
-    /// is in `sessionIsQuickCapture` and in which app is in front.
+    /// is in which app is in front.
     func endDestinations() {
         if let state = destinations {
             sessionCommitGuard = Self.commitGuard(for: state)
@@ -159,19 +159,6 @@ extension DictationSessionController {
         }
     }
 
-    /// The quick capture shortcut during an Overlay Buffer dictation picks
-    /// the Inbox; pressed on the Inbox, it stops.
-    /// Returns false when no overlay dictation runs.
-    func pickInboxOrStop() -> Bool {
-        guard isDictating, let state = destinations else { return false }
-        if state.list.selected == .inbox, state.pending == nil {
-            stopDictation(reason: "quick capture toggle")
-        } else {
-            pickDestination(.inbox)
-        }
-        return true
-    }
-
     /// The answer shortcut during an Overlay Buffer dictation picks the
     /// oldest session that needs you, unless it is already picked; then, or
     /// with nobody waiting, it stops. Returns false when no overlay
@@ -192,8 +179,8 @@ extension DictationSessionController {
         return true
     }
 
-    /// Picks `destination`. The Inbox, and the focused app while nothing
-    /// was brought over it, are picked at once. Anything that brings a
+    /// Picks `destination`. The focused app, while nothing was brought over
+    /// it, is picked at once. Anything that brings a
     /// window forward runs in `destinationFocusTask`, after any pick still
     /// running: cancelling one would leave its window in front unrecorded.
     private func pickDestination(_ destination: DictationDestination) {
@@ -223,9 +210,6 @@ extension DictationSessionController {
 
     private func pickAtOnce(_ destination: DictationDestination, state: SessionDestinations) -> Bool {
         switch destination {
-        case .inbox:
-            applyDestination(.inbox)
-            return true
         case .focusedApp where state.front == .origin:
             applyDestination(.focusedApp)
             return true
@@ -236,8 +220,6 @@ extension DictationSessionController {
 
     private func pickBringingForward(_ destination: DictationDestination) async {
         switch destination {
-        case .inbox:
-            applyDestination(.inbox)
         case .focusedApp:
             await bringFocusedAppBack()
         case .session(let id):
@@ -303,7 +285,7 @@ extension DictationSessionController {
     static func commitGuard(for state: SessionDestinations) -> DestinationCommitGuard? {
         if state.focusInFlight { return .unsettled }
         switch (state.list.selected, state.front) {
-        case (.inbox, _), (.focusedApp, .origin):
+        case (.focusedApp, .origin):
             return nil
         case (.session(let id), .pane(let bundleID, let paneSessionID)):
             // A pane in front that is not the picked session's cannot take
@@ -319,17 +301,14 @@ extension DictationSessionController {
 
     private func applyDestination(_ destination: DictationDestination) {
         guard destinations?.list.select(destination) == true else { return }
-        sessionIsQuickCapture = destination == .inbox
         let kind = switch destination {
         case .focusedApp: "focused app"
         case .session: "session"
-        case .inbox: "inbox"
         }
         Log.dictation.notice("destination: \(kind, privacy: .public)")
         showDestinations()
-        // The voice stop (#839) depends on where the words go: the Inbox
-        // stops on its phrase with no send gate. Re-decide on the words
-        // already said, not only on the next ones.
+        // The voice stop (#839) depends on where the words go. Re-decide on
+        // the words already said, not only on the next ones.
         disarmSpokenStop()
         reconsiderSpokenStop()
     }

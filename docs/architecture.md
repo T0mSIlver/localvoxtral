@@ -66,8 +66,7 @@ AppKit:
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
 - the polishing server's wire dialect (`PolishWire.swift`, #1851):
   `LLMPolishingConfiguration` builds the URL, headers and body of every
-  request to the polishing model, polish and quick capture alike, and reads
-  its reply, in the OpenAI-compatible, Mistral or Anthropic shape;
+  request to the polishing model, and reads its reply, in the OpenAI-compatible, Mistral or Anthropic shape;
   `LLMPolishingService` stays in the app
 - which app an insertion targets (`PreferredTextInsertionTargetPolicy`);
   `TextInsertionService` stays in the app
@@ -93,15 +92,11 @@ AppKit:
 - the learned terms: `LearnedTermStore` and the learner that fills it from
   the user's fixes (`CorrectionLearning`); the one-line notice it shows
   stays in the app
-- quick capture (`QuickCapture/`, #725, #918): the project descriptions a
-  classifier reads, the polishing model's routing mode and the Jev client,
-  the rule that sends a low or tied answer to the catch-all, the context a
-  first draft reads (`QuickCaptureContext`), the polishing model's first
-  draft sorted by kind (`QuickCaptureFirstDraft`), the agent's check of an
-  issue (`QuickCaptureDrafter`), and the Inbox (`QuickCaptureInboxModel`);
-  the voice memo folder watcher and its ledger (#925), and
-  `RealtimeFileTranscriber`, which streams a recorded file through a
-  realtime client. Decoding the memo (AVFoundation) stays in the app
+- the Projects pane's data (`Projects/`, #939): the listed projects
+  (`ListedProjects`), the pane's rows (`ProjectsPane`), the read of a
+  checkout's `origin` (`ProjectOriginLinker`) and what a host's hooks report
+  about its projects (`RemoteProjectReports`); and `RealtimeFileTranscriber`,
+  which streams a recorded file through a realtime client
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
@@ -239,12 +234,11 @@ Key subsystems:
     to run. `RemoteProjectTermRequests` marks a joined session, the next
     hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
     `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
-    is filed under the project the Mac recorded. Quick capture (#745) asks
-    the same way (`RemoteQuickCaptureRequests`): `X-Lvx-Readme` for a
-    project's README summary and `X-Lvx-Draft` for a routed capture's draft,
-    both run by `hooks/capture.sh` and answered on `/v1/readme`,
-    `/v1/draft/words`, `/v1/draft/context`, `/v1/draft/check` (#918; an
-    older shim uses `/v1/draft/prompt`) and `/v1/draft`.
+    is filed under the project the Mac recorded. A shim of a release that still
+    asked for a README or a draft (`X-Lvx-Readme`, `X-Lvx-Draft`, #745) gets
+    410 on `/v1/readme` and `/v1/draft*`, and a mod that opens `/inbox` gets
+    410 on `/v1/mod/inbox*`: every shim version fails open on it
+    (`scripts/ci/test-remote-shim-removed-routes.sh`).
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

@@ -104,9 +104,6 @@ struct DictationOverlayView: View {
     /// Where the words go at stop (#840). When shown, it takes the join
     /// badge's place: the first pill carries the join.
     var destinations: OverlayDestinationStrip? = nil
-    /// The one draft a review dictation acts on (#927). It takes the
-    /// destinations' place in the header, and its text sits above the words.
-    var draftReview: QuickCaptureDraftSnapshot? = nil
     /// Where each destination pill or row sits, in the view's global space
     /// (top left origin), and nil once it is gone: the panel swallows every
     /// click, so it finds the clicked one from these (#880).
@@ -215,9 +212,8 @@ struct DictationOverlayView: View {
         }
     }
 
-    /// The picked destination, tinted in its own color: the Inbox never
-    /// inserts, and a session is another pane, so neither may look like the
-    /// focused app. Closed, the header shows it whole; open (#1015), the list
+    /// The picked destination, tinted in its own color: a session is another
+    /// pane, so it may not look like the focused app. Closed, the header shows it whole; open (#1015), the list
     /// under the header does, and the header keeps only where it sits. The
     /// Tab key says how to move. A tint, not a fill (#1074): the pill was
     /// the loudest thing on the panel.
@@ -332,49 +328,6 @@ struct DictationOverlayView: View {
         }
     }
 
-    /// The Inbox pill, tinted like the destination pills: the words go to
-    /// the draft, never into an app.
-    private func draftReviewPill(_ draft: QuickCaptureDraftSnapshot) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "tray")
-                .font(.system(size: metrics.badgeFontSize * 0.9))
-            Text("Inbox for \(draft.projectName)")
-                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .foregroundStyle(OverlayPalette.inbox)
-        .padding(.horizontal, metrics.badgeHorizontalPadding)
-        .padding(.vertical, metrics.badgeVerticalPadding)
-        .background(Capsule(style: .continuous).fill(OverlayPalette.inbox.opacity(Self.pillTintOpacity)))
-        .overlay(Capsule(style: .continuous).strokeBorder(OverlayPalette.inbox.opacity(0.45), lineWidth: 0.5))
-        .layoutPriority(-1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Reviewing a draft in the Inbox for \(draft.projectName)")
-    }
-
-    /// Title, the start of the body, and what to say. Heights mirror
-    /// `OverlayLayoutMetrics.draftReviewHeight`.
-    private func draftReviewBlock(_ draft: QuickCaptureDraftSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: OverlayLayoutMetrics.draftReviewSpacing) {
-            Text(draft.title)
-                .font(.system(size: metrics.bodyFontSize, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
-            let excerpt = draft.bodyExcerpt
-            if !excerpt.isEmpty {
-                Text(excerpt)
-                    .font(.system(size: metrics.errorFontSize))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Text(OverlayLayoutMetrics.draftReviewHint)
-                .font(.system(size: metrics.badgeFontSize))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private func joinPill(
         systemImage: String,
         title: String,
@@ -418,9 +371,7 @@ struct DictationOverlayView: View {
                         .controlSize(.small)
                 }
                 Spacer(minLength: 0)
-                if let draftReview {
-                    draftReviewPill(draftReview)
-                } else if let destinations {
+                if let destinations {
                     destinationHeader(destinations)
                 } else {
                     claudeJoinBadge
@@ -428,9 +379,7 @@ struct DictationOverlayView: View {
             }
             .frame(height: metrics.headerHeight)
 
-            if let draftReview {
-                draftReviewBlock(draftReview)
-            } else if let destinations, destinations.isOpen {
+            if let destinations, destinations.isOpen {
                 destinationList(destinations)
             }
 
@@ -500,10 +449,6 @@ private struct DestinationStyle {
             tint = OverlayPalette.session
             systemImage = "circle.fill"
             accessibility = { "Answer \($0), which needs you" }
-        case .inbox:
-            tint = OverlayPalette.inbox
-            systemImage = "tray"
-            accessibility = { _ in "Save to the Inbox" }
         }
     }
 }

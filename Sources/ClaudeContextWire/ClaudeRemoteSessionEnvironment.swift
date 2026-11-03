@@ -61,9 +61,8 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     /// re-applies `ClaudeWorkspaceReference`'s label rule.
     case project
     /// `owner/name` of the session's repository's `origin` when it is on
-    /// github.com (#926), parsed by the shim with `capture.sh repository`.
-    /// A label like `project`: quick capture's filing target, shown to the
-    /// user before File, never a path.
+    /// github.com (#926), parsed by the shim with `repository.sh`.
+    /// A label like `project`, never a path.
     case repository
     /// The branch checked out in the session's cwd (#1020), from
     /// `git symbolic-ref --short HEAD` on the host; none on a detached HEAD.

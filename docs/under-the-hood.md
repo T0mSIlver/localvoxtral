@@ -16,11 +16,6 @@ clipboard, the agent's screen) are opt-in, and by default send context only
 to a polisher on this Mac
 ([Polish context: what each toggle sends](coding-agents.md#polish-context-what-each-toggle-sends)).
 
-[Quick capture](coding-agents.md#quick-capture) is the exception you trigger
-yourself: a capture goes to your polishing model with its project's context
-(README and AGENTS.md openings, code search hits, issue and pull request
-titles), wherever polishing runs, to be routed and drafted.
-
 What the app keeps on this Mac (your dictations, optionally their audio, and
 diagnostic records of how each was polished) is described under
 [History](dictation.md#history), where each can be turned off and deleted.
@@ -227,7 +222,7 @@ holds:
 
 - the time;
 - the feature that asked: dictation, polishing, the second pass, term
-  suggestions, project terms, quick-capture routing or drafting;
+  suggestions, project terms;
 - the backend that answered: Mistral, Jev, the bundled helper, your own
   server, or a coding agent;
 - the model;
@@ -257,7 +252,7 @@ in **Settings → Engines**, pick a model (Claude Haiku 5.5 by default, the
 fastest; or Claude Sonnet 5.5) and paste an Anthropic API key. Anthropic
 serves no speech-to-text, so Dictation never offers this mode. The app speaks
 Anthropic's Messages API and asks for low effort, so the model thinks little
-before it answers. Your transcripts and quick captures reach Anthropic.
+before it answers. Your transcripts reach Anthropic.
 
 Claude models follow the polish rules more literally than GLM does, and left
 misheard words in place. Requests to Anthropic carry one extra rule: repair

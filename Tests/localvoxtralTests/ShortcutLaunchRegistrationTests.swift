@@ -37,7 +37,6 @@ final class ShortcutLaunchRegistrationTests: XCTestCase {
         // real Carbon, whose answer in a test host is not ours to assert.
         settings.setCopyLastDictationShortcut(nil)
         settings.setAnswerAgentShortcut(nil)
-        settings.setQuickCaptureShortcut(nil)
 
         let shortcuts = ShortcutController(settings: settings)
         let session = FakeShortcutSession()

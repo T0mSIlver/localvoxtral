@@ -35,20 +35,6 @@ final class SameOriginHTTPTests: XCTestCase {
         return (configured, elsewhere, hits)
     }
 
-    func testFirstDraftRedirectCannotCarryCaptureToAnotherOrigin() async throws {
-        let (configured, _, hits) = try redirectPair()
-        let drafter = QuickCaptureFirstDrafter(configuration: LLMPolishingConfiguration(
-            endpointURL: URL(string: "http://127.0.0.1:\(configured.port)/v1/chat/completions")!,
-            apiKey: "", model: "m"
-        ))
-
-        _ = await drafter.firstDraft(capture: "dictated text", projectName: "p", context: QuickCaptureContext())
-
-        let reached = await configured.waitForCalls(1)
-        XCTAssertTrue(reached, "the configured endpoint got the request")
-        XCTAssertEqual(hits.value, 0, "the redirect target got nothing")
-    }
-
     func testBatchTranscriptionRedirectCannotCarryAudioToAnotherOrigin() async throws {
         let (configured, _, hits) = try redirectPair()
 

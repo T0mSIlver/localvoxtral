@@ -59,7 +59,6 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     /// Every destination strip the overlay was asked to show (#840).
     var shownDestinations: [OverlayDestinationStrip?] = []
     /// Every draft a review asked the overlay to show (#927).
-    var shownDraftReviews: [QuickCaptureDraftSnapshot?] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
@@ -126,10 +125,6 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     func showDestinations(_ strip: OverlayDestinationStrip?) {
         shownDestinations.append(strip)
-    }
-
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
-        shownDraftReviews.append(draft)
     }
 
     func markPolished(_ polished: Bool) {

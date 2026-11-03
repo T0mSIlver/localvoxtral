@@ -26,10 +26,6 @@ package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Se
             now: Date(timeIntervalSince1970: 1_790_000_000)
         )
         package var now = Date(timeIntervalSince1970: 1_790_000_000)
-        /// Nil: the app has no Inbox.
-        package var inbox: QuickCaptureInbox? = QuickCaptureInbox()
-        /// The captures `openCapture` brought forward, in order.
-        package var opened: [UUID] = []
 
         package init() {}
     }
@@ -78,24 +74,4 @@ package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Se
 
     package func status() async -> AgentCLIStatus { state.withLock { $0.status } }
     package func doctorFacts() async -> AgentCLIDoctorFacts { state.withLock { $0.doctorFacts } }
-
-    package func captures() async -> [QuickCaptureItem]? { state.withLock { $0.inbox?.items } }
-
-    package func openCapture(_ id: UUID) async -> Bool? {
-        state.withLock { state in
-            guard let inbox = state.inbox else { return nil }
-            guard inbox.items.contains(where: { $0.id == id }) else { return false }
-            state.opened.append(id)
-            return true
-        }
-    }
-
-    package func markCaptureFiled(
-        _ id: UUID, url: String
-    ) async -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal>? {
-        state.withLock { state in
-            let now = state.now
-            return state.inbox?.markFiled(id, url: url, now: now)
-        }
-    }
 }

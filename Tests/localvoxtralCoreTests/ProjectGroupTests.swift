@@ -10,18 +10,6 @@ import localvoxtralTestSupport
 @MainActor
 final class ProjectGroupTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
-    private var fileURL: URL!
-
-    override func setUp() async throws {
-        fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("project-groups-\(UUID().uuidString)")
-            .appendingPathComponent("quick-captures.json")
-    }
-
-    override func tearDown() async throws {
-        try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
-    }
-
     private func term(_ spelling: String) -> LearnedTerm {
         LearnedTerm(term: spelling, sources: ["screen"], dictations: 3, firstSeen: now, lastSeen: now)
     }
@@ -102,7 +90,7 @@ final class ProjectGroupTests: XCTestCase {
             LearnedTermProject(key: "/w/acme", name: "acme", terms: [term("Kubrix")], lastSeen: now),
         ])
         XCTAssertTrue(learned.recordOriginRepository("acme-corp/acme", projectKey: "/w/acme"))
-        let row = QuickCaptureProjects.projects(from: learned, userLines: [:], now: now, readme: { _ in nil })
+        let row = ListedProjects.projects(from: learned, now: now)
         XCTAssertEqual(row.count, 1)
         learned.setGroup(.work, keys: row[0].keys)
 
@@ -129,77 +117,6 @@ final class ProjectGroupTests: XCTestCase {
                 now: now.addingTimeInterval(Double(index + 1) * 60))
         }
         XCTAssertEqual(learned.group(ofProjectKey: "/w/acme"), .work)
-    }
-
-    // MARK: Quick capture
-
-    private func captureModel(
-        _ learned: LearnedTerms, classifier: ScriptedQuickCaptureClassifier, polisher: FakeQuickCapturePolisher
-    ) -> QuickCaptureInboxModel {
-        let projects = QuickCaptureProjects.projects(from: learned, userLines: [:], now: now, readme: { _ in nil })
-        return QuickCaptureFixture.model(
-            fileURL: fileURL, answer: [:], github: FakeQuickCaptureGitHub(), runner: FakeQuickCaptureDraftRunner(),
-            projects: projects, classifier: classifier, polisher: polisher,
-            polishVocabulary: { QuickCapturePolishVocabulary.terms(projects: $0, learned: learned) },
-            now: { [now] in now }
-        )
-    }
-
-    func testAQuickCaptureIsPolishedAndRoutedWithinItsGroup() async throws {
-        let learned = learned()
-        for (group, mine, theirs) in [
-            (ProjectGroup.work, ["acme", "Kubrix"], ["garden", "Florabel", "scratch", "Scribbit"]),
-            (.personal, ["garden", "Florabel"], ["acme", "Kubrix", "scratch", "Scribbit"]),
-        ] {
-            let classifier = ScriptedQuickCaptureClassifier([[:]])
-            let polisher = FakeQuickCapturePolisher { $0 }
-            let model = captureModel(learned, classifier: classifier, polisher: polisher)
-
-            await model.capture(text: "fix the login page", historyRecordID: nil, group: group).value
-
-            let vocabulary = try XCTUnwrap(polisher.calls.first?.vocabulary)
-            let options = classifier.calls.withLock { $0 }.flatMap { $0 }
-            let routedTo = options.compactMap(\.projectKey)
-            let sent = vocabulary.joined(separator: " ") + " " + options.map(\.description).joined(separator: " ")
-            XCTAssertEqual(Set(vocabulary), Set(mine), "\(group.rawValue) polish")
-            XCTAssertEqual(routedTo.count, 1, "\(group.rawValue) routing offers its one project")
-            for name in theirs {
-                XCTAssertFalse(sent.contains(name), "\(name) reached a \(group.rawValue) capture")
-            }
-            XCTAssertEqual(model.items.first?.group, group)
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-    }
-
-    func testAQuickCaptureWithNoJoinIsPolishedAndRoutedAmongEveryProject() async throws {
-        let classifier = ScriptedQuickCaptureClassifier([[:]])
-        let polisher = FakeQuickCapturePolisher { $0 }
-        let model = captureModel(learned(), classifier: classifier, polisher: polisher)
-
-        await model.capture(text: "fix the login page", historyRecordID: nil).value
-
-        XCTAssertEqual(
-            Set(try XCTUnwrap(polisher.calls.first?.vocabulary)),
-            ["acme", "Kubrix", "garden", "Florabel", "scratch", "Scribbit"])
-        XCTAssertEqual(
-            Set(classifier.calls.withLock { $0 }.flatMap { $0 }.compactMap(\.projectKey)),
-            ["/w/acme", "/p/garden", "/x/scratch"])
-    }
-
-    /// "Also" joins the latest open capture of its own group, never one
-    /// from the other group.
-    func testAFollowUpJoinsOnlyACaptureOfItsGroup() async throws {
-        let classifier = ScriptedQuickCaptureClassifier([["acme": 0.95], ["garden": 0.95], ["garden": 0.95]])
-        let model = captureModel(learned(), classifier: classifier, polisher: FakeQuickCapturePolisher { $0 })
-
-        await model.capture(text: "Add a dark mode", historyRecordID: nil, group: .work).value
-        await model.capture(text: "Water the tomatoes", historyRecordID: nil, group: .personal).value
-        await model.capture(text: "also the settings window", historyRecordID: nil, group: .work).value
-
-        let work = try XCTUnwrap(model.items.first { $0.text == "Add a dark mode" })
-        let personal = try XCTUnwrap(model.items.first { $0.text == "Water the tomatoes" })
-        XCTAssertEqual(work.followUps?.map(\.text), ["also the settings window"])
-        XCTAssertNil(personal.followUps)
     }
 
     // MARK: The store

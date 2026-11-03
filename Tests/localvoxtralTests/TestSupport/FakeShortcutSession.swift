@@ -41,6 +41,4 @@ final class FakeShortcutSession: ShortcutSessionControlling {
     func overlayReachabilityDidChange(wasReachable: Bool) {}
     func copyLastDictation() { copyLastDictationCalls += 1 }
     func answerAgentThatNeedsYou() { answerAgentCalls += 1 }
-    private(set) var toggleQuickCaptureCalls = 0
-    func toggleQuickCapture() { toggleQuickCaptureCalls += 1 }
 }

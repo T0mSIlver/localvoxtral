@@ -568,22 +568,6 @@ there is not.
   cannot fill the queue, and the unchallenged poll itself still gets only a
   new challenge.
 
-- **A remote `/inbox` sends capture titles to the host, never the words**
-  (#1412, the owner's ruling of 2026-10-04). It is the first route that sends
-  quick capture data to a host unasked by a draft: `POST /v1/mod/inbox` lists,
-  `POST /v1/mod/inbox/open` opens, both signed both ways like a poll, so a
-  squatter on the forward port neither reads the list nor feeds the pane one.
-  The list holds what the local pane shows and nothing else: id, drafted
-  title, kind, state and capture date (`RemoteInboxRoute.Capture` is the
-  whole wire type). A capture with no drafted title goes with an empty one,
-  because the title the Mac derives for it is the start of its words. Its
-  text, note, draft body, changes and repository never cross. It lists only
-  the captures of the project the asking session is in
-  (`RemoteQuickCaptureRequests.remoteProjectKey`), for a session id scoped
-  under the authenticated host that a hook of that host named; any other
-  session gets 409. An open takes a capture id and opens it only when it is
-  a capture of that same project, so an id read elsewhere opens nothing.
-  `RemoteInboxRouteTests` pins all of this over a socket.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -753,7 +737,7 @@ there is not.
   path. That key names a checkout; the terms live on its repository's
   record, `repo:<host/owner/repo>`, once its `origin` is known (#971,
   `ProjectRemote`). The Mac reads a local checkout's `origin` off the
-  commit path (`QuickCaptureProjectLinker`, once a launch), and a host
+  commit path (`ProjectOriginLinker`, once a launch), and a host
   sends its own as `X-Lvx-Env-Repository`, a label like the project name.
   So a host that claims a repository shares that repository's record with
   the Mac's checkout: its sessions' dictations are polished with the
@@ -770,9 +754,7 @@ there is not.
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
   three-dictation bar is ever sent unless the user pinned it or fixed it by
-  hand (a quick capture's polish, #970, matches every routable project's
-  confirmed terms, which the router already sends with each project), and
-  an import (`LearnedTerms.merge`, #523) confirms nothing the
+  hand, and an import (`LearnedTerms.merge`, #523) confirms nothing the
   file does not record as earned, taking the max of the counts, never the
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
@@ -789,8 +771,8 @@ there is not.
 
 - **Every polish carries every listed project's name** (#1024). The
   About-you block ends with `Their projects (repository names): …`, built by
-  `PolishProjectNames` from quick capture's project list
-  (`QuickCaptureProjects.projects`): each project's name and its
+  `PolishProjectNames` from the Projects pane's list
+  (`ListedProjects.projects`): each project's name and its
   repository's, sorted, the 30 most recent projects. That list holds no
   label a tool generated (a folder name ending in a hex hash, such as a
   Claude Desktop worktree's, `LearnedTerms.isGeneratedLabel`, #1026). It goes to every endpoint whatever the context toggles say,
@@ -840,8 +822,8 @@ there is not.
   reads only the first top-level `cwd` key of each transcript folder's newest
   `.jsonl`, never anything else in a transcript, and never decodes a folder
   name into a path. It names the repository as the shim names a session's
-  project (the main checkout's basename, the origin from `capture.sh
-  repository`); a cwd outside git or without an origin is not listed, so no
+  project (the main checkout's basename, the origin from
+  `repository.sh`); a cwd outside git or without an origin is not listed, so no
   path ever leaves. The scan takes seconds, so the hook sends the value cached
   in its state folder and rescans detached when the cache is six hours old.
   Each field is checked against an enumerated charset before it is cached and
@@ -2652,11 +2634,10 @@ there is not.
   (`claudeWorktreeRepository`), under the same rule; it is read off the cwd
   as it arrives and kept as a label, like the cwd's own.
   `X-Lvx-Env-Repository` (#926) is the host's `origin` on github.com as
-  `owner/name`, from `capture.sh repository`. It is kept on the project only
-  beside `X-Lvx-Env-Project` and only when `QuickCaptureInbox.isRepository`
-  accepts it (no `.` or `..` part), and it is used only as `gh issue create
-  --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
-  which only reads. A squatter on the port cannot send it: it rides on the
+  `owner/name`, from `repository.sh`. It is kept on the project only
+  beside `X-Lvx-Env-Project` and only when `ProjectRemote.isGitHubRepository`
+  accepts it (no `.` or `..` part), and it names the project's repository
+  and nothing else: no command takes it as an argument. A squatter on the port cannot send it: it rides on the
   host's authenticated hook.
   `X-Lvx-Env-Branch` (#1020) is the branch checked out in the session's
   cwd, from `git symbolic-ref --short HEAD` on the host (none on a
@@ -3012,42 +2993,6 @@ there is not.
   term filter, stored only as unconfirmed proposals. A refusal logs its reason,
   never a byte of the body. What stays as it was: the stdout gate, the hook's
   fail-open exit, the forward, and what is sent to herdr.
-- **Quick capture asks a host the way #641 does, and the capture goes only
-  to the session asked** (#745, `RemoteQuickCaptureRequests`). Two more fixed
-  reply headers: `X-Lvx-Readme: wanted` (a remote project the learned terms
-  hold, no summary or a week-old one, once per project per day this launch)
-  and `X-Lvx-Draft: <32 hex>` (the next accepted hook from a live session in
-  the routed project). Both go only to a request whose own shim reads them.
-  `/v1/readme`, `/v1/draft/prompt` and `/v1/draft` authenticate like a hook,
-  scope the session id under the authenticating host and the named agent, and
-  take one answer from exactly the session and agent asked; unlike
-  `/v1/terms` the session need not still be live, since the ask recorded all
-  three. The capture text leaves the Mac only in the prompt reply. The
-  README bytes are only summarized, the host's issue list only quoted into
-  the prompt (a related issue counts only if listed there), the output read
-  as a local draft. A shim from #918 on asks `/v1/draft/words` (the
-  capture's search words, which go only where the capture goes), posts its
-  context bundle to `/v1/draft/context` (96 KiB, parsed into
-  `QuickCaptureContext` and only quoted), and polls `/v1/draft/check` (202,
-  204, or the check's prompt); the host greps only words that start with a
-  letter or digit, after `-e`, so no word reads as an option. The first
-  draft runs on the Mac, off the listener's threads. A squatter on the port can send both headers and answer
-  the prompt request with a prompt of its own, so the host's run is the
-  Mac's drafting command with Claude Code's reads confined to the checkout
-  (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
-  opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
-  the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`. A Vibe run's usage rides in
-  `X-Lvx-Usage` on `/v1/terms` and `/v1/draft` (#854): three decimal
-  counts, anything else read as none, used for the usage log alone. The
-  shims pull the numbers out of Vibe's session log with `sed` and never send
-  the file, which holds the prompt. Which remote projects the router sees
-  (#819): a hook adds a project only for a name its host sent as
-  `X-Lvx-Env-Project`, or the repository of a Claude Code worktree cwd; a
-  cwd label only stamps a project already held,
-  because each worktree has its own, and a label no hook has named since is
-  not listed, since no session will report it again. Nothing guesses which
-  repository an old label belonged to.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one
@@ -3134,72 +3079,3 @@ there is not.
   does not stamp the project, because it is a few names, not the project's
   list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
   carries nothing a hook could print.
-
-- **A quick capture never reaches the focused app, and only File and
-  Comment on #N reach GitHub** (#725, #965). A session started by the quick capture shortcut latches
-  `sessionIsQuickCapture` with its output mode (always Overlay Buffer), and
-  its stop takes `commitQuickCapture` before any polish, second pass, screen
-  or clipboard sample, or insertion: the History record is written first,
-  the overlay closes as a cancelled one does, and the words go to
-  `QuickCaptureInboxModel`, which writes them to its 0600 file before it
-  polishes them. The capture is polished once there (#970), before the
-  follow-up check and routing: one request to the polishing endpoint with
-  the standard profile's prompt and the user's terms, and no screen,
-  clipboard or session context. Its vocabulary is every routable project's
-  name, repository name and confirmed learned terms
-  (`QuickCapturePolishVocabulary`, capped per project and in total; no
-  proposals), matched against the words as a dictation's learned terms are.
-  The router, drafter and follow-ups read the polished words; History keeps
-  the raw ones and gets the polished text on the same record, which
-  Insights leaves out of its polish waits. A failed
-  polish, or none configured, routes the raw words. Polishes run side by
-  side, but captures join or route in the order they were made: an "also"
-  whose polish answers first waits for the capture before it. The router sends a low or tied answer to the catch-all, never a
-  guessed project: the guess is kept as the route's `suggestion`, and
-  nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
-  (#741, #744) every right project came at 0.95 or more, and nearly every
-  wrong one under 0.9. Drafting has two stages (#918). The first is one
-  request to the polishing model with the context the app gathers
-  (`QuickCaptureContext`: README and guide openings, `git grep` hits for the
-  capture's words, `gh` issue and PR lists), every field capped and only
-  quoted; it sorts the capture by kind, and only an issue can be filed
-  (`QuickCaptureItem.canFile`) or checked. The second, an issue's check, is
-  the drafting agent: read-only tools and no shell, so it cannot run `gh`;
-  the open issues reach it through the prompt, from the app's own `gh issue
-  list`. Both answers are untrusted text: a one-line capped title, a body
-  without control characters, a related issue only if it was listed, files
-  read only as relative paths that exist in the checkout. A check never
-  overwrites a draft the user edited, and never lands on a capture filed or
-  moved meanwhile. `QuickCaptureInboxModel.file`
-  is the one call to `gh issue create`, reached only from the Inbox's File
-  button and from a spoken "file it" (#927). That one works only in a review
-  dictation, whose overlay shows exactly one draft, and `applySpokenReview`
-  files only when the draft's title, body and repository still match what
-  the overlay showed (#1510): a move keeps the text but not where it files. `QuickCaptureInboxModel.comment` is the one call to `gh issue
-  comment` (#965), reached only from the Inbox's Comment on #N button, and
-  only for a draft whose `relation` is `extends`: the issue number comes from
-  the app's own open-issue list. A follow-up joins an open capture (not
-  filed, within the hour) only on its first words ("also", "for that idea")
-  or on a router pick past the same 0.9 and 0.15 bars; an unsure pick joins
-  nothing and suggests that capture's project. The join keeps the
-  follow-up's words apart for Split, and a draft run it supersedes is
-  dropped. The router's request changes only when there is an open capture
-  to offer; that capture's title or first words then go to the same
-  classifier as the new capture. A remote project is drafted on its host (#745, below): a remote
-  label never becomes a working directory here. A capture keeps the
-  checkout key it was routed to; when that checkout's repository gains a
-  checkout on the Mac, the Inbox moves it to the Mac's (#971), except while
-  a draft runs for it. Each route, draft, check and filing names the
-  running copy that owns it (#1288, #1507): a launch ends only those whose
-  copy is gone, and writes that at once, so a copy still holding one in
-  memory cannot write it back. A filing a quit interrupted never becomes
-  fileable by itself (#1509): File and Comment append an HTML comment
-  marker with the claim's id to what they send, and the relaunch, once
-  `gh` could no longer be sending, lists the repository's issues (or the
-  issue's comments) changed since the claim, read-only. The marker found,
-  the capture is filed with that URL; GitHub answering without it, the
-  capture can be filed again; anything else, or a claim from before the
-  marker, and nothing is sent until the user picks Check GitHub Again or
-  File Anyway. A `gh` that fails after it may have sent (a timeout, a kill, no URL,
-  any nonzero exit but 4, "not logged in") gets the same lookup in the
-  running copy (#1541): the capture stays claimed until GitHub answers.

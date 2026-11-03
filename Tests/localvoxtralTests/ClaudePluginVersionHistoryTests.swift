@@ -53,6 +53,7 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
             "1.43.0": "a357e95032fc9c05e206b4204cbfbc424e5669a20eff19ed1aa777fb5f07ddf8",
             "1.44.0": "1493afd58ecde90a6bfe5e85f82eb44a6b38600c4f2e8b19fe6abb1e8b942ab7",
             "1.45.0": "5826bf4d2b883b8146199c4c2b1723fa8b885fd745fadf685f3e5b7d4eb005f6",
+            "1.46.0": "ab1324f655795ca513e22a5657b7f0de746e025fe0e6be5d6f2e819db617eaed",
         ],
     ]
 

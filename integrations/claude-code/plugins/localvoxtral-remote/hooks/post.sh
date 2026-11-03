@@ -124,7 +124,7 @@ esac
 # its next hook. Written when the recorded version differs, and refreshed on
 # SessionStart and UserPromptSubmit so that a live session's record outlasts
 # the age-out below.
-PLUGIN_VERSION=1.45.0
+PLUGIN_VERSION=1.46.0
 VERSION_DIR="$STAMP_DIR/plugin-version"
 if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   if [ "$EVENT" = "SessionEnd" ]; then
@@ -307,7 +307,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.45.0
+X-Lvx-Plugin-Version: 1.46.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -414,13 +414,12 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
 # --- Repository (#926) --------------------------------------------------------
 # The owner/name of the repository's origin when it is on github.com, else
-# its host/path (#971), from capture.sh's parser, the one the draft run lists
-# issues with. Asked only inside a repository; no origin sends no header. The
-# Mac keeps a GitHub one as the project's filing repository, and merges every
-# checkout of one repository into one project.
+# its host/path (#971), from repository.sh. Asked only inside a repository; no
+# origin sends no header. The Mac merges every checkout of one repository into
+# one project.
 LVX_REPOSITORY=""
-if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/capture.sh" ]; then
-  LVX_REPOSITORY="$(sh "${0%/*}/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/repository.sh" ]; then
+  LVX_REPOSITORY="$(sh "${0%/*}/repository.sh" </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
 fi
 
 # --- Branch (#1020) -----------------------------------------------------------
@@ -765,101 +764,6 @@ TERMS
   return 0
 }
 
-# --- Quick capture (#745) -----------------------------------------------------
-# Two more asks on a 200 reply, matched as exactly as the terms one:
-# `X-Lvx-Readme: wanted` asks for the project's README opening, and
-# `X-Lvx-Draft: <32 hex digits>` asks this host to draft a dictated idea in
-# the project. Both start capture.sh, next to this file, detached and in the
-# clean environment terms.sh gets, with the token on stdin.
-#
-# Whatever answers on the port can send them, so the shim bounds what it
-# spends: one README per project per 24 hours, by the same kind of mkdir
-# stamp as terms, and one draft at a time (a lock capture.sh removes when it
-# ends, taken over after 10 minutes), at most 20 a day.
-lvx_capture_start() {
-  _lvx_mode="$1"
-  _lvx_agent="$2"
-  _lvx_session="$3"
-  _lvx_runner="$4"
-  _lvx_draft="${5:-}"
-  _lvx_vibe="${6:-}"
-  [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$_lvx_session" ] && [ -n "${HOME:-}" ] || return 0
-  [ -r "$_lvx_runner" ] || return 0
-  lvx_project_dir || return 0
-  _lvx_base="$STAMP_DIR/capture"
-  { mkdir -p "$_lvx_base" && chmod 700 "$STAMP_DIR" "$_lvx_base"; } 2>/dev/null || return 0
-  _lvx_lock=""
-  if [ "$_lvx_mode" = readme ]; then
-    _lvx_sum="$(echo "$_lvx_dir" | cksum 2>/dev/null)" || return 0
-    _lvx_crc="${_lvx_sum%% *}"
-    _lvx_len="${_lvx_sum##* }"
-    case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
-    _lvx_stamp="$_lvx_base/readme-$_lvx_crc-$_lvx_len"
-    _lvx_last="$(cat "$_lvx_stamp" 2>/dev/null)" || _lvx_last=""
-    case "$_lvx_last" in "" | *[!0-9]* | ?????????????*) _lvx_last=0 ;; esac
-    if [ "$_lvx_last" -le "$NOW" ] && [ $((NOW - _lvx_last)) -lt 86400 ]; then
-      return 0
-    fi
-    # rename(2) lets one hook's stamp win; a second one a moment later reads it.
-    { echo "$NOW" >"$_lvx_stamp.$$" && mv -f "$_lvx_stamp.$$" "$_lvx_stamp"; } 2>/dev/null || return 0
-  else
-    case "$_lvx_draft" in "" | *[!0123456789abcdef]*) return 0 ;; esac
-    [ "${#_lvx_draft}" -eq 32 ] || return 0
-    _lvx_lock="$_lvx_base/draft-running"
-    if ! mkdir "$_lvx_lock" 2>/dev/null; then
-      [ -n "$(find "$_lvx_lock" -prune -mmin +10 2>/dev/null)" ] || return 0
-      mv "$_lvx_lock" "$_lvx_lock.$$" 2>/dev/null || return 0
-      rm -rf "$_lvx_lock.$$" 2>/dev/null
-      mkdir "$_lvx_lock" 2>/dev/null || return 0
-    fi
-    # The day's starts, one time per line; the lock serializes this.
-    _lvx_day="$_lvx_base/draft-starts"
-    _lvx_count=0
-    : >"$_lvx_day.$$" 2>/dev/null || { rmdir "$_lvx_lock"; return 0; }
-    if [ -r "$_lvx_day" ]; then
-      while IFS= read -r _lvx_start; do
-        case "$_lvx_start" in "" | *[!0-9]* | ?????????????*) continue ;; esac
-        [ "$_lvx_start" -le "$NOW" ] && [ $((NOW - _lvx_start)) -lt 86400 ] || continue
-        echo "$_lvx_start" >>"$_lvx_day.$$"
-        _lvx_count=$((_lvx_count + 1))
-      done <"$_lvx_day"
-    fi
-    if [ "$_lvx_count" -ge 20 ]; then
-      rm -f "$_lvx_day.$$"
-      rmdir "$_lvx_lock" 2>/dev/null
-      return 0
-    fi
-    { echo "$NOW" >>"$_lvx_day.$$" && mv -f "$_lvx_day.$$" "$_lvx_day"; } 2>/dev/null \
-      || { rm -f "$_lvx_day.$$"; rmdir "$_lvx_lock"; return 0; } 2>/dev/null
-  fi
-  if command -v setsid >/dev/null 2>&1; then
-    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
-      "$_lvx_mode" "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_draft" "$_lvx_lock" "$_lvx_vibe" \
-      >/dev/null 2>&1 <<CAPTURE &
-$TOKEN
-CAPTURE
-  else
-    (
-      trap '' HUP
-      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
-        "$_lvx_mode" "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_draft" "$_lvx_lock" "$_lvx_vibe"
-    ) >/dev/null 2>&1 <<CAPTURE &
-$TOKEN
-CAPTURE
-  fi
-  return 0
-}
-
-# lvx_capture_asks <response-headers>: prints `readme` and/or `draft <id>`,
-# one per line, for the asks the reply carries.
-lvx_capture_asks() {
-  LC_ALL=C sed -n \
-    -e 's/\r$//' \
-    -e '/^[Xx]-[Ll][Vv][Xx]-[Rr][Ee][Aa][Dd][Mm][Ee]: wanted$/s/.*/readme/p' \
-    -e 's/^[Xx]-[Ll][Vv][Xx]-[Dd][Rr][Aa][Ff][Tt]: \([0123456789abcdef]\{32\}\)$/draft \1/p' \
-    "$1" 2>/dev/null
-}
-
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
 # host whose forward silently failed must not stall every turn. --max-filesize
 # (recognized since curl 7.10.8) belts the body the stdout gate below already
@@ -911,13 +815,6 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
       if [ -n "$TERMS_WANTED" ]; then
         lvx_terms_start claude "$SESSION_ID" "${0%/*}/terms.sh"
       fi
-      lvx_capture_asks "$WORK/response-headers" >"$WORK/asks" 2>/dev/null || :
-      while read -r ASK ASK_ID; do
-        case "$ASK" in
-        readme) lvx_capture_start readme claude "$SESSION_ID" "${0%/*}/capture.sh" ;;
-        draft) lvx_capture_start draft claude "$SESSION_ID" "${0%/*}/capture.sh" "$ASK_ID" ;;
-        esac
-      done <"$WORK/asks" 2>/dev/null
       ;;
     [0-9][0-9][0-9]) write_status "http-$STATUS" ;;
     esac

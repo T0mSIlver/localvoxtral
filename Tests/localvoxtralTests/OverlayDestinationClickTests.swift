@@ -79,7 +79,7 @@ final class OverlayDestinationClickTests: XCTestCase {
     /// list order, and a click on each picks it.
     func testOpenAClickOnEachRowPicksIt() throws {
         showPanel(open: true)
-        let all: [DictationDestination] = [.focusedApp, .inbox, .session(id: "pay")]
+        let all: [DictationDestination] = [.focusedApp, .session(id: "pay")]
         let frames = controller.destinationFramesForTesting(inList: true)
         XCTAssertEqual(Set(frames.keys), Set(all))
         XCTAssertEqual(controller.destinationFramesForTesting(inList: false), [:], "the header pill makes way")
@@ -97,7 +97,7 @@ final class OverlayDestinationClickTests: XCTestCase {
     /// a click on the transcript picks nothing.
     func testADragOrAClickOffTheRowsPicksNothing() throws {
         showPanel(open: true)
-        controller.dragForTesting(at: try center(of: .inbox, inList: true))
+        controller.dragForTesting(at: try center(of: .session(id: "pay"), inList: true))
         controller.clickForTesting(at: NSPoint(x: 30, y: 10))
         XCTAssertEqual(clicked, [])
     }

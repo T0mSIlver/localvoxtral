@@ -40,7 +40,6 @@ Tests/localvoxtralCoreTests/VibeHooksInstallServiceTests.swift contentsOfDirecto
 Tests/localvoxtralTests/WorkflowActionPinningTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift /README.md none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift contentsOfDirectory( none
-Tests/localvoxtralCoreTests/RemoteQuickCaptureLiveTests.swift /README.md none
 Tests/localvoxtralTests/AddressedSendWiringTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/AgentCLILogPrivacyTests.swift enumerator( none
 Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift SKILL.md read integrations/claude-code/plugins/localvoxtral-remote/skills/*

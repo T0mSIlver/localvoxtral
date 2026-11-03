@@ -347,7 +347,6 @@ final class DictationOverlayController {
             polishColor: polishColorProvider().color,
             claudeJoin: snapshot.claudeJoin,
             destinations: snapshot.destinations,
-            draftReview: snapshot.draftReview,
             onDestinationFrame: { [weak self] target, frame in
                 self?.destinationFrames[target] = frame
             }
@@ -356,7 +355,6 @@ final class DictationOverlayController {
         let contentHeight = metrics.contentHeight(
             text: bufferText,
             errorMessage: snapshot.errorMessage,
-            draftReview: snapshot.draftReview,
             destinations: snapshot.destinations
         )
         let size = CGSize(
