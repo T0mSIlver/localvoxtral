@@ -386,4 +386,8 @@ final class PinnedAppOverlayCommitter: OverlayKeyboardInserting {
     func pasteUsingCommandV(_ text: String, preferredAppPID _: pid_t?) -> Bool {
         textInsertion.pasteUsingCommandV(text, preferredAppPID: pid)
     }
+
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void) {
+        textInsertion.writeClipboardAfterPendingPastes(write)
+    }
 }

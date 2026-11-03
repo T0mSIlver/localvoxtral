@@ -32,6 +32,9 @@ protocol OverlayKeyboardInserting: AnyObject {
 
     func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool
+    /// Runs `write`, which replaces the clipboard, once no Cmd+V may still
+    /// read it.
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void)
 }
 
 extension TextInsertionService: OverlayKeyboardInserting {}
@@ -329,7 +332,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
         if inserted {
             if autoCopyEnabled {
-                _ = copyToPasteboard(commitText)
+                // The target reads the pasteboard after Cmd+V is posted: a
+                // copy now would swap the pasted text for the trimmed one.
+                let copy = copyToPasteboard
+                keyboard.writeClipboardAfterPendingPastes { _ = copy(commitText) }
             }
             Log.overlay.info("overlay commit succeeded")
             return .succeeded
