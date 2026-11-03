@@ -478,19 +478,19 @@ extension DictationSessionController {
             && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
     }
 
-    /// The terms a realtime socket may take at session start: the user's own,
+    /// The terms a realtime socket takes at session start: the user's own,
     /// as the stall backfill sends them, since the context sources pass their
-    /// gates only at stop. Only a Mistral model that takes `context_bias`
-    /// (Voxtral Realtime 3) sends them.
+    /// gates only at stop, cut as the dictation model takes them. Empty for a
+    /// model that takes none (`SettingsStore.dictationModelCapabilities`).
     static func realtimeContextBias(
         settings: SettingsStore, dictionary: ReplacementDictionary?
     ) -> [String] {
-        StopSecondPass.candidates(
+        settings.dictationModelCapabilities.sessionTerms(from: StopSecondPass.candidates(
             userTerms: settings.polishSpeakerTerms,
             dictionarySpellings: dictionary?.entries.map(\.replaceWith) ?? [],
             learnedTerms: [],
             contextTrusted: false
-        )
+        ))
     }
 
     /// Who the usage ledger charges a dictation in `mode` to. The Mistral

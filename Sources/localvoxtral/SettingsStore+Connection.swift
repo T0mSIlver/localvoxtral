@@ -68,6 +68,17 @@ extension SettingsStore {
         return model.isEmpty ? MistralRealtimeWebSocketClient.defaultModel : model
     }
 
+    /// What the dictation model in use takes besides audio. An External URL
+    /// server's model is the user's, so the app sends it nothing it can't
+    /// vouch for.
+    var dictationModelCapabilities: DictationModelCapabilities {
+        switch dictationBackendMode {
+        case .managedLocal: return resolvedManagedSpeechModel.capabilities
+        case .mistralAPI: return MistralRealtimeModels.capabilities(for: resolvedMistralDictationModel)
+        case .externalURL, .anthropicAPI: return .audioOnly
+        }
+    }
+
     var resolvedMistralPolishingModel: String {
         let model = MistralModelCatalog.requestModelID(
             for: mistralPolishingModel.trimmed, catalog: mistralModelCatalog)

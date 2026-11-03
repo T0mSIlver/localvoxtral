@@ -406,6 +406,21 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(Array(configuration.contextBias.prefix(2)), ["localvoxtral", "herdr"])
     }
 
+    /// An External URL server's model is the user's, so a start sends it no
+    /// terms even when the user has some (LVX-28).
+    func testAnExternalURLStartCarriesNoTerms() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.polishSpeakerTerms = ["localvoxtral", "herdr"]
+        retainForTestProcessLifetime(viewModel)
+
+        guard let configuration = await viewModel.session.prepareDictationSession() else {
+            return XCTFail("the start ended before the connect")
+        }
+
+        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
+        XCTAssertEqual(configuration.contextBias, [])
+    }
+
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
         let settings = makeExternalBackendSettings(outputMode: .overlayBuffer)
         settings.onboardingCompleted = false

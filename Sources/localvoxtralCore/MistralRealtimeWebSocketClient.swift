@@ -239,12 +239,13 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     }
 
     /// The terms `configuration` carries, as `model` takes them: none for a
-    /// model without `context_bias`.
+    /// model without `context_bias`. The session already cut the list for the
+    /// model it resolved; cutting again here keeps a 2602 socket from ever
+    /// sending the field, whoever built the configuration.
     static func sessionContextBias(
         for configuration: RealtimeSessionConfiguration, model: String
     ) -> [String] {
-        guard MistralRealtimeModels.acceptsContextBias(model) else { return [] }
-        return MistralRealtimeModels.contextBias(from: configuration.contextBias)
+        MistralRealtimeModels.capabilities(for: model).sessionTerms(from: configuration.contextBias)
     }
 
     // MARK: - RealtimeClient
