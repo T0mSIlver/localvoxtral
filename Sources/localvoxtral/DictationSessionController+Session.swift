@@ -379,6 +379,8 @@ extension DictationSessionController {
         // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
         let apiKey = settings.trimmedAPIKey
         let usageBackend = Self.usageBackend(for: settings.dictationBackendMode)
+        // Same snapshot: the terms are cut for the model this session dials.
+        let modelCapabilities = settings.dictationModelCapabilities
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -461,7 +463,8 @@ extension DictationSessionController {
             model: model,
             usageBackend: usageBackend,
             contextBias: Self.realtimeContextBias(
-                settings: settings, dictionary: sessionReplacementDictionary)
+                settings: settings, dictionary: sessionReplacementDictionary,
+                capabilities: modelCapabilities)
         )
     }
 
@@ -478,19 +481,21 @@ extension DictationSessionController {
             && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
     }
 
-    /// The terms a realtime socket may take at session start: the user's own,
+    /// The terms a realtime socket takes at session start: the user's own,
     /// as the stall backfill sends them, since the context sources pass their
-    /// gates only at stop. Only a Mistral model that takes `context_bias`
-    /// (Voxtral Realtime 3) sends them.
+    /// gates only at stop, cut as the session's model takes them. Empty for a
+    /// model that takes none. `capabilities` comes from the same snapshot as
+    /// the session's model and key (`SettingsStore.dictationModelCapabilities`).
     static func realtimeContextBias(
-        settings: SettingsStore, dictionary: ReplacementDictionary?
+        settings: SettingsStore, dictionary: ReplacementDictionary?,
+        capabilities: DictationModelCapabilities
     ) -> [String] {
-        StopSecondPass.candidates(
+        capabilities.sessionTerms(from: StopSecondPass.candidates(
             userTerms: settings.polishSpeakerTerms,
             dictionarySpellings: dictionary?.entries.map(\.replaceWith) ?? [],
             learnedTerms: [],
             contextTrusted: false
-        )
+        ))
     }
 
     /// Who the usage ledger charges a dictation in `mode` to. The Mistral

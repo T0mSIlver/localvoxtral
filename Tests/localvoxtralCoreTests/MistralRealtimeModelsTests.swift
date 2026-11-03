@@ -19,25 +19,12 @@ final class MistralRealtimeModelsTests: XCTestCase {
         XCTAssertFalse(MistralRealtimeModels.isVoxtral3(""))
     }
 
-    func testOnlyVoxtral3TakesContextBias() {
-        XCTAssertTrue(MistralRealtimeModels.acceptsContextBias(MistralRealtimeModels.voxtral3))
-        XCTAssertTrue(MistralRealtimeModels.acceptsContextBias(MistralRealtimeModels.voxtral3Alias))
-        XCTAssertFalse(MistralRealtimeModels.acceptsContextBias(MistralRealtimeWebSocketClient.defaultModel))
-    }
-
-    func testContextBiasKeepsPhrasesAndDropsDuplicatesAndBlanks() {
-        let terms = MistralRealtimeModels.contextBias(from: [
-            "Claude  Code", "localvoxtral", "", "  \n", "LOCALVOXTRAL", "herdr, cmux",
-        ])
-        XCTAssertEqual(terms, ["Claude Code", "localvoxtral", "herdr, cmux"])
-    }
-
-    func testContextBiasStopsAtTheCap() {
-        let candidates = (0..<250).map { "term\($0)" }
-        let terms = MistralRealtimeModels.contextBias(from: candidates)
-        XCTAssertEqual(terms.count, MistralRealtimeModels.maxContextBiasTerms)
-        XCTAssertEqual(terms.first, "term0")
-        XCTAssertEqual(terms.last, "term99")
+    func testOnlyVoxtral3TakesTermsAtSessionStart() {
+        let takesTerms = DictationModelCapabilities(termBias: .sessionList(maxTerms: 100))
+        XCTAssertEqual(MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3), takesTerms)
+        XCTAssertEqual(MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3Alias), takesTerms)
+        XCTAssertEqual(
+            MistralRealtimeModels.capabilities(for: MistralRealtimeWebSocketClient.defaultModel), .audioOnly)
     }
 
     func testVoxtral3IsPricedUnderItsIdAndAlias() throws {

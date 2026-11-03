@@ -386,6 +386,50 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
     }
 
+    /// The terms are cut for the model the start snapshotted, not for the
+    /// mode Settings holds once the capture's await returns: a flip to External
+    /// URL inside it must not drop a Realtime 3 session's terms (GLM review of
+    /// #1959, 2026-11-03).
+    func testModeFlipDuringTheStartCaptureKeepsTheStartingModelsTerms() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .mistralAPI
+        viewModel.settings.mistralAPIKey = "mistral-account-key"
+        viewModel.settings.mistralDictationModel = MistralRealtimeModels.voxtral3
+        viewModel.settings.polishSpeakerTerms = ["localvoxtral", "herdr"]
+        viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
+        viewModel.session.mistralRealtimeClient.debugSkipSocketCreationForTesting()
+        viewModel.dependencies.clock = ManualSessionClock().clock
+        retainForTestProcessLifetime(viewModel)
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        viewModel.settings.terminalScreenContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        }
+        defer { TerminalScreenContextSource.debugFrontmostTargetOverride = nil }
+        let flips = FlipCounter()
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: ClaudeSessionRegistry(
+                now: { Date(timeIntervalSince1970: 1_000) },
+                isProcessAlive: { _ in true }
+            ),
+            focusedTerminalTTY: { [weak viewModel] _ in
+                viewModel?.engines.applyDictationBackendModeChange(.externalURL)
+                flips.count += 1
+                return nil
+            }
+        )
+
+        await viewModel.session.beginDictationSession()
+
+        XCTAssertGreaterThan(flips.count, 0, "positive control: the mode flipped inside the capture")
+        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
+        let dialled = viewModel.session.mistralRealtimeClient.debugLastConnectConfigurationForTesting()
+        XCTAssertEqual(dialled?.model, MistralRealtimeModels.voxtral3)
+        XCTAssertEqual(Array(dialled?.contextBias.prefix(2) ?? []), ["localvoxtral", "herdr"])
+    }
+
     /// A Mistral start snapshots the user's own terms with the endpoint and
     /// key, so the socket (and a reconnect, which redials the snapshot) can
     /// hand them to Voxtral Realtime 3 (#1931).
@@ -404,6 +448,21 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertEqual(configuration.model, MistralRealtimeModels.voxtral3)
         XCTAssertEqual(Array(configuration.contextBias.prefix(2)), ["localvoxtral", "herdr"])
+    }
+
+    /// An External URL server's model is the user's, so a start sends it no
+    /// terms even when the user has some (LVX-28).
+    func testAnExternalURLStartCarriesNoTerms() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.polishSpeakerTerms = ["localvoxtral", "herdr"]
+        retainForTestProcessLifetime(viewModel)
+
+        guard let configuration = await viewModel.session.prepareDictationSession() else {
+            return XCTFail("the start ended before the connect")
+        }
+
+        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
+        XCTAssertEqual(configuration.contextBias, [])
     }
 
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
