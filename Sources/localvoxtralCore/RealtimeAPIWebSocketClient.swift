@@ -415,10 +415,15 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if !armed { watchdog.cancel() }
     }
 
+    /// The cause a rollover reports for a close that carried no error text.
+    private static let plainSocketCloseCause = "socket closed"
+
     private enum RolloverEnd {
         /// The session's stop came in and nothing was carried: the retiring
         /// socket's `done` answers it.
         case finalized
+        /// The same stop, but the retiring socket failed or timed out first.
+        case endedWithoutDone(usage: SocketUsage?)
         case switched(
             next: RealtimeConnectionGeneration, dial: RealtimeSessionConfiguration?, usage: SocketUsage?,
             carriedBytes: Int)
@@ -445,7 +450,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             rollover.watchdog?.cancel()
             s.rollover = nil
             if rollover.stopRequested, rollover.carried.isEmpty {
-                return .finalized
+                if cause == nil { return .finalized }
+                // The retiring socket left without the `done` that answers
+                // the stop: the stop ends as a socket closed at stop does,
+                // and the controller keeps its missing-end warning.
+                let usage = takeUsageLocked(&s)
+                closeSocketLocked(&s, cancelTask: true)
+                return .endedWithoutDone(usage: usage)
             }
 
             #if DEBUG
@@ -519,6 +530,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case .finalized:
             Log.backends.notice("realtime rollover ended by the stop, with no audio to carry")
             emit(.transcriptionFinalized, from: retiring)
+        case .endedWithoutDone(let usage):
+            recordUsage(usage)
+            Log.backends.error(
+                "realtime rollover ended by the stop, but connection \(retiring.description, privacy: .public) left without its done (\(cause ?? "", privacy: .public)); no final claimed"
+            )
+            if let cause, cause != Self.plainSocketCloseCause { emit(.error(cause), from: retiring) }
+            emit(.disconnected, from: retiring)
         case .switched(let next, let dial, let usage, let carriedBytes):
             if let resumedAfter {
                 logServerSilence(
@@ -1032,7 +1050,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
         guard case .closed(let error, let usage, let generation, let unsentBytes) = decided else {
             if case .rollover(let retiring) = decided {
-                finishRollover(retiring: retiring, cause: errorMessage ?? "socket closed")
+                finishRollover(retiring: retiring, cause: errorMessage ?? Self.plainSocketCloseCause)
             }
             return
         }

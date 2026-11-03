@@ -558,6 +558,62 @@ final class RealtimeContextRolloverTests: XCTestCase {
         XCTAssertEqual(harness.transcribedBytes, 68 * Self.chunkBytes)
     }
 
+    /// A client mid-rollover with the stop in and nothing carried, its
+    /// retiring socket neither answered nor failed yet.
+    private func stoppedMidRolloverWithNothingCarried() -> (
+        client: RealtimeAPIWebSocketClient, clock: ManualSessionClock, task: URLSessionWebSocketTask,
+        events: LockedBox<[String]>, session: URLSession
+    ) {
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:1/unused")!)
+        let clock = ManualSessionClock()
+        let client = RealtimeAPIWebSocketClient(clock: clock.clock)
+        let events = LockedBox<[String]>([])
+        client.setEventHandler { event, _ in
+            switch event {
+            case .transcriptionFinalized: events.mutate { $0.append("finalized") }
+            case .disconnected: events.mutate { $0.append("disconnected") }
+            case .error: events.mutate { $0.append("error") }
+            default: break
+            }
+        }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "voxtral")
+        client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+        client.setContextBudget(RealtimeContextBudget(maxModelLen: 100))
+        XCTAssertTrue(client.sendAudioChunk(Data(repeating: 1, count: 217_600)))
+        client.sendCommit(final: true)
+        return (client, clock, task, events, session)
+    }
+
+    /// The retiring socket fails before the `done` that answers the stop:
+    /// the stop must not claim the backend finalized, or the controller drops
+    /// its missing-end warning and records the endpoint as one that answers
+    /// final commits (LVX-73).
+    func testAStopDuringTheRolloverWhoseRetiringSocketFailsDoesNotClaimAFinal() {
+        let fixture = stoppedMidRolloverWithNothingCarried()
+        defer { fixture.session.invalidateAndCancel(); fixture.client.disconnect() }
+
+        fixture.client.debugHandleTerminalSocketErrorForTesting(
+            task: fixture.task, errorMessage: "server died before done")
+
+        XCTAssertEqual(fixture.events.value, ["error", "disconnected"])
+    }
+
+    /// Same stop, the watchdog fires instead of a failure.
+    func testAStopDuringTheRolloverThatTimesOutDoesNotClaimAFinal() async {
+        let fixture = stoppedMidRolloverWithNothingCarried()
+        defer { fixture.session.invalidateAndCancel(); fixture.client.disconnect() }
+        await fixture.clock.waitForSleepers(2)
+
+        fixture.clock.advance(by: 5)
+        for _ in 0..<200 where !fixture.events.value.contains("disconnected") {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(fixture.events.value, ["error", "disconnected"])
+    }
+
     /// A retiring socket that never answers is left after the timeout, and
     /// the dictation carries on.
     func testARetiringSocketThatNeverAnswersIsLeftAfterTheTimeout() async {
