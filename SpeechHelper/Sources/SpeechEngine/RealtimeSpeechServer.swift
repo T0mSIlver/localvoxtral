@@ -48,6 +48,17 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             modelDirectory: modelDirectory,
             engine: engine
         )
+        // Before the port opens, so `ready` means a dictation runs at full speed.
+        let warmUp = SpeechEngineWarmUp.run(
+            engine: engine,
+            transcriptionDelayMs: transcriptionDelayMs,
+            utteranceLimit: utteranceLimit,
+            stepMilliseconds: stepMilliseconds
+        )
+        let warmUpMilliseconds = Double(warmUp.components.seconds) * 1_000
+            + Double(warmUp.components.attoseconds) / 1e15
+        FileHandle.standardError.write(Data(
+            String(format: "speechd: warmed up in %.0f ms\n", warmUpMilliseconds).utf8))
         return try RealtimeSpeechServer(
             engine: engine,
             port: port,
