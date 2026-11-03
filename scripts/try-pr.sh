@@ -258,6 +258,8 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 RUNNING_APPS="$(for pid in $(pgrep -x localvoxtral || true); do ps -o comm= -p "$pid"; done)"
 for old_dest in /tmp/localvoxtral-try.* /private/tmp/localvoxtral-try.*; do
   [[ -d "$old_dest" ]] || continue
+  # Another try-pr may have downloaded this one and not launched it yet.
+  [[ -z "$(find "$old_dest" -maxdepth 0 -mmin -10 2>/dev/null)" ]] || continue
   old_app="$old_dest/extracted/localvoxtral.app"
   if [[ -n "$RUNNING_APPS" ]] && grep -qF "$old_app/" <<<"$RUNNING_APPS"; then
     continue
