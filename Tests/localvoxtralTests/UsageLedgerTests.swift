@@ -56,7 +56,7 @@ final class UsageLedgerTests: XCTestCase {
         let cost = try XCTUnwrap(
             MistralPricing.dictationCost(
                 model: MistralRealtimeWebSocketClient.defaultModel, audioSeconds: 90))
-        XCTAssertEqual(cost, 1.5 * 0.0053, accuracy: 1e-12)
+        XCTAssertEqual(cost, 1.5 * 0.0071, accuracy: 1e-12)
         // A chat model has no audio price, so it cannot price a dictation.
         XCTAssertNil(MistralPricing.dictationCost(model: "mistral-medium-3-5", audioSeconds: 90))
     }
@@ -442,7 +442,7 @@ extension UsageLedgerTests {
         XCTAssertEqual(entry.feature, .dictation)
         XCTAssertEqual(entry.model, MistralRealtimeWebSocketClient.defaultModel)
         XCTAssertEqual(entry.audioSeconds, 2)
-        XCTAssertEqual(try XCTUnwrap(entry.costEUR), 2.0 / 60 * 0.0053, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(entry.costEUR), 2.0 / 60 * 0.0071, accuracy: 1e-12)
     }
 
     func testAudioQueuedBeforeTheSessionOpenedIsNotCounted() {
