@@ -50,7 +50,7 @@ logs. Spend them only where nothing else can do the job:
   helpers. Read `PolishHelper/AGENTS.md` or `SpeechHelper/AGENTS.md` before
   touching either.
 
-## Working an item
+## Working an item or issue
 
 The maintainer's own work (features, bugs found in-house, audits, research,
 CI, flaky tests) is an item in the private Plane project `LVX`; its ids,
@@ -62,7 +62,8 @@ into public text. An outside contributor works from a GitHub issue: read
 
 1. **Claim it.** Before you start and again before you open the PR, check the
    item is still Todo and `gh pr list --state open --search '"LVX-<n>"'` is
-   empty; parallel sessions have duplicated work. If another open PR carries
+   empty (for a GitHub issue, search its number); parallel sessions have
+   duplicated work. If another open PR carries
    the same area label and touches the same files, stop and report instead
    of racing it. Set the item to In progress.
 2. **Check the spec.** Work starts from an item that states scope,
