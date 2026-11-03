@@ -404,6 +404,32 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
     }
 
+    /// The bundled speech helper sends its one final at the stop and never
+    /// revises a delta, so early polish takes its pieces from the deltas: a
+    /// piece is polished while the user speaks and the stop polishes only
+    /// the tail (LVX-69).
+    func testOnTheBundledSpeechHelperAStreamedPieceIsPolishedWhileDictating() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+
+        await startAndSpeak(pipeline)
+        // What `connectDictationSession` latches for a managed-local session.
+        pipeline.viewModel.session.sessionUsesManagedSpeechHelper = true
+        pipeline.server.send(["type": "transcription.delta", "delta": " " + Self.settledPiece])
+        pipeline.server.send(["type": "transcription.delta", "delta": " and this"])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "polished before the stop, not by it")
+
+        // speechd's `done` repeats every delta.
+        await stopAndFinalize(pipeline, finalText: " \(Self.settledPiece) \(Self.tail)")
+
+        let inputs = await polish.requests.map(\.inputText)
+        XCTAssertEqual(inputs, [Self.settledPiece, Self.tail])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.settledPiece)> <\(Self.tail)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
+    }
+
     /// A stop that skips finalization (network lost, a new microphone,
     /// sleep) pins the commit target at the stop, as a finalizing stop does:
     /// focus that moves while the polish runs does not take the text (#1478).
