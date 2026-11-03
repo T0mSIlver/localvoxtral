@@ -1423,6 +1423,23 @@ jobs:
         # run's unit step rebuilds it back again.
         run: swift test --build-system native --filter SpeechHelperIntegrationTests --enable-code-coverage
 
+      - name: Speech helper integration on Nemotron (real audio + live model)
+        # The step above runs only the default catalog entry (Voxtral). The
+        # Nemotron engine broke alone once: on the wrong Metal kernels it
+        # decoded no text while Voxtral still passed (#1947). Only the
+        # transcript test runs here; the others do not depend on the engine.
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.speechd_lane.outputs.run == 'true'
+        env:
+          SPEECHD_INTEGRATION_TEST_ENABLE: "1"
+          SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
+          SPEECHD_INTEGRATION_TEST_MODEL: mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit
+        run: |
+          if ! grep -qF "\"$SPEECHD_INTEGRATION_TEST_MODEL\"" Sources/localvoxtralCore/SpeechModelCatalog.swift; then
+            echo "::error::$SPEECHD_INTEGRATION_TEST_MODEL is not in SpeechModelCatalog; point this step at the catalog's Nemotron entry"
+            exit 1
+          fi
+          swift test --build-system native --filter SpeechHelperIntegrationTests/testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract --enable-code-coverage
+
       - name: Polishing helper integration (live model + eval baseline)
         # Spawns the helper built by the packaging step with the real pinned
         # model, drives the production polish request path, and asserts the
