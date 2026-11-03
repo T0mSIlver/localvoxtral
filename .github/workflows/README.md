@@ -319,7 +319,7 @@ Goes red when `main` has a commit that has waited three days or more for a
 stable release (`scripts/ci/release-freshness.sh`, tested by
 `test-release-freshness.sh`; `RELEASE_FRESHNESS_DAYS` changes the limit). It
 runs at 12:30 UTC on a hosted Ubuntu runner and reads only git, because the
-release job runs on the MacBook's runner and cannot report its own absence.
+release job runs on the Mac Mini's runner and cannot report its own absence.
 Two things silence it today: the daily release skips green when no commit
 has passed the e2e dictation check, and its job waits in the runner's queue
 until GitHub cancels it after a day. Between 2026-10-22 and 2026-11-03 both
