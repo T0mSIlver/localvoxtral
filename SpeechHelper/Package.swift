@@ -45,7 +45,7 @@ let package = Package(
             // from Tom's fork. The app never ships a fork pin; repin to upstream once
             // the port merges there.
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "1e0aca646b2a8204813b70e0974525fe613aa8a5"
+            revision: "7ff8ffb0dc764479078e88aab005f96d58f99f04"
         ),
     ],
     targets: [
