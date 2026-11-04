@@ -81,6 +81,14 @@ extension DictationSessionController {
     private func decideLiveSpokenCommand(rule: Int, _ finalText: String, merged: String, startsMidWord: Bool) {
         switch spokenCommandGate.rules[rule].phrase {
         case .send:
+            // A segment that waited behind a read-back reaches here as the
+            // table's first row, with no check of its own: the setting or the
+            // frontmost app may have changed while it waited, and then its
+            // words are text.
+            guard liveSpokenSendIsArmed else {
+                typeLiveSpokenSendText(merged, startsMidWord: startsMidWord)
+                return
+            }
             deliverLiveSpokenSendFinal(finalText, merged: merged, startsMidWord: startsMidWord)
         }
     }
