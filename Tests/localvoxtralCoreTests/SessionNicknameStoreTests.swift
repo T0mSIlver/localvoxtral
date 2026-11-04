@@ -1,6 +1,7 @@
 import Foundation
 @testable import localvoxtralCore
 import XCTest
+import localvoxtralTestSupport
 
 final class SessionNicknameStoreTests: XCTestCase {
     private typealias Entry = SessionNicknameStore.Entry
@@ -38,9 +39,7 @@ final class SessionNicknameStoreTests: XCTestCase {
     }
 
     func testNicknamesSurviveARestart() {
-        let suite = "SessionNicknameStoreTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeTestDefaults()
         SessionNicknameStore.userDefaults(defaults, key: "nicknames").setNickname("payments", for: "a")
 
         let reloaded = SessionNicknameStore.userDefaults(defaults, key: "nicknames")

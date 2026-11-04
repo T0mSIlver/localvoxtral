@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -785,12 +786,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         terminalAppBundleIDs: [String] = [],
         coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
-        let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = outputMode
         // The user-added apps list is settings-backed now (the TOML is a

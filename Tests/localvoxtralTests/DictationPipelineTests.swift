@@ -752,10 +752,10 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
             focusedDesktopSessionURL: { _ in
-                guard await reads.next() == 1 else { return "https://claude.ai/epitaxy/\(nextDesktopID)" }
+                guard await reads.next() == 1 else { return .address("https://claude.ai/epitaxy/\(nextDesktopID)") }
                 firstReadStarted.resolve()
                 _ = await releaseFirstRead.value(failAfter: 30)
-                return "https://claude.ai/epitaxy/\(cancelledDesktopID)"
+                return .address("https://claude.ai/epitaxy/\(cancelledDesktopID)")
             }
         )
 
@@ -965,6 +965,31 @@ final class DictationPipelineTests: XCTestCase {
         await awaitEnd(commit)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after the quit")
         XCTAssertEqual(pipeline.records.all.count, 1, "the polish answering later saves nothing more")
+    }
+
+    /// With History off, a quit before the final transcript copies the text
+    /// so far: History keeps nothing and the process is about to exit, so
+    /// the clipboard is the only place it survives (#1915).
+    func testWithHistoryOffAQuitBeforeTheFinalTranscriptCopiesTheTextSoFar() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
+
+        // What `applicationWillTerminate` runs before it drains History.
+        pipeline.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(
+            copied.values.map { $0.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece],
+            "the quit lost the dictation")
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], "saved as not inserted")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted on the way out")
     }
 
     /// Quit after the stop, before the final transcript arrives: the text
@@ -1364,7 +1389,7 @@ final class DictationPipelineTests: XCTestCase {
             registry: registry,
             focusedTerminalTTY: { _ in nil },
             focusedBrowserTabURL: { _ in nil },
-            focusedDesktopSessionURL: { _ in "https://claude.ai/epitaxy/\(desktopID)" },
+            focusedDesktopSessionURL: { _ in .address("https://claude.ai/epitaxy/\(desktopID)") },
             focusedWindowID: { _ in nil }
         )
         let resolved = await resolver.resolve(

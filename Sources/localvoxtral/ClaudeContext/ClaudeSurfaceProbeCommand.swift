@@ -147,7 +147,7 @@ enum ClaudeSurfaceProbeCommand {
             registry: registry,
             focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
             focusedDesktopSessionURL: { pid in
-                guard readsClaudeDesktop else { return nil }
+                guard readsClaudeDesktop else { return .refused(.unavailable) }
                 return await desktopReader.focusedSessionURL(applicationPID: pid)
             },
             focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },

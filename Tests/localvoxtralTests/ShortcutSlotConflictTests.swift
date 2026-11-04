@@ -1,6 +1,7 @@
 import Carbon.HIToolbox
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Recording a key the other mode already holds. Carbon refuses the same key
@@ -233,12 +234,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
     }
 
     private func makeShortcuts() -> ShortcutController {
-        let suiteName = "localvoxtral.ShortcutSlotConflictTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())

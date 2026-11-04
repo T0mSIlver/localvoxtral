@@ -52,19 +52,21 @@ logs. Spend them only where nothing else can do the job:
 
 ## Working an issue
 
-1. **Claim it.** `gh pr list --state open --search <n>` before you start and
-   again before you open the PR; parallel sessions have duplicated work. If
+Work starts from a GitHub issue, or from the task your brief names.
+
+1. **Claim it.** `gh pr list --state open --search <n>` (the issue number, or
+   the task id your brief gives) before you start and again before you open
+   the PR; parallel sessions have duplicated work. If
    another open PR carries the same area label and touches the same files,
    stop and report instead of racing it.
-2. **Check the spec.** Work starts from an issue that states scope,
-   constraints and the proof its PR must carry. If one is missing, write it
-   into the issue and wait for the maintainer's OK.
+2. **Check the spec.** The issue or task states scope, constraints and the
+   proof its PR must carry. If one is missing, write it
+   into the issue or task and wait for the maintainer's OK.
 3. **Iterate** on Linux and with filtered Mac suites (Build and test). Push
    the draft for the full suite on hosted `build-test`.
 4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes #<n>` in
-   the body. The link moves the issue's card on the project board
-   (github.com/users/T0mSIlver/projects/1) to In progress, and the merge moves
-   it to Done. Keep one `waits:` label on it per reason it can't merge yet
+   the body for a GitHub issue, and the task id your brief gives, if any.
+   Keep one `waits:` label on it per reason it can't merge yet
    (a Mac night run, the UI Smoke dictation, a stack, a known red, an outside
    key). CI adds the lane and stack ones, the scheduler removes a Mac one
    after the night run, and you remove the rest when they clear. The set: `docs/agent/test-tiers.md`, "Why a PR
@@ -72,11 +74,8 @@ logs. Spend them only where nothing else can do the job:
 5. **Mark it ready** (`gh pr ready <n>`) only once `build-test` is green and
    none of your other PRs is waiting on `mac-lanes`. Ready starts the Mac
    lanes; see CI below.
-6. **After the merge**, move each issue your issue was blocking
-   (`gh api repos/T0mSIlver/localvoxtral/issues/<n>/dependencies/blocking`)
-   from Blocked to Todo once all its blockers are closed; GitHub does not.
-   Stopping before the merge? Leave a handoff comment: state, what's left,
-   decisions made.
+6. **Stopping before the merge?** Leave a handoff comment on the issue or
+   task: state, what's left, decisions made.
 
 No AI attribution, whatever your harness asks: no Co-Authored-By or
 Claude-Session trailers in commits, no "Requested by" line or "Generated with"
@@ -87,17 +86,17 @@ through the API with your own `commit_message`. The `linux` job's attribution
 step fails a PR or a main push that carries a trailer.
 
 The owner dogfoods every daily release, so no PR waits on a hand check. The
-owner gives the OK to merge in chat or through the merge classes, never
-through the board. A failed check in a release becomes a `bug` issue that
-links the PR.
+owner gives the OK to merge in chat or through the merge classes. A failed
+check in a release becomes a `bug` issue that links the PR.
 
-New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
-`mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
-and order it with blocked-by links, not prose.
+GitHub issues are for users and outside contributors: open one only for
+something a user would hit or ask for. It gets one area label (`asr`,
+`polish`, `ci`, `claude-join`, `mistral`, `session`) plus `bug` or
+`enhancement`.
 
-Found work outside your issue's scope (a gap, a weakened check, a stale doc)?
-Open the follow-up issue yourself, with scope, constraints and proof, link it
-from your issue and say so in your report. Don't ask whether to file it.
+Found work outside your scope (a gap, a weakened check, a stale doc)? Write
+it up with scope, constraints and proof where your brief tracks work, else in
+your PR body, and say so in your report. Don't ask whether to record it.
 
 ## Proof
 

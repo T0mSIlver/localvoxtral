@@ -109,7 +109,7 @@ final class DesktopSessionPolishTests: XCTestCase {
             registry: registry,
             focusedTerminalTTY: { _ in nil },
             focusedBrowserTabURL: { _ in nil },
-            focusedDesktopSessionURL: { _ in address },
+            focusedDesktopSessionURL: { _ in ClaudeDesktopFocusRead(address: address) },
             focusedWindowID: { _ in nil }
         ).resolve(target: desktop)
         let join = try XCTUnwrap(resolved)

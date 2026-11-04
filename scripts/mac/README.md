@@ -538,6 +538,14 @@ gate sends TERM to any remaining group members, waits a bounded grace period,
 then sends KILL. `remote-build.sh` also requests an explicit scoped reap when
 the SSH payload fails. Both boundaries are one invocation/workdir: neither
 uses a global `pkill`, so parallel worktrees and unrelated tests survive.
+A payload also ends with its connection: sshd sends a session without a pty
+nothing when the client is killed or its connection closes, and a payload
+that writes only to its own log (a package build) never hits SIGPIPE, so the
+gate watches its ssh session process and ends the payload group once that
+process is gone. A drop the Mac never notices leaves the session alive; the
+gate records each payload's group per work dir (`~/.lv-gate-payloads/`), and
+the client's scoped reap after a failed payload ends a recorded group that is
+still running.
 Payloads also run with `NSUnbufferedIO=YES`, as CI's unit step does: without
 it xctest block-buffers its output into the ssh pipe, and a hung run's log
 stops up to 16 KiB before the test that hung (#1387).

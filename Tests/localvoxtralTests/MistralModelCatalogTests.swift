@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -289,9 +290,7 @@ final class MistralModelCatalogTests: XCTestCase {
 
     @MainActor
     func testSettingsPassTheCatalogsAnswerToThePolishRequest() throws {
-        let suiteName = "localvoxtral.MistralModelCatalogTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.llmPolishingEnabled = true
@@ -315,9 +314,7 @@ final class MistralModelCatalogTests: XCTestCase {
     /// catalog lists without reasoning rejects the field outright (#1365).
     @MainActor
     func testNonReasoningModelFirstDraftOmitsReasoningEffort() throws {
-        let suiteName = "localvoxtral.MistralModelCatalogTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.llmPolishingEnabled = true

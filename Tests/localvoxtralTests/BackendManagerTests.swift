@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -494,7 +495,7 @@ final class BackendManagerTests: XCTestCase {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let settings = SettingsStore(
-            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            defaults: makeTestDefaults(),
             secretStore: InMemorySecretStore()
         )
         let manager = makeManager(

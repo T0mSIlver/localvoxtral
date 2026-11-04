@@ -2299,7 +2299,16 @@ there is not.
     desktop update must re-check. Focus in the secondary pane would
     otherwise join the primary pane's session; focus in a terminal, files or
     changes panel, or in the sidebar, is no join because the dictation is
-    not going to a session. Each refusal logs its reason. One exception: a
+    not going to a session. Each refusal logs its reason and reaches the
+    dictation's abstention causes as itself (`ClaudeDesktopFocusRefusal`):
+    in Oct 2026, 64 diagnostic records said only "focused web view address
+    unavailable", which could not tell the sidebar or a Claude project
+    thread from a layout the rule no longer recognizes. MEASURED again on
+    4.16336.0 (2026-11-03): same classes and address; the prompt
+    (`epitaxy-prompt-input`) sits under `epitaxy-chat-panel` inside
+    `dframe-pane dframe-pane-primary`, with `dframe-pane-host` and
+    `dframe-pane-col` around the pane, neither of which is a pane token.
+    One exception: a
     Claude project's page (`https://claude.ai/epitaxy/project/chan_…`, a
     thread open or not; MEASURED on 2.16120.0 for the project chat, #1194) has no chat panel
     element, so its address is read from anywhere in the primary pane. It
