@@ -617,33 +617,35 @@ final class SettingsStore {
         didSet { defaults.set(diagnosticRecordsEnabled, forKey: Keys.diagnosticRecordsEnabled) }
     }
 
-    /// The values this copy saved for each merged list setting, newest last.
-    /// A read can lag this copy's own last write when the preferences daemon
-    /// is slow: a hosted run lost half of 401 refusals that way (LVX-102),
-    /// because the merge took each missing newest item for another copy's
-    /// removal. Content alone cannot tell that lag from another copy that
-    /// restored an earlier list (Codex review), so each save also records its
-    /// writer under `<key>.writer`; a saved list counts as this copy's only
-    /// while that names this copy. A build without it never updates the
-    /// writer, so a removal it makes while this copy runs can still be missed.
+    /// Hashes of every value this copy saved for each merged list setting.
+    /// A read can return a value from many writes back when the preferences
+    /// daemon is slow: hosted runs kept 205 and then 77 of 401 refusals
+    /// (LVX-102), because the merge took each item missing from that old value
+    /// for another copy's removal. Content alone cannot tell that lag from
+    /// another copy that restored an earlier list (Codex review), so each save
+    /// also records its writer under `<key>.writer`; a saved list counts as
+    /// this copy's only while that names this copy. A build without it never
+    /// updates the writer, so a removal it makes while this copy runs can
+    /// still be missed. One integer per save.
     @ObservationIgnored
-    private var listWrites: [String: [[String]]] = [:]
+    private var listWrites: [String: Set<Int>] = [:]
     @ObservationIgnored
     private let listWriterID = UUID().uuidString
 
     /// The saved list to merge with, nil when nothing is saved. A list this
-    /// copy saved, while no other copy has saved since, stands for `base`.
+    /// copy saved at any point, while no other copy has saved since, stands
+    /// for `base`.
     private func savedList(_ key: String, base: [String]) -> [String]? {
         guard let saved = defaults.stringArray(forKey: key) else { return nil }
         let ownWrite = defaults.string(forKey: key + ".writer") == listWriterID
-            && listWrites[key]?.contains(saved) == true
+            && listWrites[key]?.contains(saved.hashValue) == true
         return ownWrite ? base : saved
     }
 
     private func saveList(_ value: [String], forKey key: String) {
         defaults.set(listWriterID, forKey: key + ".writer")
         defaults.set(value, forKey: key)
-        listWrites[key] = Array(((listWrites[key] ?? []) + [value]).suffix(8))
+        listWrites[key, default: []].insert(value.hashValue)
     }
 
     func dismissTermSuggestion(_ term: String) {

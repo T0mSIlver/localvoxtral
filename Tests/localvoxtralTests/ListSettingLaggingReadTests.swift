@@ -8,40 +8,54 @@ import localvoxtralTestSupport
 /// the list merge took each missing newest item for another copy's removal.
 @MainActor
 final class ListSettingLaggingReadTests: XCTestCase {
-    /// Every read of a key returns the value it held before the last write.
+    /// Every read of a key returns the value it held `depth` writes ago: the
+    /// hosted runs kept 205 and then 77 of 401 refusals, so a slow daemon can
+    /// answer from far behind.
     private final class LaggingDefaults: UserDefaults, @unchecked Sendable {
-        private var beforeLastWrite: [String: Any] = [:]
+        var depth = 1
+        private var history: [String: [Any]] = [:]
 
         override func set(_ value: Any?, forKey key: String) {
-            beforeLastWrite[key] = super.object(forKey: key) ?? NSNull()
+            history[key, default: []].append(super.object(forKey: key) ?? NSNull())
             super.set(value, forKey: key)
         }
 
+        private func lagging(_ key: String) -> Any?? {
+            guard let past = history[key], !past.isEmpty else { return .none }
+            return .some(past[max(0, past.count - depth)])
+        }
+
         override func stringArray(forKey key: String) -> [String]? {
-            guard let previous = beforeLastWrite[key] else { return super.stringArray(forKey: key) }
-            return previous as? [String]
+            guard let value = lagging(key) else { return super.stringArray(forKey: key) }
+            return value as? [String]
         }
 
         override func string(forKey key: String) -> String? {
-            guard let previous = beforeLastWrite[key] else { return super.string(forKey: key) }
-            return previous as? String
+            guard let value = lagging(key) else { return super.string(forKey: key) }
+            return value as? String
         }
     }
 
-    private func makeLaggingSettings() throws -> SettingsStore {
+    private func makeLaggingSettings(depth: Int = 1) throws -> SettingsStore {
         let suite = makeTestDefaultsSuite()
         let defaults = try XCTUnwrap(LaggingDefaults(suiteName: suite.suiteName))
+        defaults.depth = depth
         return SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
     func testRefusalsSurviveReadsThatLagThisCopysOwnWrites() async throws {
-        let settings = try makeLaggingSettings()
-        for index in 0...SpeakerTermSuggestions.maxDismissed {
-            settings.dismissTermSuggestion("Refused\(index)x")
+        for depth in [1, 3, 50] {
+            let settings = try makeLaggingSettings(depth: depth)
+            for index in 0...SpeakerTermSuggestions.maxDismissed {
+                settings.dismissTermSuggestion("Refused\(index)x")
+            }
+            XCTAssertEqual(
+                settings.polishDismissedTermSuggestions.count, SpeakerTermSuggestions.maxDismissed, "lag \(depth)")
+            XCTAssertEqual(settings.polishDismissedTermSuggestions.first, "Refused1x", "lag \(depth)")
+            XCTAssertEqual(
+                settings.polishDismissedTermSuggestions.last, "Refused\(SpeakerTermSuggestions.maxDismissed)x",
+                "lag \(depth)")
         }
-        XCTAssertEqual(settings.polishDismissedTermSuggestions.count, SpeakerTermSuggestions.maxDismissed)
-        XCTAssertEqual(settings.polishDismissedTermSuggestions.first, "Refused1x")
-        XCTAssertEqual(settings.polishDismissedTermSuggestions.last, "Refused\(SpeakerTermSuggestions.maxDismissed)x")
     }
 
     func testTermsSurviveReadsThatLagThisCopysOwnWrites() async throws {
