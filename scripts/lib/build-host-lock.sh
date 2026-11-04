@@ -8,8 +8,10 @@
 #   git config localvoxtral.<build host>.lock /path/to/<host>.lock
 # LV_LOCK_DIR overrides it; with neither, nothing waits. Taking the lock is
 # `mkdir`, the holder writes one owner line into `<lock>/owner`, releasing
-# removes the directory. People take the same directory by hand with that
-# recipe, and the script honours their locks.
+# removes the directory. People take the same directory by hand
+# (scripts/build-host-lock.sh, or that recipe), and the script waits for their
+# locks, except one taken by hand from its own worktree: that one it would wait
+# on forever, so it says so and stops.
 #
 # The script never breaks a lock by age: past LV_LOCK_OLD_SECONDS (3 h) it says
 # so and keeps waiting, since only the person or agent coordinating the host
@@ -85,6 +87,19 @@ lv_lock_age() {
   [[ -n "$since" ]] && printf '%s' "$(( $(date -u +%s) - since ))"
 }
 
+# Whether the holder took the lock by hand (scripts/build-host-lock.sh) from
+# this worktree. remote-build.sh takes the lock itself, so waiting on it would
+# wait on ourselves: that held the Mini for 55 minutes (LVX-104).
+lv_lock_held_by_hand_here() {
+  [[ "$1" == *" by-hand "*" worktree=${ROOT_DIR:-$PWD}" ]]
+}
+
+# Whether the line is not one a remote-build.sh wrote: someone took the lock by
+# hand. Theirs may be a real heavy job, so it is waited for, but named.
+lv_lock_held_by_hand() {
+  [[ -n "$1" && "$1" != *" remote-build.sh "*" host="*" pid="* ]]
+}
+
 # Waits for the lock, then holds it. $1 names the job in the owner line.
 lv_lock_acquire() {
   [[ -n "${LV_LOCK_DIR:-}" && "${LV_LOCK_HELD:-}" != "$LV_LOCK_DIR" ]] || return 0
@@ -105,9 +120,17 @@ lv_lock_acquire() {
     if lv_lock_holder_is_dead "$holder" && lv_lock_reclaim "$holder"; then
       continue
     fi
+    if lv_lock_held_by_hand_here "$holder"; then
+      echo "remote-build.sh: the build host lock $LV_LOCK_DIR was taken by hand from this worktree ($holder)." >&2
+      echo "remote-build.sh takes the lock itself; release yours first: scripts/build-host-lock.sh release <build host>" >&2
+      exit 75
+    fi
     if [[ "$holder" != "$said_holder" ]] || (( said_at < 0 || SECONDS - said_at >= 300 )); then
       age="$(lv_lock_age "$holder")"
       echo "==> Waiting for the build host lock $LV_LOCK_DIR, held by: ${holder:-an owner that wrote no line}; $(( (SECONDS - started) / 60 )) min so far, retrying every ${LV_LOCK_POLL_SECONDS}s" >&2
+      if [[ "$said_holder" != "$holder" ]] && lv_lock_held_by_hand "$holder"; then
+        echo "==> That lock was taken by hand, not by a remote-build.sh. remote-build.sh takes the lock itself: if you took it around this run, release it, or this run waits on you" >&2
+      fi
       if [[ -n "$age" ]] && (( age > LV_LOCK_OLD_SECONDS )); then
         echo "==> That lock is over $(( LV_LOCK_OLD_SECONDS / 3600 )) h old; whoever coordinates the host may break it (rm -r $LV_LOCK_DIR)" >&2
       fi
