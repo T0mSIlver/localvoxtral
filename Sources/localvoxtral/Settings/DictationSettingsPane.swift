@@ -35,7 +35,6 @@ struct DictationSettingsPane: View {
     @State private var livePasteValidationError: String?
     @State private var copyLastDictationValidationError: String?
     @State private var answerAgentValidationError: String?
-    @State private var quickCaptureValidationError: String?
     @State private var dictationChordValidationError: String?
     @State private var pendingShortcutMove: PendingShortcutMove?
 
@@ -100,7 +99,6 @@ struct DictationSettingsPane: View {
                     viewModel.agentAttention?.announcer?.requestPermission()
                 } else {
                     viewModel.agentAttention?.tracker.clear()
-                    viewModel.agentAttention?.clearDrafts()
                 }
             }
         )
@@ -127,17 +125,6 @@ struct DictationSettingsPane: View {
                 }
                 dictationChordValidationError = viewModel.shortcuts.requestDictationChord(shortcut?.modifierChord)
             }
-        )
-    }
-
-    private func assignQuickCaptureShortcut(_ shortcut: DictationShortcut?) {
-        quickCaptureValidationError = viewModel.shortcuts.requestQuickCaptureShortcut(shortcut)
-    }
-
-    private var quickCaptureShortcutBinding: Binding<DictationShortcut?> {
-        Binding(
-            get: { settings.quickCaptureShortcut },
-            set: { assignQuickCaptureShortcut($0) }
         )
     }
 
@@ -339,23 +326,6 @@ struct DictationSettingsPane: View {
                 ) {
                     if let answerAgentValidationError {
                         SettingsInlineMessage(answerAgentValidationError, color: .red)
-                    }
-                }
-
-                // Optional: opens a dictation with the Inbox picked, as Tab to
-                // it would (#840). Its words never reach the focused app.
-                SettingsShortcutRow(
-                    title: "Quick capture to Inbox",
-                    shortcut: quickCaptureShortcutBinding,
-                    validationError: $quickCaptureValidationError,
-                    acceptsModifierChord: true,
-                    button: .init(title: "Clear", isDisabled: settings.quickCaptureShortcut == nil) {
-                        quickCaptureValidationError = nil
-                        assignQuickCaptureShortcut(nil)
-                    }
-                ) {
-                    if let quickCaptureValidationError {
-                        SettingsInlineMessage(quickCaptureValidationError, color: .red)
                     }
                 }
 

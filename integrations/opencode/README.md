@@ -17,16 +17,11 @@ pane's prompt, and submits it when you say "send it", without typing keys. A
 window switch mid-dictation, Secure Keyboard Entry or the clipboard cannot
 send the text elsewhere.
 
-**No tokens spent.** The plugin itself spends none. Two features outside it
-do, each through a read-only opencode run the app starts on its own, never in
-your session, with your default model:
-
-- With **Ask the coding agent for each new project's terms** on, the app runs
-  it once per project. See
-  [Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent).
-- When neither Claude Code nor Mistral Vibe is installed, a
-  [quick capture](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#quick-capture) routed to a
-  project on this Mac runs it once to draft the issue.
+**No tokens spent.** The plugin itself spends none. One feature outside it
+does, through a read-only opencode run the app starts on its own, never in
+your session, with your default model: with **Ask the coding agent for each
+new project's terms** on, the app runs it once per project. See
+[Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent).
 
 ## Install
 

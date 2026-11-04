@@ -135,8 +135,8 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         XCTAssertEqual(after.projects, others, "nothing recorded for any of its checkouts")
         XCTAssertFalse(after.listedProjects(now: Self.start).contains { $0.name == "quill" })
         XCTAssertFalse(after.confirmedEverywhere().contains { ["Kern", "Glyph", "Ligature"].contains($0.term) })
-        let choices = QuickCaptureProjects.projects(from: after, userLines: [:], now: Self.start, readme: { _ in nil })
-        XCTAssertFalse(choices.contains { $0.name == "quill" }, "quick capture does not list it")
+        let choices = ListedProjects.projects(from: after, now: Self.start)
+        XCTAssertFalse(choices.contains { $0.name == "quill" }, "the Projects pane does not list it")
         for key in [mac.key, host.key, clone.key] {
             XCTAssertFalse(after.needsProposal(projectKey: key, now: Self.start), key)
         }

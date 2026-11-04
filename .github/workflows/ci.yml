@@ -655,8 +655,7 @@ jobs:
         run: ./scripts/ci/claude-mod-tests.sh
 
       # VibeRemoteShimTests run the real remote Vibe shim, which needs python3
-      # and ps, the usage tests run the shipped terms.sh and capture.sh, which
-      # need curl, and SSHConfigOverrideTests run `ssh -G`; the image ships
+      # and ps, the usage tests run the shipped terms.sh, which needs curl, and SSHConfigOverrideTests run `ssh -G`; the image ships
       # none of them.
       - name: Core tests (localvoxtralCore, hook publisher)
         timeout-minutes: 12

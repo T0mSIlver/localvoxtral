@@ -141,8 +141,6 @@ package enum SpokenStopRule {
         case toggled
         /// Held (push to talk): the release is the stop.
         case held
-        /// A capture to the Inbox, toggled.
-        case quickCapture
     }
 
     /// Whether a trailing send phrase stops a dictation started this way.
@@ -151,7 +149,7 @@ package enum SpokenStopRule {
     /// with nothing to stop.
     package static func stopsByVoice(_ gesture: Gesture) -> Bool {
         switch gesture {
-        case .toggled, .quickCapture: true
+        case .toggled: true
         case .held: false
         }
     }

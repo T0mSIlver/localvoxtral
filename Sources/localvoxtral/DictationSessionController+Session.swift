@@ -48,8 +48,6 @@ extension DictationSessionController {
         // it just gave up still emits is refused from here on (#417).
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
-        sessionIsQuickCapture = false
-        sessionDraftReview = nil
         sessionCommitGuard = nil
         sessionPickedPane = nil
         sessionStartedAt = nil
@@ -534,7 +532,7 @@ extension DictationSessionController {
 
     /// The user's own terms, as the stall backfill sends them, cut as the
     /// model takes them: what a transcription with no session behind it
-    /// (a voice memo) can send. Empty for a model that takes none. `capabilities` comes from the same snapshot as
+    /// (a recorded file) can send. Empty for a model that takes none. `capabilities` comes from the same snapshot as
     /// the session's model and key (`SettingsStore.dictationModelCapabilities`).
     static func realtimeContextBias(
         settings: SettingsStore, dictionary: ReplacementDictionary?,
@@ -698,14 +696,9 @@ extension DictationSessionController {
         sessionClaudeJoinBadge = .hidden
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
-        sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
-        sessionDraftReview = requestedOutputMode == .overlayBuffer ? requestedDraftReview : nil
         sessionStoppedBySpokenPhrase = false
-        requestedQuickCapture = false
-        requestedDraftReview = nil
         sessionStartedAt = Date()
         sessionStoppedAt = nil
-        yieldVoiceMemoEngine()
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
@@ -721,14 +714,12 @@ extension DictationSessionController {
     /// speaks (#709), unless early polish is off: then the stop polishes the
     /// whole text, as before #709. Not with a second pass: Mistral's realtime
     /// stream settles nothing before the stop, and the batch text replaces
-    /// the realtime text there anyway. Not for a quick capture or a draft
-    /// review either: their stops never use the pieces. Latched after
-    /// `latchSessionAudio`, which decides the second pass.
+    /// the realtime text there anyway. Latched after `latchSessionAudio`,
+    /// which decides the second pass.
     func armEarlyPolish(outputMode: DictationOutputMode) {
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
         guard outputMode == .overlayBuffer, settings.earlyPolishEnabled, !sessionHasStopSecondPass,
-            !sessionIsQuickCapture, sessionDraftReview == nil,
             !managedPolishingIsUnavailable(outputMode: outputMode),
             let configuration = settings.llmPolishingConfiguration
         else { return }
@@ -1399,12 +1390,7 @@ extension DictationSessionController {
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
         }
-        // A review shows its one draft and offers no other destination.
-        if let review = sessionDraftReview {
-            overlayBufferCoordinator.showDraftReview(review)
-        } else {
-            beginDestinations()
-        }
+        beginDestinations()
     }
 
     func beginOverlayFinalization() {

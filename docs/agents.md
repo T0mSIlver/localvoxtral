@@ -38,10 +38,8 @@ what the agent wrote or asked, only that it waits.
 
 ## Jump to it
 
-Press Tab twice during a dictation. The first Tab picks the Inbox, and the
-second picks the session that has waited longest and brings its pane
-forward.
-Your words go there when you stop. The order of the destinations is in
+Press Tab during a dictation to pick the session that has waited longest and
+bring its pane forward. Your words go there when you stop. The order of the destinations is in
 [Where the words go](dictation.md#where-the-words-go).
 
 The overlay moves to the session only once the terminal confirms its pane is
@@ -53,8 +51,6 @@ session that has waited longest, or else the one that finished first, and
 starts a dictation there. Press it again to stop; the next press goes to the
 next session. During a dictation it picks that session the way Tab would. It
 can be a [chord of modifier keys](dictation.md#record-a-chord-of-modifier-keys).
-With no session waiting, it opens the oldest ready quick capture draft
-instead ([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
 
 After a move to a session, moving back to the app you started in brings it
 forward, except in one case: you started in the same terminal app as that session, in

@@ -328,35 +328,6 @@ final class DictationSessionStore {
         }
     }
 
-    /// Marks where a quick capture went (#725). A record History no longer
-    /// holds changes nothing.
-    @discardableResult
-    func setQuickCaptureDestination(_ destination: String, id: UUID) -> Task<Void, Never> {
-        enqueueWrite("mark quick capture \(id)") { context in
-            let records = try context.fetch(
-                FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
-            for record in records { record.quickCaptureDestination = destination }
-            return records.count
-        }
-    }
-
-    /// A quick capture's polished words (#970). The record was written with
-    /// the raw words before the Inbox polished them.
-    @discardableResult
-    func setQuickCapturePolish(_ polishedText: String, seconds: Double, id: UUID) -> Task<Void, Never> {
-        enqueueWrite("polish quick capture \(id)") { context in
-            let records = try context.fetch(
-                FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
-            for record in records {
-                record.polishedText = polishedText
-                record.polishingDurationSeconds = seconds
-            }
-            return records.count
-        }
-    }
-
     @discardableResult
     func delete(id: UUID) -> Task<Void, Never> {
         let audioStore = audioStore

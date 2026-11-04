@@ -2,23 +2,18 @@ import Foundation
 
 /// Where an Overlay Buffer dictation's words go when it stops (#840). The
 /// overlay lists the choices, and Tab, the arrows or a click move between
-/// them; nothing else changes the destination but a shortcut that opens the
-/// overlay on one.
+/// them.
 package enum DictationDestination: Hashable, Sendable {
     /// The app that was focused when the dictation started.
     case focusedApp
     /// A coding agent session that needs you. Picking it brings its pane
     /// forward; the words commit there like any dictation into that pane.
     case session(id: String)
-    /// The quick capture Inbox (#751): never inserted anywhere.
-    case inbox
 }
 
 /// The overlay's destinations for one dictation, in a fixed order: the
-/// focused app, the Inbox, then the sessions that need you in the order the
-/// answer hotkey reaches them. The focused app and the Inbox are always
-/// there, and one Tab always reaches the Inbox: it is for saving something
-/// quickly (#1015).
+/// focused app, then the sessions that need you in the order the answer
+/// hotkey reaches them. The focused app is always there.
 package struct DictationDestinationList: Equatable, Sendable {
     package private(set) var entries: [DictationDestination]
     package private(set) var selected: DictationDestination
@@ -38,7 +33,7 @@ package struct DictationDestinationList: Equatable, Sendable {
         let sessions = waitingSessionIDs.filter { id in
             id != focusedSessionID && seen.insert(id).inserted
         }
-        entries = [.focusedApp, .inbox] + sessions.map(DictationDestination.session)
+        entries = [.focusedApp] + sessions.map(DictationDestination.session)
         self.selected = entries.contains(selected) ? selected : .focusedApp
     }
 
@@ -101,7 +96,6 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
         /// when there is nothing to say.
         case focusedApp(joined: Bool?)
         case session
-        case inbox
     }
 
     package struct Item: Equatable, Sendable {
@@ -111,8 +105,6 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
         package let kind: Kind
         package let isSelected: Bool
     }
-
-    package static let inboxLabel = "Inbox"
 
     package let items: [Item]
     /// The list is open under the header: the user is moving between
@@ -137,8 +129,6 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
                 return Item(destination: entry, label: focusedAppLabel, kind: .focusedApp(joined: focusedAppJoined), isSelected: isSelected)
             case .session(let id):
                 return Item(destination: entry, label: sessionName(id), kind: .session, isSelected: isSelected)
-            case .inbox:
-                return Item(destination: entry, label: Self.inboxLabel, kind: .inbox, isSelected: isSelected)
             }
         }
     }

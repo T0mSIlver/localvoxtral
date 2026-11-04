@@ -135,9 +135,6 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// Shows the overlay's destinations (#840). Defaulted so test doubles
     /// stay unchanged.
     func showDestinations(_ strip: OverlayDestinationStrip?)
-    /// Shows the one draft a review dictation acts on (#927). Defaulted so
-    /// test doubles stay unchanged.
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?)
 }
 
 extension OverlayBufferSessionCoordinating {
@@ -149,7 +146,6 @@ extension OverlayBufferSessionCoordinating {
     var showsPolishChange: Bool { false }
     func updateMicLevel(_ level: Double) {}
     func showDestinations(_ strip: OverlayDestinationStrip?) {}
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {}
 }
 
 @MainActor
@@ -399,11 +395,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func showDestinations(_ strip: OverlayDestinationStrip?) {
         stateMachine.setDestinations(strip)
-        renderCurrentSnapshot()
-    }
-
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
-        stateMachine.setDraftReview(draft)
         renderCurrentSnapshot()
     }
 

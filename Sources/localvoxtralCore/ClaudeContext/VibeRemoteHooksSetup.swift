@@ -9,14 +9,14 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
     public var hooksBlock: String
     /// The project-terms runner `post.sh` starts when the Mac asks (#641).
     public var termsScript: String
-    /// Quick capture's README and draft runner, which `post.sh` starts when
-    /// the Mac asks (#745).
-    public var captureScript: String
+    /// Prints the repository the working directory's `origin` names, which
+    /// `post.sh` sends as `X-Lvx-Env-Repository`.
+    public var repositoryScript: String
     /// The host side of `localvoxtral doctor` (#910), from the remote plugin.
     public var doctorScript: String
 
     public init(
-        postScript: String, compactScript: String, hooksBlock: String, termsScript: String, captureScript: String,
+        postScript: String, compactScript: String, hooksBlock: String, termsScript: String, repositoryScript: String,
         doctorScript: String = ""
     ) {
         self.doctorScript = doctorScript
@@ -24,7 +24,7 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
         self.compactScript = compactScript
         self.hooksBlock = hooksBlock
         self.termsScript = termsScript
-        self.captureScript = captureScript
+        self.repositoryScript = repositoryScript
     }
 
     /// The version constant `post.sh` sends as `X-Lvx-Vibe-Hooks-Version`. Read
@@ -40,7 +40,7 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
     }
 
     /// The six shipped files, from wherever `ClaudePluginAssets` finds them.
-    /// `terms.sh`, `capture.sh` and `doctor.sh` come from the remote Claude Code plugin,
+    /// `terms.sh`, `repository.sh` and `doctor.sh` come from the remote Claude Code plugin,
     /// which ships the same runners for its own shim and is copied into the
     /// app whole.
     public static func bundled() -> VibeRemoteHooksFiles? {
@@ -54,10 +54,10 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
             ))
         }
         guard let post = vibe("post.sh"), let compact = vibe("compact.py"), let block = vibe("hooks.toml"),
-              let terms = plugin("terms.sh"), let capture = plugin("capture.sh"), let doctor = plugin("doctor.sh")
+              let terms = plugin("terms.sh"), let repository = plugin("repository.sh"), let doctor = plugin("doctor.sh")
         else { return nil }
         return VibeRemoteHooksFiles(
-            postScript: post, compactScript: compact, hooksBlock: block, termsScript: terms, captureScript: capture,
+            postScript: post, compactScript: compact, hooksBlock: block, termsScript: terms, repositoryScript: repository,
             doctorScript: doctor
         )
     }
@@ -137,7 +137,7 @@ extension ClaudeRemoteEnrollmentService {
         D="\(vibeRemoteDirectory)"
         printf '%s\\n' \(vibeProbeFrameBegin)
         command -v vibe >/dev/null 2>&1 && echo vibe=found
-        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/capture.sh" "$D/doctor.sh" "$D/token" "$D/port"; do
+        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/repository.sh" "$D/doctor.sh" "$D/token" "$D/port"; do
           [ ! -L "$p" ] || echo refusal=symlink
         done
         if [ -r "$D/post.sh" ]; then
@@ -254,7 +254,7 @@ extension ClaudeRemoteEnrollmentService {
         umask 077
         H="$HOME/.vibe/hooks.toml"
         D="\(vibeRemoteDirectory)"
-        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/capture.sh" "$D/doctor.sh" "$D/token" "$D/port"; do
+        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/repository.sh" "$D/doctor.sh" "$D/token" "$D/port"; do
           [ ! -L "$p" ] || exit 46
         done
         \(unchanged)
@@ -303,7 +303,7 @@ extension ClaudeRemoteEnrollmentService {
         script += Self.writeFileScript(path: "$D/post.sh", content: files.postScript, mode: "700", seed: "POST")
         script += Self.writeFileScript(path: "$D/compact.py", content: files.compactScript, mode: "600", seed: "COMPACT")
         script += Self.writeFileScript(path: "$D/terms.sh", content: files.termsScript, mode: "700", seed: "TERMS")
-        script += Self.writeFileScript(path: "$D/capture.sh", content: files.captureScript, mode: "700", seed: "CAPTURE")
+        script += Self.writeFileScript(path: "$D/repository.sh", content: files.repositoryScript, mode: "700", seed: "REPOSITORY")
         script += Self.writeFileScript(path: "$D/doctor.sh", content: files.doctorScript, mode: "700", seed: "DOCTOR")
         script += Self.writeFileScript(path: "$D/port", content: String(remoteForwardPort), mode: "600", seed: "PORT")
         if updated != probe.hooksText {

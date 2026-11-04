@@ -8,7 +8,7 @@ import Foundation
 ///
 /// A dictation's group is its joined project's. Every read that crosses
 /// projects (the project names polish carries, the second pass's confirmed
-/// terms, quick capture's routing and polish) then sees only that group's
+/// terms) then sees only that group's
 /// projects. A dictation with no join, or joined to a project in no group,
 /// sees every project, as before.
 ///

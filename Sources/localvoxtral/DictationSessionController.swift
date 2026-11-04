@@ -414,8 +414,7 @@ final class DictationSessionController {
     var spokenStopTask: Task<Void, Never>?
     @ObservationIgnored
     var spokenStopArmedWords: [Substring]?
-    /// This session was stopped by its send phrase: a quick capture then
-    /// saves without it.
+    /// This session was stopped by its send phrase.
     @ObservationIgnored
     var sessionStoppedBySpokenPhrase = false
     @ObservationIgnored
@@ -506,10 +505,6 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
-    /// Cancels a voice memo streaming through the bundled helper this
-    /// dictation also uses, so the dictation's text streams live (#1317).
-    @ObservationIgnored
-    var yieldVoiceMemoEngine: @MainActor () -> Void = {}
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.
@@ -530,33 +525,6 @@ final class DictationSessionController {
     var agentAttention: AgentAttentionModel?
     @ObservationIgnored
     var answerAgentTask: Task<Void, Never>?
-    /// Asked for by the start that is under way; latched into
-    /// `sessionIsQuickCapture` with the output mode, so a start that never
-    /// got that far leaves nothing for the next dictation.
-    @ObservationIgnored
-    var requestedQuickCapture = false
-    /// This session is a quick capture (#725): its words go to the Inbox,
-    /// never into the focused app.
-    @ObservationIgnored
-    var sessionIsQuickCapture = false
-    /// Asked for by the answer shortcut's start (#927); latched into
-    /// `sessionDraftReview` like `requestedQuickCapture`.
-    @ObservationIgnored
-    var requestedDraftReview: QuickCaptureDraftSnapshot?
-    /// This session reviews the one draft the overlay shows (#927): its
-    /// words file, drop or change it, and are never inserted.
-    @ObservationIgnored
-    var sessionDraftReview: QuickCaptureDraftSnapshot?
-    /// The filing or redraft the last review started, for tests to await.
-    @ObservationIgnored
-    var draftReviewTask: Task<Void, Never>?
-    /// The Inbox the review acts on. The view model installs it.
-    @ObservationIgnored
-    var quickCaptureInbox: QuickCaptureInboxModel?
-    /// Where a stopped quick capture's words go, with its History record's
-    /// id when History kept it. The view model points it at the Inbox.
-    @ObservationIgnored
-    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?, _ group: ProjectGroup?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// The start's lookup of the joined session's git root (#1155).
@@ -589,8 +557,7 @@ final class DictationSessionController {
     @ObservationIgnored
     let destinationKeyHandler = DestinationKeyHandler()
     /// The running overlay's destinations; nil outside an Overlay Buffer
-    /// dictation. `sessionIsQuickCapture` follows its pick: the Inbox is a
-    /// quick capture.
+    /// dictation.
     @ObservationIgnored
     var destinations: SessionDestinations?
     /// Brings a picked pane forward, or the focused app back.
@@ -882,39 +849,13 @@ final class DictationSessionController {
         }
     }
 
-    /// Stops the running session and starts the same kind again: a quick
-    /// capture restarts as a capture, never as a dictation into the app.
+    /// Stops the running session and starts a new one on the new input.
     private func restartOnNewInput(reason: String) {
-        let quickCapture = sessionIsQuickCapture
-        let draftReview = sessionDraftReview
         stopDictation(reason: reason, finalizeRemainingAudio: false)
-        startDictation(
-            outputMode: quickCapture || draftReview != nil ? .overlayBuffer : nil,
-            quickCapture: quickCapture,
-            draftReview: draftReview
-        )
+        startDictation()
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
-        startDictation(outputMode: outputMode, quickCapture: false)
-    }
-
-    /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
-    /// the one running. During an Overlay Buffer dictation it picks the
-    /// Inbox, as Tab would (#840); during Live Auto-Paste it does nothing,
-    /// since words already typed cannot go to the Inbox.
-    func toggleQuickCapture() {
-        if isDictating {
-            if pickInboxOrStop() { return }
-            Log.dictation.info("quick capture: pressed during a Live Auto-Paste dictation; ignored")
-            return
-        }
-        startDictation(outputMode: .overlayBuffer, quickCapture: true)
-    }
-
-    func startDictation(
-        outputMode: DictationOutputMode?, quickCapture: Bool, draftReview: QuickCaptureDraftSnapshot? = nil
-    ) {
         guard !isDictating else { return }
         // An answer whose pane is still coming forward would activate its
         // terminal under this dictation and take its words there.
@@ -962,10 +903,6 @@ final class DictationSessionController {
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
-            // Set only where the start goes ahead: a start refused above must
-            // leave nothing for the next one (#732 review).
-            requestedQuickCapture = quickCapture
-            requestedDraftReview = draftReview
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -996,10 +933,6 @@ final class DictationSessionController {
                         self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
-                    // This start's kind, not whatever a press made of the
-                    // flag while the prompt was up.
-                    self.requestedQuickCapture = quickCapture
-                    self.requestedDraftReview = draftReview
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input

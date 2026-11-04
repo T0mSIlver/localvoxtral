@@ -159,7 +159,6 @@ struct OverlayLayoutMetrics: Equatable {
     func contentHeight(
         text: String,
         errorMessage: String?,
-        draftReview: QuickCaptureDraftSnapshot? = nil,
         destinations: OverlayDestinationStrip? = nil
     ) -> CGFloat {
         let displayText = text.trimmed.isEmpty ? "" : text
@@ -169,9 +168,7 @@ struct OverlayLayoutMetrics: Equatable {
             + Self.stackSpacing
             + bodyTextHeight(for: displayText)
 
-        if let draftReview {
-            total += Self.stackSpacing + draftReviewHeight(draftReview)
-        } else if let destinations, destinations.isOpen {
+        if let destinations, destinations.isOpen {
             total += Self.stackSpacing + destinationListHeight(rows: destinations.items.count)
         }
 
@@ -197,26 +194,6 @@ extension OverlayLayoutMetrics {
     func destinationListHeight(rows: Int) -> CGFloat {
         let visible = CGFloat(min(max(rows, 1), Self.maximumVisibleDestinationRows))
         return visible * destinationRowHeight + (visible - 1) * Self.destinationRowSpacing
-    }
-
-    /// Spacing between the draft's title, excerpt and hint.
-    static let draftReviewSpacing: CGFloat = 2
-    static let draftReviewHint = "Say \u{201C}file it\u{201D}, \u{201C}drop it\u{201D}, or a change"
-
-    /// The draft block of a review (#927): title, excerpt and hint, as
-    /// `DictationOverlayView.draftReviewBlock` lays them out.
-    @MainActor
-    func draftReviewHeight(_ draft: QuickCaptureDraftSnapshot) -> CGFloat {
-        var total = OverlayTextMeasurer.height(
-            of: draft.title, fontSize: bodyFontSize, weight: .semibold, width: textMeasurementWidth)
-        let excerpt = draft.bodyExcerpt
-        if !excerpt.isEmpty {
-            total += Self.draftReviewSpacing
-                + OverlayTextMeasurer.height(of: excerpt, fontSize: errorFontSize, width: textMeasurementWidth)
-        }
-        total += Self.draftReviewSpacing
-            + OverlayTextMeasurer.height(of: Self.draftReviewHint, fontSize: badgeFontSize, width: textMeasurementWidth)
-        return total
     }
 }
 

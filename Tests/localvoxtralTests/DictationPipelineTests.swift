@@ -351,32 +351,6 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.handleNetworkChange(connected: false)
     }
 
-    /// #1317, #1423: the start cancels a voice memo streaming through the
-    /// engine, so the stop keeps its usual rules: a final that never comes is
-    /// given up on once the stream has been idle, long before the 7 s limit.
-    func testADictationStartedDuringAVoiceMemoCancelsItAndStopsOnTheIdleRule() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        var yields = 0
-        pipeline.viewModel.session.yieldVoiceMemoEngine = { yields += 1 }
-
-        await startAndSpeak(pipeline)
-        XCTAssertEqual(yields, 1)
-
-        pipeline.viewModel.stopDictation(reason: "test")
-        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
-        // The stop's two polls: the finalization and its watchdog.
-        await pipeline.clock.waitForSleepers(2)
-        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
-
-        pipeline.clock.advance(by: TimingConstants.finalizationMinimumOpen + TimingConstants.finalizationPollInterval)
-        await pipeline.server.awaitClose()
-
-        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "closed on the idle rule")
-        XCTAssertEqual(yields, 1, "only the start yields")
-        // This backend has sent no final: the idle rule is its normal end (#1659).
-        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.ready)
-    }
-
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "
@@ -1017,51 +991,6 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
     }
 
-    /// With History off, a dictation whose polish a quick capture interrupts
-    /// goes on the clipboard: Copy last dictation alone would lose it to the
-    /// capture (#1871).
-    func testWithHistoryOffAPolishTheQuickCaptureKeyInterruptsGoesOnTheClipboard() async throws {
-        let polish = FakePolishingService { "<\($0.inputText)>" }
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
-        pipeline.viewModel.settings.dictationHistoryRetention = .off
-        pipeline.viewModel.settings.autoCopyEnabled = false
-        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
-        let copied = pipeline.viewModel.recordPasteboardWrites()
-        var warnings = 0
-        pipeline.viewModel.session.warningSound = { warnings += 1 }
-        TerminalTargetDetector.debugSecureEventInputOverride = { false }
-        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
-        await polish.holdNextRequest()
-
-        await startAndSpeak(pipeline)
-        pipeline.viewModel.stopDictation(reason: "test")
-        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
-        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        let polishing = await waitForPolishRequests(polish, 1)
-        XCTAssertTrue(polishing, "the polish never started")
-
-        pipeline.server.forgetFrames()
-        await startAndSpeak(pipeline) { $0.session.toggleQuickCapture() }
-        XCTAssertEqual(copied.values, [Self.phrase], "the interrupted dictation is on the clipboard")
-        XCTAssertEqual(warnings, 1, "the capture's start replaces the notice, so a sound says it (#1887)")
-        await polish.releaseHeldRequest()
-
-        pipeline.viewModel.session.toggleQuickCapture()
-        XCTAssertFalse(pipeline.viewModel.isDictating)
-        await pipeline.server.awaitFrame("the capture's final commit") { $0.isFinalCommit }
-        pipeline.server.send(["type": "transcription.done", "text": "a note for later"])
-        let filed = await pipeline.records.waitForCount(2)
-        XCTAssertTrue(filed, "the capture was never filed")
-
-        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded).first, false)
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reached the focused app")
-        XCTAssertEqual(copied.values, [Self.phrase], "the capture leaves the clipboard alone")
-        XCTAssertEqual(warnings, 1, "the capture's own stop copies nothing")
-        XCTAssertEqual(
-            pipeline.viewModel.session.lastDictation?.textToCopy, "a note for later",
-            "Copy last dictation still copies the newest dictation")
-    }
-
     /// Quit while the stopped dictation waits on its polish: it reaches the
     /// History write queue, with its audio, before the quit drains that
     /// queue, and nothing is inserted (#1284).
@@ -1339,31 +1268,6 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"])
     }
 
-    /// The same quit during a quick capture files the words so far as the
-    /// stop would: in History as a capture, then in the Inbox (#1296).
-    func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {
-        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
-            captured.all.append((text, pipeline.records.all.count))
-        }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        await sendSettledFinal(pipeline, Self.settledPiece)
-        pipeline.viewModel.stopDictation(reason: "test")
-        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
-
-        pipeline.viewModel.saveStoppedDictationForQuit()
-
-        XCTAssertEqual(captured.all.map { $0.text.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece])
-        XCTAssertEqual(captured.all.first?.recordsWritten, 1, "saved in History before the Inbox gets it")
-        let record = try XCTUnwrap(pipeline.records.all.first)
-        XCTAssertEqual(record.outputMode, DictationSessionRecord.quickCaptureOutputMode)
-        XCTAssertEqual(record.quickCaptureDestination, "Inbox")
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
-        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
-    }
-
     /// With Polish while you speak off, nothing is polished while the user
     /// speaks: the stop sends the whole text in one request, as before #709.
     func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
@@ -1578,164 +1482,7 @@ final class DictationPipelineTests: XCTestCase {
         )
     }
 
-    /// A quick capture is never polished, so no piece of it is sent to the
-    /// polisher while the user speaks (#709).
-    func testAQuickCaptureSendsNoPieceToThePolisher() async throws {
-        let polish = FakePolishingService { "<\($0.inputText)>" }
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
-            captured.all.append((text, pipeline.records.all.count))
-        }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
-        await sendSettledFinal(pipeline, Self.settledPiece)
-        await stopAndFinalize(
-            pipeline, finalText: Self.tail, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
-        )
-
-        let requests = await polish.requests
-        XCTAssertEqual(requests.count, 0)
-        XCTAssertEqual(captured.all.count, 1)
-    }
-
-    /// Another running copy turned History on after this one launched with
-    /// it off: the capture is saved, so the Inbox gets its History id, or
-    /// polishing and routing never update the entry (#1605 review).
-    func testAQuickCaptureSavedAfterAnotherCopyTurnedHistoryOnGetsItsHistoryID() async throws {
-        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
-        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
-        pipeline.viewModel.settings.dictationHistoryRetention = .off
-        makeSettings(defaults: pipeline.viewModel.settings.defaults).dictationHistoryRetention = .forever
-        let ids = QuickCaptureHistoryIDs()
-        pipeline.viewModel.session.onQuickCapture = { _, id, _ in ids.all.append(id) }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-
-        let record = try XCTUnwrap(pipeline.records.all.first, "the capture is saved")
-        XCTAssertEqual(ids.all, [record.id])
-    }
-
-    /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
-    /// but its stop commits nothing to the focused app. The History record
-    /// is written first, then the words go to the Inbox.
-    func testAQuickCaptureGoesToTheInboxNeverIntoTheFocusedApp() async throws {
-        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
-            captured.all.append((text, pipeline.records.all.count))
-        }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        XCTAssertEqual(pipeline.overlay.startSessionAnchors.count, 1, "a capture opens the overlay whatever the menu bar mode")
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
-        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
-        XCTAssertEqual(captured.all.first?.recordsWritten, 1, "saved in History before the Inbox gets it")
-        let record = try XCTUnwrap(pipeline.records.all.first)
-        XCTAssertEqual(record.outputMode, DictationSessionRecord.quickCaptureOutputMode)
-        XCTAssertEqual(record.quickCaptureDestination, "Inbox")
-        XCTAssertNil(record.polishedText)
-        XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
-    }
-
-    /// A quick capture said while joined to a Work project goes to the
-    /// Inbox with that group, so it is polished and routed among Work
-    /// projects only (#1005).
-    func testAQuickCaptureCarriesTheJoinedProjectsGroupToTheInbox() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        let store = LearnedTermStore(fileURL: nil, now: { Date(timeIntervalSince1970: 0) })
-        store.recordCorrection("Kubrix", project: .init(key: "/nonexistent-1005/acme", name: "acme"))
-        store.setGroup(.work, keys: ["/nonexistent-1005/acme"])
-        store.waitForPendingWrites()
-        pipeline.viewModel.learnedTermStore = store
-        let groups = QuickCaptureGroups()
-        pipeline.viewModel.session.onQuickCapture = { _, _, group in groups.all.append(group) }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
-        var snapshot = ClaudeSessionSnapshot(
-            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
-        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: "/nonexistent-1005/acme/Sources", origin: origin)
-        pipeline.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
-            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
-            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-
-        XCTAssertEqual(groups.all, [.work])
-    }
-
-    /// A quick capture joined to a session in a worktree outside its Work
-    /// checkout reaches the Inbox in Work, through the git root the start
-    /// looked up (#1155).
-    func testAQuickCaptureInAWorktreeOutsideItsCheckoutCarriesTheCheckoutsGroup() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        let store = LearnedTermStore(fileURL: nil, now: { Date(timeIntervalSince1970: 0) })
-        store.recordCorrection("Kubrix", project: .init(key: "/nonexistent-1155/acme", name: "acme"))
-        store.setGroup(.work, keys: ["/nonexistent-1155/acme"])
-        store.waitForPendingWrites()
-        pipeline.viewModel.learnedTermStore = store
-        let grounding = FakeRepoVocabularyGrounding(outcome: nil)
-        grounding.secondPassRoot = .root("/nonexistent-1155/acme-feature", mainCheckout: "/nonexistent-1155/acme")
-        pipeline.viewModel.dependencies.repoVocabularyGrounding = grounding
-        let groups = QuickCaptureGroups()
-        pipeline.viewModel.session.onQuickCapture = { _, _, group in groups.all.append(group) }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
-        var snapshot = ClaudeSessionSnapshot(
-            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
-        snapshot.workspace = ClaudeWorkspaceReference.make(
-            rawCwd: "/nonexistent-1155/acme-feature/Sources", origin: origin)
-        pipeline.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
-            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
-            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
-        await pipeline.viewModel.session.lookUpJoinedRepositoryRoot()
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-
-        XCTAssertEqual(grounding.rootLookups, ["/nonexistent-1155/acme-feature/Sources"])
-        XCTAssertEqual(groups.all, [.work])
-    }
-
     // MARK: - Destinations (#840)
-
-    /// Tab moves an ordinary dictation to the Inbox: it stops as a quick
-    /// capture, saved in History first, and nothing reaches the focused app.
-    func testTabToTheInboxSavesTheDictationThereAndNothingReachesTheFocusedApp() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
-            captured.all.append((text, pipeline.records.all.count))
-        }
-
-        await startAndSpeak(pipeline)
-        XCTAssertEqual(
-            pipeline.overlay.shownDestinations.last??.items.map(\.kind),
-            [.focusedApp(joined: nil), .inbox],
-            "with nobody waiting the overlay offers the focused app and the Inbox"
-        )
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
-
-        pipeline.viewModel.session.moveDestination(forward: true)
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
-        XCTAssertTrue(pipeline.viewModel.session.sessionIsQuickCapture)
-
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
-        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
-        XCTAssertEqual(captured.all.first?.recordsWritten, 1, "saved in History before the Inbox gets it")
-        XCTAssertEqual(pipeline.records.all.first?.outputMode, DictationSessionRecord.quickCaptureOutputMode)
-        XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
-    }
 
     /// The overlay lists every destination while the user moves between
     /// them (#1015): Tab opens the list, each move keeps it open for
@@ -1743,7 +1490,6 @@ final class DictationPipelineTests: XCTestCase {
     /// Closed, a click on the picked destination opens it without a move.
     func testTabOpensTheDestinationListUntilTheMovesStop() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
         await startAndSpeak(pipeline)
         let session = pipeline.viewModel.session
         func shown() -> OverlayDestinationStrip? { pipeline.overlay.shownDestinations.last ?? nil }
@@ -1753,7 +1499,7 @@ final class DictationPipelineTests: XCTestCase {
         let armed = pipeline.clock.pendingSleepers
         session.moveDestination(forward: true)
         XCTAssertEqual(shown()?.isOpen, true)
-        XCTAssertEqual(shown()?.selectedKind, .inbox)
+        XCTAssertEqual(shown()?.selectedKind, .focusedApp(joined: nil))
         await pipeline.clock.waitForSleepers(armed + 1)
         pipeline.clock.advance(by: openFor - 0.5)
 
@@ -1774,44 +1520,6 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertNil(session.destinationListCloseTask, "the stop ends the wait")
     }
 
-    /// A quick capture opens on the Inbox; Tab from there wraps to the
-    /// focused app, and the stop commits there as any dictation does.
-    func testTabFromTheInboxBackToTheFocusedAppCommitsThere() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
-        pipeline.viewModel.session.moveDestination(forward: true)
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
-
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline)
-
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
-        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
-        XCTAssertTrue(captured.all.isEmpty)
-    }
-
-    /// The quick capture shortcut during a dictation picks the Inbox, and
-    /// pressed again on the Inbox it stops.
-    func testTheQuickCaptureKeyDuringADictationPicksTheInboxThenStops() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
-        await startAndSpeak(pipeline)
-
-        pipeline.viewModel.session.toggleQuickCapture()
-        XCTAssertTrue(pipeline.viewModel.isDictating)
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
-
-        pipeline.viewModel.session.toggleQuickCapture()
-        XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the Inbox, it stops")
-        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        _ = await pipeline.records.waitForCount(1)
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
-    }
-
     /// Tab to a session that needs you brings its pane forward, and only
     /// once the terminal confirmed it does the overlay switch. The stop
     /// commits into that pane like any dictation, and answering takes the
@@ -1827,17 +1535,15 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         let strip = try XCTUnwrap(pipeline.overlay.shownDestinations.last ?? nil)
-        XCTAssertEqual(strip.items.map(\.label).dropFirst(), ["Inbox", "payments"])
+        XCTAssertEqual(strip.items.map(\.label).dropFirst(), ["payments"])
 
-        pipeline.viewModel.session.moveDestination(forward: true)
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox, "the first Tab reaches the Inbox")
         pipeline.viewModel.session.moveDestination(forward: true)
         await awaitEnd(pipeline.viewModel.session.destinationFocusTask)
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
         XCTAssertTrue(waiting.tracker.queue.isEmpty, "answering takes it out of the queue")
         XCTAssertEqual(
-            pipeline.overlay.shownDestinations.last??.items.map(\.label).dropFirst(), ["Inbox", "payments"],
+            pipeline.overlay.shownDestinations.last??.items.map(\.label).dropFirst(), ["payments"],
             "the picked session keeps its pill after it left the queue"
         )
 
@@ -3250,43 +2956,6 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
-    /// A pick still bringing a pane forward when its dictation is cancelled
-    /// belongs to that dictation: once the pane comes forward during the
-    /// next one, a quick capture, it picks nothing there, and the capture's
-    /// words go only to the Inbox.
-    func testOldQueuedPickCannotRedirectANewInboxCapture() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
-        waiting.focuser.holdsFocus = true
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
-        // Were the pane picked, the words would go into it.
-        let terminalPID: pid_t = 5151
-        pipeline.overlay.commitTargetAppPID = terminalPID
-        pipeline.viewModel.dependencies.bundleIdentifier = { _ in TerminalScreenAllowlist.ghosttyBundleID }
-
-        await startAndSpeak(pipeline)
-        pipeline.viewModel.session.moveDestination(forward: false)
-        let sessionPick = try XCTUnwrap(pipeline.viewModel.session.destinationFocusTask)
-        await waiting.focuser.waitUntilHeld(1)
-        XCTAssertTrue(pipeline.viewModel.session.pickInboxOrStop(), "the Inbox pick queues behind the session's")
-        pipeline.viewModel.cancelDictation()
-
-        pipeline.server.forgetFrames()
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
-        waiting.focuser.releaseHeldFocuses()
-        await awaitEnd(sessionPick)
-
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
-        XCTAssertTrue(pipeline.viewModel.session.sessionIsQuickCapture)
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the pane")
-        XCTAssertEqual(waiting.focuser.readBackSessionIDs, [])
-        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
-    }
-
     /// An unconfirmed pane may still have come forward. Staying on the
     /// focused app, the words go in only if the focused app is still the
     /// commit target; here the pane's terminal is, so they stay in History.
@@ -3315,11 +2984,14 @@ final class DictationPipelineTests: XCTestCase {
     }
 
     /// ← and → move as ⇧Tab and Tab do (#880), each through the key
-    /// handler the overlay registers: forward to the Inbox at once, forward
-    /// again to the waiting session once its pane is confirmed, then back to
-    /// the Inbox and on to the focused app, brought back over the pane.
+    /// handler the overlay registers: forward to the waiting session once its
+    /// pane is confirmed, on to the focused app, brought back over the pane.
+    /// The session left the queue when it was answered, so the keys back
+    /// stay on the focused app.
     func testTheArrowsMoveBetweenDestinationsAsTabDoes() async throws {
-        let expected: [OverlayDestinationStrip.Kind?] = [.inbox, .session, .inbox, .focusedApp(joined: nil)]
+        let expected: [OverlayDestinationStrip.Kind?] = [
+            .session, .focusedApp(joined: nil), .focusedApp(joined: nil), .focusedApp(joined: nil),
+        ]
         for (back, forward) in [(DestinationKeyHandler.Key.shiftTab, DestinationKeyHandler.Key.tab), (.leftArrow, .rightArrow)] {
             let pipeline = try await makePipeline(outputMode: .overlayBuffer)
             let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
@@ -3414,28 +3086,6 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
-    }
-
-    /// A click on the Inbox picks it at once: the stop saves a quick capture
-    /// and nothing reaches the focused app. A click on a session that is not
-    /// listed does nothing.
-    func testAClickOnTheInboxSavesTheDictationThere() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
-        await startAndSpeak(pipeline)
-
-        pipeline.viewModel.session.clickDestination(.session(id: "gone"))
-        XCTAssertNil(pipeline.viewModel.session.destinationFocusTask)
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
-
-        pipeline.viewModel.session.clickDestination(.inbox)
-        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
-
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
-        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
     }
 
     /// The answer shortcut during a dictation picks the oldest session that
@@ -4986,71 +4636,6 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(returns, [Self.desktopPID])
     }
 
-    /// A quick capture stops the same way and goes to the Inbox without the
-    /// phrase; the Inbox never presses Return.
-    func testAQuickCaptureStopsOnItsSendPhraseAndSavesWithoutIt() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        var returns: [pid_t] = []
-        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
-            captured.all.append((text, pipeline.records.all.count))
-        }
-
-        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
-        await sendDelta(pipeline, "buy milk, send it.")
-        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await waitForSpokenStopTimer(pipeline)
-        pipeline.clock.advance(by: 3)
-        await awaitEnd(armed)
-        await finishStoppedSession(
-            pipeline, finalText: "buy milk, send it.",
-            finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
-        )
-
-        XCTAssertEqual(captured.all.map(\.text), ["buy milk"])
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
-        XCTAssertEqual(returns, [])
-    }
-
-    /// The send phrase was said into an app where it sends nothing, so the
-    /// voice stop stayed off. Tab to the Inbox (#840) re-decides on the
-    /// words already said: the capture stops on its phrase, saves without
-    /// it, and presses no Return.
-    func testTabToTheInboxAfterTheSendPhraseStopsAndSavesWithoutReturn() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
-        var returns: [pid_t] = []
-        _ = recordTypedText(pipeline, returnKeyPoster: { pid in
-            returns.append(pid)
-            return true
-        })
-        let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
-            captured.all.append((text, pipeline.records.all.count))
-        }
-
-        await startAndSpeak(pipeline)
-        await sendDelta(pipeline, "buy milk, send it.")
-        XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "no app here where the phrase would send")
-
-        pipeline.viewModel.session.moveDestination(forward: true)
-        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "the Inbox stops on its phrase")
-        // Tab also opened the destination list, whose close timer sleeps on
-        // the same clock (#1378).
-        await waitForSpokenStopTimer(pipeline)
-        pipeline.clock.advance(by: 3)
-        await awaitEnd(armed)
-        await finishStoppedSession(
-            pipeline, finalText: "buy milk, send it.",
-            finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
-        )
-
-        XCTAssertEqual(captured.all.map(\.text), ["buy milk"])
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
-        XCTAssertEqual(returns, [])
-    }
-
     private static let desktopPID: pid_t = 4343
 
     /// Claude Desktop is the commit target, where Return submits, with
@@ -5248,131 +4833,6 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
 
         await stopAndFinalize(pipeline)
-    }
-
-    // MARK: - Reviewing a ready draft (#927)
-
-    /// A finished draft waits for a break: nothing shows while the user is
-    /// mid-task, and the stop of the next dictation lights the mark and the
-    /// popover line.
-    func testAStoppedDictationIsTheBreakThatShowsAReadyDraft() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        _ = try await installInboxWithDraft(pipeline)
-        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "held until a break")
-        XCTAssertEqual(pipeline.viewModel.menuBarIndicatorState, .idle)
-
-        await startAndSpeak(pipeline)
-        sendPartials(pipeline)
-        await stopAndFinalize(pipeline)
-
-        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
-        XCTAssertEqual(pipeline.viewModel.menuBarIndicatorState, .agentNeedsYou)
-    }
-
-    /// With nobody waiting, the answer key opens the draft: the overlay shows
-    /// that one draft and no other destination. "file it" files it as shown
-    /// and nothing reaches the focused app.
-    func testTheAnswerKeyOpensTheDraftAndFileItFilesIt() async throws {
-        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
-        let inbox = try await installInboxWithDraft(pipeline, shown: true)
-        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
-
-        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
-        XCTAssertEqual(pipeline.overlay.startSessionAnchors.count, 1, "a review opens the overlay whatever the menu bar mode")
-        XCTAssertEqual(pipeline.overlay.shownDraftReviews.last??.title, "Dark mode")
-        XCTAssertTrue(pipeline.overlay.shownDestinations.isEmpty, "a review offers no other destination")
-
-        await sendDelta(pipeline, "File it.")
-        await stopAndFinalize(pipeline, finalText: "File it.", finalStatus: QuickCaptureReviewStatus.filing)
-        await awaitEnd(pipeline.viewModel.session.draftReviewTask)
-
-        XCTAssertEqual(inbox.github.created.withLock { $0.map(\.[1]) }, ["Dark mode"])
-        XCTAssertEqual(inbox.model.items.first?.state, .filed)
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
-        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["File it."], "the words are in History")
-        XCTAssertNil(pipeline.viewModel.session.sessionDraftReview, "the next dictation is an ordinary one")
-        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "filed, it left the cue")
-    }
-
-    /// A review that files, drops and changes nothing keeps its draft in the
-    /// cue, as does a start the app refused: the next press opens it again.
-    func testAReviewThatSaysNothingKeepsTheDraftInTheCue() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        _ = try await installInboxWithDraft(pipeline, shown: true)
-
-        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
-        // Only the send phrase: nothing left to act on.
-        await stopAndFinalize(pipeline, finalText: "send it", finalStatus: QuickCaptureReviewStatus.kept)
-
-        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
-    }
-
-    /// "drop it" alone, then three seconds of silence, stops the review by
-    /// voice and discards the draft.
-    func testDropItAndSilenceStopTheReviewAndDiscardTheDraft() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
-        let inbox = try await installInboxWithDraft(pipeline, shown: true)
-
-        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
-        await sendDelta(pipeline, "Drop it.")
-        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the whole phrase")
-        await waitForSpokenStopTimer(pipeline)
-        pipeline.clock.advance(by: 3)
-        await awaitEnd(armed)
-        XCTAssertFalse(pipeline.viewModel.isDictating)
-        await finishStoppedSession(pipeline, finalText: "Drop it.", finalStatus: QuickCaptureReviewStatus.dropped)
-
-        XCTAssertTrue(inbox.model.items.isEmpty)
-        XCTAssertTrue(inbox.github.created.withLock { $0.isEmpty })
-        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
-    }
-
-    /// Anything else is a change: the drafter reruns with the dictated
-    /// words, the draft and the change, and a trailing send phrase is not
-    /// part of it. The redraft is a new draft, held for the next break.
-    func testAChangeRedraftsTheDraft() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
-        let inbox = try await installInboxWithDraft(pipeline, shown: true)
-        inbox.runner.nextTitles.withLock { $0 = ["Popover dark mode"] }
-
-        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
-        await sendDelta(pipeline, "Make it only the popover part, send it.")
-        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the send phrase")
-        await waitForSpokenStopTimer(pipeline)
-        pipeline.clock.advance(by: 3)
-        await awaitEnd(armed)
-        await finishStoppedSession(
-            pipeline, finalText: "Make it only the popover part, send it.", finalStatus: QuickCaptureReviewStatus.redrafting
-        )
-        await awaitEnd(pipeline.viewModel.session.draftReviewTask)
-
-        XCTAssertEqual(inbox.model.items.first?.title, "Popover dark mode")
-        XCTAssertEqual(inbox.model.items.first?.changes, ["Make it only the popover part"])
-        let prompt = inbox.runner.arguments.withLock { $0.last?.joined(separator: " ") ?? "" }
-        XCTAssertTrue(prompt.contains("Make it only the popover part"))
-        XCTAssertFalse(prompt.contains("send it"))
-        XCTAssertTrue(inbox.github.created.withLock { $0.isEmpty })
-        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "the redraft waits for the next break")
-    }
-
-    /// An agent that needs you comes before a draft.
-    func testTheAnswerKeyGoesToAWaitingAgentBeforeADraft() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        // An unconfirmed focus starts no dictation, so the press is all
-        // there is to observe.
-        let waiting = installWaitingSessions(
-            pipeline, ["pay": "/r/payments"], outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
-        )
-        _ = try await installInboxWithDraft(pipeline, shown: true, attention: pipeline.viewModel.agentAttention)
-        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "payments needs you (+1)")
-
-        pipeline.viewModel.session.answerAgentThatNeedsYou()
-        await awaitEnd(pipeline.viewModel.session.answerAgentTask)
-        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
-        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach", "the draft waits its turn")
-        XCTAssertTrue(pipeline.overlay.shownDraftReviews.isEmpty)
     }
 
     // MARK: - A take past the server's context limit (#1139)
@@ -6023,33 +5483,6 @@ final class DictationPipelineTests: XCTestCase {
         return (tracker, focuser)
     }
 
-    /// An Inbox with one draft for "reach", ready and held for a break
-    /// (shown, when `shown`), with the cue on and nobody waiting unless
-    /// `attention` is already installed.
-    private func installInboxWithDraft(
-        _ pipeline: Pipeline, shown: Bool = false, attention: AgentAttentionModel? = nil
-    ) async throws -> (model: QuickCaptureInboxModel, github: FakeQuickCaptureGitHub, runner: FakeQuickCaptureDraftRunner) {
-        let settings = pipeline.viewModel.settings
-        settings.agentAttentionEnabled = true
-        if attention == nil {
-            let tracker = AgentAttentionTracker(
-                isEnabled: { settings.agentAttentionEnabled },
-                isWatching: { _ in false },
-                liveSessionIDs: { [] },
-                now: { Date(timeIntervalSince1970: 0) }
-            )
-            pipeline.viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: nil)
-        }
-        let github = FakeQuickCaptureGitHub()
-        let runner = FakeQuickCaptureDraftRunner()
-        let model = QuickCaptureFixture.model(fileURL: nil, answer: ["reach": 0.9], github: github, runner: runner)
-        pipeline.viewModel.installDraftCue(for: model)
-        await awaitEnd(model.capture(text: "Add a dark mode", historyRecordID: nil))
-        XCTAssertEqual(model.items.first?.isReadyDraft, true)
-        if shown { pipeline.viewModel.agentAttention?.reachedBreak() }
-        return (model, github, runner)
-    }
-
     /// 100 ms of 16 kHz mono PCM16, different for each seed, so a frame on
     /// the wire names the chunk it carried.
     private static func speech(seed: UInt8) -> Data {
@@ -6244,19 +5677,6 @@ private actor DesktopReadCounter {
         count += 1
         return count
     }
-}
-
-/// What the quick capture sink received, with the records written by then.
-private final class QuickCaptures {
-    var all: [(text: String, recordsWritten: Int)] = []
-}
-
-private final class QuickCaptureHistoryIDs {
-    var all: [UUID?] = []
-}
-
-private final class QuickCaptureGroups {
-    var all: [ProjectGroup?] = []
 }
 
 /// The socket openings and closes the session has handled, counted once

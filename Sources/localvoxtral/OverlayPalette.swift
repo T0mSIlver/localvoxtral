@@ -8,7 +8,6 @@ import SwiftUI
 ///   panel and the menu bar say "recording" the same way.
 /// - `session`: an agent session that needs you, as the menu bar's needs-you
 ///   marks draw it.
-/// - `inbox`: a quick capture, saved rather than typed.
 /// - `polish`: what the LLM did, the band while it polishes and the words
 ///   it changed. Its own hue by default: the system accent is the user's
 ///   selection color, and accent marks on words read as a text selection.
@@ -16,7 +15,6 @@ import SwiftUI
 enum OverlayPalette {
     static let live = Color(nsColor: MenuBarStatusIcon.accentColor)
     static let session = Color.orange
-    static let inbox = Color.purple
     static let focusedApp = Color.secondary
     /// Teal, darker on a light panel and lighter on a dark one, so the
     /// changed words keep their contrast on both.

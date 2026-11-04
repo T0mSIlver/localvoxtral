@@ -158,17 +158,6 @@ final class SettingsStore {
         static let agentAttentionEnabled = "settings.agent_attention_enabled"
         static let agentAttentionMark = "settings.agent_attention_mark"
         static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
-        static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
-        static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
-        static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
-        static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
-        /// Retired with #918: its "on" meant Jev first, and the polishing
-        /// model is now everyone's router until they pick Jev.
-        static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
-        static let quickCaptureRouter = "settings.quick_capture_router"
-        static let voiceMemosEnabled = "settings.voice_memos_enabled"
-        static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
-        static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
 
     let defaults: UserDefaults
@@ -303,53 +292,6 @@ final class SettingsStore {
     /// The Anthropic API key, for Anthropic API polishing. In the Keychain.
     var anthropicAPIKey: String {
         didSet { persistSecret(anthropicAPIKey, for: .anthropicAPIKey) }
-    }
-
-    /// Jev's key for quick capture routing (#725), in the Keychain.
-    var jevAPIKey: String {
-        didSet { persistSecret(jevAPIKey, for: .jevAPIKey) }
-    }
-
-    /// Which model routes quick captures (#918): the polishing model unless
-    /// the user picks Jev, a hosted service like every other off by default.
-    enum QuickCaptureRouterChoice: String, CaseIterable, Sendable {
-        case polishingModel = "polishing_model"
-        case jev
-    }
-
-    var quickCaptureRouter: QuickCaptureRouterChoice {
-        didSet {
-            defaults.set(quickCaptureRouter.rawValue, forKey: Keys.quickCaptureRouter)
-            if quickCaptureRouter == .jev { ensureSecretsLoaded([.jevAPIKey]) }
-        }
-    }
-
-    /// "Transcribe voice memos stored in iCloud Drive" (#925): off until the
-    /// user turns it on, since the audio sits in Apple's cloud.
-    var voiceMemosEnabled: Bool {
-        didSet { defaults.set(voiceMemosEnabled, forKey: Keys.voiceMemosEnabled) }
-    }
-
-    /// Jev routes, so its key is read.
-    var quickCaptureJevEnabled: Bool { quickCaptureRouter == .jev }
-
-    /// The line the user wrote about each project, by project key, which
-    /// the quick capture router reads with the README summary (#811).
-    var quickCaptureProjectLines: [String: String] {
-        didSet { defaults.set(quickCaptureProjectLines, forKey: Keys.quickCaptureProjectLines) }
-    }
-
-    /// Stores `line` for `projectKey`, cut to what the router reads; a blank
-    /// line removes it. Kept untrimmed, since it is stored as the user types
-    /// (a trailing space is the next word's); the router trims it. Applied to
-    /// the dictionary saved now, which another running copy may have changed
-    /// since this one read it (#1773).
-    func setQuickCaptureProjectLine(_ line: String, for projectKey: String) {
-        let cut = String(line.prefix(QuickCaptureProjects.maxUserLineCharacters))
-        var lines = defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String]
-            ?? quickCaptureProjectLines
-        lines[projectKey] = cut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cut
-        quickCaptureProjectLines = lines
     }
 
     /// Hosted transcription model. Empty means
@@ -1057,20 +999,6 @@ final class SettingsStore {
         }
     }
 
-    var quickCaptureShortcutEnabled: Bool {
-        didSet { defaults.set(quickCaptureShortcutEnabled, forKey: Keys.quickCaptureShortcutEnabled) }
-    }
-
-    var quickCaptureShortcutKeyCode: UInt32 {
-        didSet { defaults.set(quickCaptureShortcutKeyCode, forKey: Keys.quickCaptureShortcutKeyCode) }
-    }
-
-    var quickCaptureShortcutCarbonModifierFlags: UInt32 {
-        didSet {
-            defaults.set(quickCaptureShortcutCarbonModifierFlags, forKey: Keys.quickCaptureShortcutModifiers)
-        }
-    }
-
     /// A modifier-only chord in an action slot (#831), in
     /// `ModifierChord.storageValue` form; empty when the slot holds a key.
     var copyLastDictationShortcutChord: String {
@@ -1079,10 +1007,6 @@ final class SettingsStore {
 
     var answerAgentShortcutChord: String {
         didSet { defaults.set(answerAgentShortcutChord, forKey: Keys.answerAgentShortcutChord) }
-    }
-
-    var quickCaptureShortcutChord: String {
-        didSet { defaults.set(quickCaptureShortcutChord, forKey: Keys.quickCaptureShortcutChord) }
     }
 
     var livePasteShortcutKeyCode: UInt32 {
@@ -1209,14 +1133,6 @@ final class SettingsStore {
             secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
         anthropicAPIKey = Self.resolveSecret(
             secrets, .anthropicAPIKey, envKey: "ANTHROPIC_API_KEY", environment: environment)
-        jevAPIKey = Self.resolveSecret(
-            secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
-        quickCaptureRouter = defaults.string(forKey: Keys.quickCaptureRouter)
-            .flatMap(QuickCaptureRouterChoice.init(rawValue:)) ?? .polishingModel
-        voiceMemosEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.voiceMemosEnabled, fallback: false)
-        quickCaptureProjectLines =
-            defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults
         // live in one place (the client / MistralPolishDefaults) and a user who
         // clears the field gets them back, rather than a blank model name.
@@ -1503,15 +1419,8 @@ final class SettingsStore {
             .flatMap(AgentAttentionMark.init(rawValue:)) ?? .dot
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
-        quickCaptureShortcutKeyCode =
-            (defaults.object(forKey: Keys.quickCaptureShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
-        quickCaptureShortcutCarbonModifierFlags =
-            (defaults.object(forKey: Keys.quickCaptureShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
-        quickCaptureShortcutEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.quickCaptureShortcutEnabled, fallback: false)
         copyLastDictationShortcutChord = defaults.string(forKey: Keys.copyLastDictationShortcutChord) ?? ""
         answerAgentShortcutChord = defaults.string(forKey: Keys.answerAgentShortcutChord) ?? ""
-        quickCaptureShortcutChord = defaults.string(forKey: Keys.quickCaptureShortcutChord) ?? ""
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)

@@ -767,8 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let agentCLI = AgentCLIService(
             source: AgentCLIAppDataSource(
                 viewModel: viewModel,
-                sessions: claudeSessionRegistry,
-                openInbox: { [weak self] in self?.openWindow(on: .inbox) }
+                sessions: claudeSessionRegistry
             )
         )
         let broker = ClaudeContextBroker(
@@ -1126,21 +1125,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
-        // Quick capture's README summaries and drafts for remote projects
-        // (#745), on the same channel.
-        let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
-            viewModel.learnedTermStore.map {
-                RemoteQuickCaptureRequests(
-                    store: $0, hosts: hosts, registry: claudeSessionRegistry,
-                    usageRecorder: viewModel.engines.usageLedger
-                )
-            }
+        // The projects the hooks name (#819, #1027), and the Projects pane's
+        // hosts and live sessions.
+        let projectReports: RemoteProjectReports? = viewModel.learnedTermStore.map {
+            RemoteProjectReports(store: $0)
         }
-        viewModel.quickCapture?.attachRemote(quickCapture)
-        viewModel.quickCapture?.enrolledHosts = {
+        viewModel.projects?.enrolledHosts = {
             registry?.activeHostsIfReadable().map { (id: $0.id, name: $0.label) } ?? []
         }
-        viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
+        viewModel.projects?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -1165,7 +1158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     store?.record(hostID: hostID, names: names)
                 },
                 projectTerms: projectTerms,
-                quickCapture: quickCapture,
+                projectReports: projectReports,
                 doctor: RemoteDoctorRoute { @MainActor [weak viewModel, claudeSessionRegistry] hostID in
                     guard let viewModel else { return [] }
                     return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
@@ -1173,16 +1166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 // Remote sessions' mods poll through the same hub the local
                 // broker hands attaches to (#1412).
-                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry),
-                inbox: RemoteInboxRoute(
-                    registry: claudeSessionRegistry,
-                    captures: { @MainActor [weak viewModel] in viewModel?.quickCapture?.model.items },
-                    open: { @MainActor [weak viewModel, claudeSessionRegistry] id in
-                        guard let viewModel else { return nil }
-                        return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
-                            .openCapture(id)
-                    }
-                )
+                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry)
             )
         }
         claudeRemoteListenerCoordinator = coordinator

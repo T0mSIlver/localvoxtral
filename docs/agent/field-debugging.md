@@ -183,10 +183,8 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   take with a beat timeline; the `edit` job cuts it into `story.mp4` and one
   clip and frame per beat, captions burned in (`scripts/edit-demo.py`, which
   also runs on the dev box). Each beat checks its outcome (join, banner,
-  pane switch, Inbox draft and filing) and the run fails rather than upload
-  a take with a beat missing. The Inbox beat files a real issue in
-  T0mSIlver/localvoxtral-demo, closed when the take ends, so the Mini's `gh`
-  must stay logged in. GitHub renders inline video only from user-attachments
+  and pane switch) and the run fails rather than upload a take with a beat
+  missing. GitHub renders inline video only from user-attachments
   URLs (no API for those), so the owner drag-drops the mp4 into a PR comment
   and pastes the URL by hand.
 - **Diagnostic records** (`Sources/localvoxtral*/DiagnosticRecords`): the app

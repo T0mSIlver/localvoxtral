@@ -527,7 +527,7 @@ final class RemoteProjectTermsTests: XCTestCase {
             shipped, olderThan: RemoteProjectTermRequests.minimumPluginVersion
         ))
         let vibeVersion = try XCTUnwrap(VibeRemoteHooksFiles(
-            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", captureScript: ""
+            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", repositoryScript: ""
         ).version)
         XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
             vibeVersion, olderThan: RemoteProjectTermRequests.minimumVibeHooksVersion

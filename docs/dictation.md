@@ -1,7 +1,7 @@
 # Dictating
 
 Dictate into any app with one key, send the words to a coding agent
-session or the Inbox, and teach localvoxtral the names you say. Every
+session, and teach localvoxtral the names you say. Every
 setting is listed at the end, under [Settings](#settings).
 
 ## Shortcuts
@@ -47,8 +47,8 @@ Settings.
 
 ### Record a chord of modifier keys
 
-To make **Answer the agent that needs you**, **Quick capture to Inbox** or
-**Copy last dictation** a chord of modifier keys, such as left Shift and
+To make **Answer the agent that needs you** or **Copy last dictation** a
+chord of modifier keys, such as left Shift and
 right Shift together:
 
 1. Click the shortcut's field.
@@ -149,27 +149,18 @@ Press **Tab** during a dictation to send the words somewhere else, and
 
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
-- **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
-  saved there and never typed anywhere.
 - **Each coding agent session that needs you**, oldest first, when
   [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
   is on. Picking one brings its pane forward, and your words go there when
   you stop.
 
 **→** and **←** move the same way. None of these keys reach the app you are
-dictating into while the overlay is open. One Tab therefore always sends the
-dictation to the Inbox, and a second reaches the session that has waited
-longest.
+dictating into while the overlay is open. The first Tab reaches the session
+that has waited longest.
 
 While you move, the overlay lists every destination under its top line. The
 list closes two seconds after your last move. A click on a destination in
 the list picks it, and a click on the name at the top opens the list.
-
-The optional **Quick capture to Inbox** shortcut under **Settings →
-Dictation → Output** starts a dictation with the Inbox already picked.
-Pressed during a dictation, it picks the Inbox the way Tab would. Pressed
-again, it stops. It can be a
-[chord of modifier keys](#record-a-chord-of-modifier-keys).
 
 ## Voice commands
 
@@ -211,8 +202,6 @@ default.
 - Speaking again within the wait keeps the dictation going.
 - The key still stops it at once.
 - A held (push to talk) dictation stops only on release.
-- A quick capture stops the same way and goes to the Inbox without the
-  phrase. It never presses Return.
 - Live Auto-Paste does not wait: it presses Return when you finish the
   phrase.
 
@@ -505,9 +494,8 @@ local Claude Code, Mistral Vibe or opencode session in a new project starts
 that agent once, headless, in the project's repository.
 
 The agent reads a few files and answers with up to 40 names you would say
-about the project, and one sentence on what the project is and has, which
-quick capture's classifier reads
-([Quick capture](coding-agents.md#quick-capture)). The names are the
+about the project, and one sentence on what the project is and has. The app
+keeps the sentence, and nothing reads it. The names are the
 project's and its parts', the products, tools, services and models it uses,
 people, and words of its domain. The app drops any name written like code: a
 type or function name, a file name, a path, a flag or an environment
@@ -571,8 +559,7 @@ login or Mistral key. Details are in
 
 ### One project per repository
 
-Learned terms, the coding agent's proposals and quick capture's project list
-are all kept per project. A project is a git repository, known by the
+Learned terms and the coding agent's proposals are kept per project. A project is a git repository, known by the
 repository its `origin` remote names (`github.com/owner/repository`, or the
 same on another host). Every checkout of it, on this Mac or on an ssh host,
 whatever its folder is called, shares one list of terms and one entry in
@@ -592,9 +579,8 @@ repository, since its `origin` is yours.
   hold keeps the higher count, and a pin stays.
 - **Projects left over from an older plugin** are not merged into their
   repository. Their terms expire 90 days after last use, unless you pinned
-  one, and the list then drops the project. Quick capture no longer offers
-  them as destinations. To remove one sooner, forget its terms under
-  **No project** in **Settings → Projects**.
+  one, and the list then drops the project. To remove one sooner, forget its
+  terms under **No project** in **Settings → Projects**.
 
 ## Lower other audio while dictating
 
@@ -680,7 +666,6 @@ History; the panes sit under the sidebar's Settings header.
   [send phrases](#press-return-with-send-it), the wait before pressing
   Return and the Overlay Buffer send phrase switch, the
   [needs-you cue and its shortcut](agents.md#jump-to-it),
-  the [Quick capture to Inbox shortcut](#where-the-words-go),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and
