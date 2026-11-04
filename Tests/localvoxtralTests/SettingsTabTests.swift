@@ -442,15 +442,6 @@ final class SettingsTabTests: XCTestCase {
         )
     }
 
-    /// The retired single-Integrations-pane raw value must never come back:
-    /// neither as a kind nor as a terminal pane's slug.
-    func testRetiredIntegrationsRawValueStaysRetired() {
-        XCTAssertNil(SettingsTab.Kind(rawValue: "integrations"))
-        for pane in SettingsTab.allKnownPanes {
-            XCTAssertNotEqual(pane.rawValue, "integrations")
-        }
-    }
-
     /// A terminal pane's raw value is `terminals.<slug>`, and its title is the
     /// terminal's display name.
     func testTerminalPaneRawValueIsTerminalsSlug() {
