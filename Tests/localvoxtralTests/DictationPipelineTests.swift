@@ -890,8 +890,18 @@ final class DictationPipelineTests: XCTestCase {
     /// (LVX-95): the window closes when the clock passes it, and the
     /// dictation's record gets its verdict.
     func testTheEditWatchClosesOnTheSessionClockAndPatchesTheRecord() async throws {
+        // Records, and the watch, come with the polish path.
+        StubHTTPProtocol.reply.withLock {
+            $0 = .http(200, #"{"choices":[{"message":{"role":"assistant","content":"\#(Self.phrase)"}}]}"#)
+        }
         let monitor = await MainActor.run { EditSignalTestMonitor() }
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer, editKeyMonitor: { monitor })
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(session: StubHTTPProtocol.session()),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false,
+            editKeyMonitor: { monitor }
+        )
         let viewModel = pipeline.viewModel
         viewModel.settings.dictationHistoryRetention = .forever
         viewModel.settings.diagnosticRecordsEnabled = true
