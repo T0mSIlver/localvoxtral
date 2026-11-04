@@ -102,6 +102,42 @@ final class DictationHistoryBackupsTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    /// Retention is a privacy setting: a snapshot older than a day loses the
+    /// dictations the trim deleted, and one left empty goes. The snapshot
+    /// the trim takes keeps them for a day, to undo a trim gone wrong (#1916).
+    func testRetentionDeletesExpiredDictationsFromTheBackupsAfterADay() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        let url = try XCTUnwrap(store.storeURL)
+        let backups = backups(in: directory)
+        let start = clock.now()
+        await store.save(record("old", startedAt: start)).value
+        clock.advance(86_400 * 2)
+        backups.snapshot(of: url, reason: .delete)  // holds only "old"
+        await store.save(record("recent", startedAt: clock.now())).value
+        clock.advance(86_400 * 2)
+        backups.snapshot(of: url, reason: .delete)  // holds both
+        clock.advance(86_400 * 2)
+
+        // A 5-day retention, six days in: "old" expires, "recent" stays.
+        await store.trim(olderThan: clock.now().addingTimeInterval(-86_400 * 5)).value
+
+        var days: [Double] = []
+        var texts: [[String]] = []
+        for snapshot in backups.snapshots() where snapshot.dictations > 0 {
+            let copy = try DictationSessionStore.open(url: snapshot.url).get()
+            days.append(snapshot.takenAt.timeIntervalSince(start) / 86_400)
+            texts.append(await copy.entries().map(\.rawText).sorted())
+        }
+        // The trim's own snapshot (day 6), then the day-4 one and the daily
+        // copy the day-2 save took; the day-2 snapshot that held only "old"
+        // is gone.
+        XCTAssertEqual(days, [6, 4, 2])
+        XCTAssertEqual(texts, [["old", "recent"], ["recent"], ["recent"]])
+        let entries = await store.entries()
+        XCTAssertEqual(entries.map(\.rawText), ["recent"])
+    }
+
     /// An app left running for days still gets its daily copy: the check
     /// runs on every save, not only at launch.
     func testARunningAppTakesADailySnapshotOnTheNextSaveOfTheDay() async throws {
