@@ -1259,6 +1259,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch maintenance that creates the mirror.
             desiredMarketplacePath: { ClaudeMarketplaceMirror.usableURL()?.path },
             bundledPluginVersion: ClaudePluginAssets.localPluginVersion(),
+            bundledModVersion: ClaudePluginAssets.localPluginVersion(
+                pluginName: ClaudePluginAssets.modPluginName
+            ),
             statuslineService: {
                 ClaudeStatuslineInstallService(
                     fileSystem: LiveClaudeStatuslineFileSystem(),

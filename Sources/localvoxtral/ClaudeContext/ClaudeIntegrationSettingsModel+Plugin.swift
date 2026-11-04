@@ -124,32 +124,55 @@ extension ClaudeIntegrationSettingsModel {
         return normalized(lhs) == normalized(rhs)
     }
 
-    /// Bring an installed plugin up to the bundled version, once per launch.
+    /// Bring an installed plugin, and an installed mod, up to the bundled
+    /// versions, once per launch.
     ///
     /// The user chose to install the plugin; keeping it at the version this
-    /// app ships is part of that choice, so it needs no click. A plugin that
-    /// is not installed stays that way. The update never uninstalls, so a
+    /// app ships is part of that choice, so it needs no click. A plugin or mod
+    /// that is not installed stays that way. The update never uninstalls, so a
     /// failure leaves the old plugin working; it is logged and left to the
     /// row, which still offers Update. An alert nobody asked for at launch
     /// would be worse than a row that says what happened.
+    ///
+    /// The mod has its own version and can change under an unchanged plugin
+    /// version (LVX-98), so it is compared on its own: a behind plugin updates
+    /// both, and a current plugin with a behind mod updates the mod alone.
     public func updateOutdatedPluginAtLaunch() async {
-        await refreshLocalPluginStatus()
-        guard case .updateAvailable(let installed, let bundled) = localPluginStatus,
-              !isPerformingPluginAction
-        else { return }
+        let output = await fetchPluginListOutput()
+        localPluginStatus = ClaudePluginStatus.derive(
+            listOutput: output, bundledVersion: bundledPluginVersion
+        )
+        guard !isPerformingPluginAction else { return }
+        let modBehind = ClaudePluginStatus.modIsBehind(
+            listOutput: output, bundledModVersion: bundledModVersion
+        )
+        let update: @Sendable (any ClaudePluginInstalling) throws -> Void
+        let done: String
+        switch localPluginStatus {
+        case .updateAvailable(let installed, let bundled):
+            Log.claudeContext.info(
+                "Updating the Claude Code plugin from \(installed, privacy: .public) to \(bundled, privacy: .public)"
+            )
+            update = { try $0.updateInstalledPlugin() }
+            done = "Claude Code plugin updated to \(bundled)"
+        case .installed where modBehind:
+            let bundled = bundledModVersion ?? "?"
+            Log.claudeContext.info("Updating the Claude Code mod to \(bundled, privacy: .public)")
+            update = { try $0.updateInstalledMod() }
+            done = "Claude Code mod updated to \(bundled)"
+        default:
+            return
+        }
         isPerformingPluginAction = true
         defer { isPerformingPluginAction = false }
-
-        Log.claudeContext.info(
-            "Updating the Claude Code plugin from \(installed, privacy: .public) to \(bundled, privacy: .public)"
-        )
         let service = pluginService()
-        if let failure = await performAsync({ try service.updateInstalledPlugin() }) {
+        let failure = await performAsync({ try update(service) })
+        if let failure {
             Log.claudeContext.error(
                 "Claude plugin update at launch failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
         } else {
-            Log.claudeContext.info("Claude Code plugin updated to \(bundled, privacy: .public)")
+            Log.claudeContext.info("\(done, privacy: .public)")
         }
         await refreshLocalPluginStatus()
     }
