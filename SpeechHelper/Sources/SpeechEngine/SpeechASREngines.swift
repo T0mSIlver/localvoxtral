@@ -11,38 +11,29 @@ import SpeechEngineText
 
 final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
     private let model: VoxtralRealtimeModel
-    private let termBoost: VoxtralRealtimeTermBoostConfig
 
-    init(model: VoxtralRealtimeModel, termBoost: TermBoostSettings? = nil) {
+    init(model: VoxtralRealtimeModel) {
         self.model = model
-        self.termBoost = termBoost.map {
-            VoxtralRealtimeTermBoostConfig(
-                firstTokenBoost: $0.firstTokenBoost,
-                continuationBoost: $0.continuationBoost,
-                margin: $0.margin
-            )
-        } ?? VoxtralRealtimeTermBoostConfig()
     }
 
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms: SessionTerms
+        terms _: SessionTerms
     ) -> SpeechASRStreamingSession {
         // The decoder emits one token per audio frame, so the token cap is the
         // limit expressed in this model's frame rate.
         let maxDecodedTokens = utteranceLimit.maxDecodedTokens(
             frameRate: model.config.audioEncodingArgs.frameRate
         )
-        let session = model.makeStreamSession(
-            temperature: 0.0,
-            maxTokens: maxDecodedTokens,
-            transcriptionDelayMs: transcriptionDelayMs
+        return VoxtralASRSession(
+            session: model.makeStreamSession(
+                temperature: 0.0,
+                maxTokens: maxDecodedTokens,
+                transcriptionDelayMs: transcriptionDelayMs
+            ),
+            maxDecodedTokens: maxDecodedTokens
         )
-        if !terms.terms.isEmpty {
-            session.setBoostTerms(terms.terms, config: termBoost)
-        }
-        return VoxtralASRSession(session: session, maxDecodedTokens: maxDecodedTokens)
     }
 }
 
@@ -69,7 +60,8 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
     var decodedTokenCount: Int { session.tokens.count }
 
-    var boostedTokenCount: Int? { session.boostedTokenCount }
+    /// Voxtral's decoder has no logits hook yet, so it ignores the terms.
+    var boostedTokenCount: Int? { nil }
 
     var utteranceStop: UtteranceStop? {
         // `session.tokens` hands out a copy of the whole array — never touch it

@@ -420,7 +420,7 @@ enum SpeechModelLoader {
                 modelDirectory: modelDirectory,
                 fromDirectory: { try VoxtralRealtimeModel.fromDirectory($0) },
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
-            ), termBoost: termBoost)
+            ))
         case .nemotron:
             return NemotronASREngine(model: try await loadModel(
                 modelID: modelID,
