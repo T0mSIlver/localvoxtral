@@ -62,11 +62,11 @@ final class SpeechModelCatalogTests: XCTestCase {
     func testNemotronEntryPinsItsRevisionAndEngine() throws {
         let option = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
             )
         )
         XCTAssertEqual(option.engine, .nemotron)
-        XCTAssertEqual(option.revision, "7279359e4481b5e9e185a318bd618e429c6d86cd")
+        XCTAssertEqual(option.revision, "0000000000000000000000000000000000000000")
         // The whole point of the second entry: it is the small one.
         XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
     }
@@ -83,13 +83,13 @@ final class SpeechModelCatalogTests: XCTestCase {
     func testPickerMenuLabelNamesTheSize() throws {
         let option = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
             )
         )
-        // The size renders in the user's locale (0.8 / 0,8), so assert around it.
-        XCTAssertEqual(option.sizeOnDiskGB, 0.8)
+        // The size renders in the user's locale (0.7 / 0,7), so assert around it.
+        XCTAssertEqual(option.sizeOnDiskGB, 0.7)
         let label = SpeechModelPickerSupport.menuLabel(for: option)
-        XCTAssertTrue(label.hasPrefix("Nemotron 3.5 ASR Streaming 0.6B (8-bit) — "), label)
+        XCTAssertTrue(label.hasPrefix("Nemotron Unified ASR 0.6B (8-bit) — "), label)
         XCTAssertTrue(label.hasSuffix(" GB"), label)
     }
 }

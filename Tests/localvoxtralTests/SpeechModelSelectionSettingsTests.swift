@@ -13,7 +13,7 @@ final class SpeechModelSelectionSettingsTests: XCTestCase {
 
         let nemotron = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
             )
         )
         settings.managedSpeechModel = nemotron.repoID

@@ -1183,7 +1183,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
     }
 
-    private static let nemotronRepoID = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+    private static let nemotronRepoID = "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
 
     func testDictationModeSwitchToManagedStartsDictationWarmup() async {
         let backendManager = FakeManagedBackendManager()

@@ -1,10 +1,13 @@
 import Foundation
 
-/// Nemotron 3.5 ASR streams in fixed chunks of encoder frames, 80 ms each, and
-/// its model card publishes word-error rates for five chunk sizes. The chunk is
+/// Nemotron ASR streams in fixed chunks of encoder frames, 80 ms each, and
+/// its model card publishes word-error rates for a few chunk sizes. The chunk is
 /// the engine's latency: no text comes out of a chunk until all of it is in.
 /// This maps the helper's `--transcription-delay-ms` knob (Voxtral's native
-/// unit) onto that ladder, so one app-level setting drives both engines.
+/// unit) onto Nemotron 3.5's ladder, so one app-level setting drives both
+/// engines. Nemotron Unified takes the chosen value as its latency (chunk plus
+/// right context) and snaps it to the nearest of its own table (160, 240, 320,
+/// 560, 1120, 2080 ms); the default 320 ms is one of them.
 public enum NemotronChunkLadder {
     /// The rungs the model card measures, in milliseconds.
     public static let supportedMilliseconds = [80, 160, 320, 560, 1120]

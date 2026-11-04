@@ -54,7 +54,7 @@ consumed, #264 appends decoder KV rows in place instead of rebuilding the window
 the transcript one token at a time instead of re-detokenizing it every step. `session.text` is
 still the full transcript, so the append-only delta routing below is unchanged.
 
-The same tree already carries NVIDIA Nemotron 3.5 ASR streaming — #195/#196 port the model,
+The same tree already carries NVIDIA Nemotron ASR streaming (the catalog ships Nemotron Unified) — #195/#196 port the model,
 #208 adds the incremental `NemotronASRStreamSession`, #236 widens the checkpoint loader — so
 adding the second catalog entry (#463) needed no pin change. Two Nemotron facts the adapter
 in `SpeechASREngines.swift` depends on:
@@ -62,9 +62,10 @@ in `SpeechASREngines.swift` depends on:
 - It is an **RNN-T**: it only ever appends text, and it never emits end-of-stream on its own,
   so the append-only delta contract carries it unchanged and there is no `maxTokens` to cap.
   `UtteranceLimit` is therefore enforced by our adapter, on the audio the session accepts.
-- Its session decodes in fixed chunks of 80 ms encoder frames; the model card publishes WER
-  for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
-  those rungs. Its decoder strips the model's `<xx-XX>` language tag itself.
+- Its session decodes in fixed chunks of 80 ms encoder frames; the Nemotron 3.5 card publishes
+  WER for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
+  those rungs. Nemotron Unified (the shipped model) takes the value as latency and snaps it to
+  160/240/320/560/1120/2080 ms. Its decoder strips the model's `<xx-XX>` language tag itself.
 
 Its `advance()` recomputes the whole mel from the raw buffer on every `step`, which is
 O(utterance) per step — upstream calls it negligible at utterance scale and a future

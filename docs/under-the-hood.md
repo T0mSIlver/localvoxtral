@@ -69,12 +69,12 @@ stays ahead of live speech for at least three hours. When a dictation reaches
 the limit, the helper stops and the menu bar says so.
 
 The Engines pane also offers
-[NVIDIA Nemotron 3.5 ASR Streaming 0.6B in 8-bit](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit),
+[NVIDIA Nemotron Unified ASR 0.6B in 8-bit](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b),
 for Macs where the speech model and the polish model compete for memory. It
-takes 0.8 GB on disk, against Voxtral's 2.6 GB.
+takes 0.7 GB on disk, against Voxtral's 2.6 GB.
 
 Nemotron is a cache-aware streaming RNN-T, not a decoder that attends over
-the whole utterance. It transcribes in fixed 320 ms chunks, and it is the
+the whole utterance. It transcribes with a 320 ms latency, and it is the
 less accurate of the two models. NVIDIA publishes it under OpenMDW 1.1.
 
 Changing the model picker restarts the helper and downloads the new
