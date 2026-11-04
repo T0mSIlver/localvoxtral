@@ -238,6 +238,8 @@ jobs:
             ./scripts/ci/test-build-gate-process-cleanup.sh \
             ./scripts/ci/test-build-gate-reap-command.sh \
             ./scripts/ci/test-build-gate-gc-command.sh \
+            ./scripts/ci/test-build-gate-session-watch.sh \
+            ./scripts/ci/test-build-gate-remove-command.sh \
             ./scripts/ci/test-speech-model-services.sh \
             ./scripts/ci/test-test-server-reaper.sh \
             ./scripts/ci/test-remote-build-reap.sh \
@@ -1441,10 +1443,25 @@ jobs:
         env:
           SPEECHD_INTEGRATION_TEST_ENABLE: "1"
           SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
-          SPEECHD_INTEGRATION_TEST_MODEL: T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit
+          SPEECHD_INTEGRATION_TEST_MODEL: mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit
         run: |
           if ! grep -qF "\"$SPEECHD_INTEGRATION_TEST_MODEL\"" Sources/localvoxtralCore/SpeechModelCatalog.swift; then
             echo "::error::$SPEECHD_INTEGRATION_TEST_MODEL is not in SpeechModelCatalog; point this step at the catalog's Nemotron entry"
+            exit 1
+          fi
+          swift test --build-system native --filter SpeechHelperIntegrationTests/testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract --enable-code-coverage
+
+      - name: Speech helper integration on Nemotron Unified (real audio + live model)
+        # Unified shares the Nemotron engine but streams buffered (re-encoding left
+        # context each step) instead of cache-aware, so its path needs its own run.
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.speechd_lane.outputs.run == 'true'
+        env:
+          SPEECHD_INTEGRATION_TEST_ENABLE: "1"
+          SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
+          SPEECHD_INTEGRATION_TEST_MODEL: T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit
+        run: |
+          if ! grep -qF "\"$SPEECHD_INTEGRATION_TEST_MODEL\"" Sources/localvoxtralCore/SpeechModelCatalog.swift; then
+            echo "::error::$SPEECHD_INTEGRATION_TEST_MODEL is not in SpeechModelCatalog; point this step at the catalog's Unified entry"
             exit 1
           fi
           swift test --build-system native --filter SpeechHelperIntegrationTests/testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract --enable-code-coverage

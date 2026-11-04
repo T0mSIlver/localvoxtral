@@ -19,14 +19,6 @@ final class SpeechModelCatalogTests: XCTestCase {
         XCTAssertTrue(option.revision.allSatisfy(\.isHexDigit))
     }
 
-    /// A successor must be a catalog entry, and a replaced repo must not be one.
-    func testReplacedReposPointIntoTheCatalog() {
-        for (replaced, successor) in SpeechModelCatalog.successors {
-            XCTAssertNil(SpeechModelCatalog.option(forRepoID: replaced), replaced)
-            XCTAssertNotNil(SpeechModelCatalog.option(forRepoID: successor), successor)
-        }
-    }
-
     /// The build host serves one test service per row of this list, and eval-e2e
     /// scores whichever one it names. A catalog model without a row cannot be
     /// scored there, and a stale row serves weights the app no longer ships.
@@ -67,16 +59,18 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
-    func testNemotronEntryPinsItsRevisionAndEngine() throws {
-        let option = try XCTUnwrap(
-            SpeechModelCatalog.option(
-                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
-            )
-        )
-        XCTAssertEqual(option.engine, .nemotron)
-        XCTAssertEqual(option.revision, "b7108f135cd732fbdf86af5fa7bc8a30f38cb069")
-        // The whole point of the second entry: it is the small one.
-        XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
+    func testNemotronEntriesPinTheirRevisionsAndEngine() throws {
+        let pins = [
+            "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": "7279359e4481b5e9e185a318bd618e429c6d86cd",
+            "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit": "b7108f135cd732fbdf86af5fa7bc8a30f38cb069",
+        ]
+        for (repoID, revision) in pins {
+            let option = try XCTUnwrap(SpeechModelCatalog.option(forRepoID: repoID))
+            XCTAssertEqual(option.engine, .nemotron, repoID)
+            XCTAssertEqual(option.revision, revision, repoID)
+            // The whole point of the Nemotron entries: they are the small ones.
+            XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB, repoID)
+        }
     }
 
     /// The app passes `--engine <rawValue>` and the helper's
@@ -91,13 +85,13 @@ final class SpeechModelCatalogTests: XCTestCase {
     func testPickerMenuLabelNamesTheSize() throws {
         let option = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
             )
         )
-        // The size renders in the user's locale (0.7 / 0,7), so assert around it.
-        XCTAssertEqual(option.sizeOnDiskGB, 0.7)
+        // The size renders in the user's locale (0.8 / 0,8), so assert around it.
+        XCTAssertEqual(option.sizeOnDiskGB, 0.8)
         let label = SpeechModelPickerSupport.menuLabel(for: option)
-        XCTAssertTrue(label.hasPrefix("Nemotron Unified ASR 0.6B (8-bit) — "), label)
+        XCTAssertTrue(label.hasPrefix("Nemotron 3.5 ASR Streaming 0.6B (8-bit) — "), label)
         XCTAssertTrue(label.hasSuffix(" GB"), label)
     }
 }

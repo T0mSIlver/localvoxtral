@@ -26,7 +26,7 @@
 
 https://github.com/user-attachments/assets/81a341ff-0c53-4fcf-9b7f-ef148b24dfae
 
-localvoxtral streams text as the audio arrives instead of transcribing after you stop speaking. It runs open streaming speech models on your own Apple Silicon: Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) by default, or NVIDIA's [Nemotron Unified ASR](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b) on Macs with less memory.
+localvoxtral streams text as the audio arrives instead of transcribing after you stop speaking. It runs open streaming speech models on your own Apple Silicon: Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) by default, or NVIDIA's [Nemotron 3.5 ASR Streaming](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) or [Nemotron Unified ASR](https://huggingface.co/nvidia/nemotron-labs-unified-asr-0.6b) on Macs with less memory.
 
 It is built first for [prompting coding agents by voice](https://t0msilver.github.io/localvoxtral/docs/coding-agents/), and it works as a general dictation app in any other app too. Everything runs on-device, with no account and no subscription. Nothing leaves your Mac unless you point it at a server yourself or send a quick capture to GitHub.
 

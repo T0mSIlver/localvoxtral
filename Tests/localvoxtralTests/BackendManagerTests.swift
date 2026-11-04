@@ -76,7 +76,7 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let selected = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
             )
         )
         let manager = makeManager(
@@ -109,7 +109,7 @@ final class BackendManagerTests: XCTestCase {
         let first = SpeechModelCatalog.defaultOption
         let second = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
             )
         )
         let selected = SpeechModelBox(first)
@@ -141,7 +141,7 @@ final class BackendManagerTests: XCTestCase {
         let first = SpeechModelCatalog.defaultOption
         let second = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
             )
         )
         let selected = SpeechModelBox(first)
@@ -169,7 +169,7 @@ final class BackendManagerTests: XCTestCase {
         let first = SpeechModelCatalog.defaultOption
         let second = try XCTUnwrap(
             SpeechModelCatalog.option(
-                forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
             )
         )
         let selected = SpeechModelBox(first)
