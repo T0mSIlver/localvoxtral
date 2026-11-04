@@ -271,7 +271,9 @@ workdir_has_prunable_entries() {
 run_gc_command() {
   local idle_hours="${1:-}" max_age_days="$LV_GC_MAX_AGE_DAYS" window_seconds window_label
   if [[ -n "$idle_hours" ]]; then
-    [[ "$idle_hours" =~ ^[1-9][0-9]*$ ]] && (( idle_hours <= 720 )) || deny
+    # At most three digits before any arithmetic: a longer number wraps in bash
+    # (2^64 - 1 is -1) and would put the cutoff in the future.
+    [[ "$idle_hours" =~ ^[1-9][0-9]{0,2}$ ]] && (( idle_hours <= 720 )) || deny
     window_seconds=$((idle_hours * 3600))
     window_label="${idle_hours}h"
   else

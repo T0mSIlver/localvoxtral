@@ -593,7 +593,7 @@ case "$CMD" in
     # configured days, for a host that needs the disk now.
     if [[ $# -eq 0 ]]; then
       run_remote "gc"
-    elif [[ $# -eq 2 && "$1" == --idle && "$2" =~ ^[1-9][0-9]*$ ]]; then
+    elif [[ $# -eq 2 && "$1" == --idle && "$2" =~ ^[1-9][0-9]{0,2}$ ]]; then
       run_remote "$(quote_remote_command gc --idle "$2")"
     else
       echo "gc accepts no arguments, or --idle <hours>" >&2

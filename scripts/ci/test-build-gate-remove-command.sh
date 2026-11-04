@@ -110,6 +110,8 @@ grep -q 'unused >= 1h — deleted' <<<"$out" || fail "gc --idle did not say its 
 expect_denied 'gc --idle 0'
 expect_denied 'gc --idle 721'
 expect_denied 'gc --idle abc'
+expect_denied 'gc --idle 18446744073709551615'
+expect_denied 'gc --idle 0720'
 expect_denied 'gc --idle 1 2'
 
 # --- remote-build.sh sends exactly these commands -------------------------------
@@ -136,6 +138,7 @@ env "${rb_env[@]}" "$REMOTE_BUILD" gc --idle 6 >/dev/null 2>&1 || fail "gc --idl
 : >"$ssh_log"
 ! env "${rb_env[@]}" "$REMOTE_BUILD" remove /etc >/dev/null 2>&1 || fail "remove /etc was not refused"
 ! env "${rb_env[@]}" "$REMOTE_BUILD" gc --idle >/dev/null 2>&1 || fail "gc --idle with no hours was not refused"
+! env "${rb_env[@]}" "$REMOTE_BUILD" gc --idle 18446744073709551615 >/dev/null 2>&1 || fail "an overflowing hour count was not refused"
 [[ ! -s "$ssh_log" ]] || fail "a refused command still reached the host: $(cat "$ssh_log")"
 
 printf 'PASS: remove deletes one idle work dir and keeps busy ones, symlinks and recordings; gc --idle reclaims by hours\n'
