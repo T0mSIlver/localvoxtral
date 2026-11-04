@@ -51,7 +51,7 @@ extension ClaudeIntegrationSettingsModel {
 
     /// The ssh-config block this build writes for `host`, or nil when it has
     /// no valid alias to write it for.
-    func expectedSSHConfigSnippet(for host: ClaudeRemoteHost) -> String? {
+    package func expectedSSHConfigSnippet(for host: ClaudeRemoteHost) -> String? {
         guard let alias = host.sshHostAlias,
               ClaudeRemoteEnrollmentService.isValidHostAlias(alias)
         else { return nil }
@@ -65,7 +65,7 @@ extension ClaudeIntegrationSettingsModel {
 
     /// Stands in for an alias we were never told. It is not a valid target:
     /// `canRun` and `canRunRemoteSetup` withhold every run that would use it.
-    static let unknownAliasPlaceholder = "your-ssh-host"
+    package static let unknownAliasPlaceholder = "your-ssh-host"
 
     public func dismissPluginUpdate() {
         switch enrollmentConfirmation?.action {
@@ -132,7 +132,7 @@ extension ClaudeIntegrationSettingsModel {
         setupCancellationRequested = true
     }
 
-    func shellRCPathForConsent() -> String {
+    package func shellRCPathForConsent() -> String {
         guard let shell = loginShell() else { return "your shell startup file" }
         let relative = ClaudeShellRCSetup.relativeRCPath(for: shell) { relative in
             FileManager.default.fileExists(
@@ -146,7 +146,7 @@ extension ClaudeIntegrationSettingsModel {
     /// The alert body. `subject` names the work in the user's terms — an alert
     /// that says "SSH setup" after a herdr step failed reads as a different
     /// failure than the one they are looking at.
-    static func enrollmentFailureDetail(
+    package static func enrollmentFailureDetail(
         _ failure: ClaudeEnrollmentActionFailure,
         subject: String
     ) -> String {

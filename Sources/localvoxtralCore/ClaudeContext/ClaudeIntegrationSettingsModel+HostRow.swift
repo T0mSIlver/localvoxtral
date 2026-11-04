@@ -65,7 +65,7 @@ extension ClaudeIntegrationSettingsModel {
         case setUp
         case updateAvailable
 
-        static func derive(host: ClaudeRemoteHost, bundledVersion: String?) -> VibeHostHooksState? {
+        package static func derive(host: ClaudeRemoteHost, bundledVersion: String?) -> VibeHostHooksState? {
             guard !host.isRevoked,
                   host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true
             else { return nil }
@@ -96,7 +96,7 @@ extension ClaudeIntegrationSettingsModel {
     /// The numeric comparison is `ClaudeRemotePluginVersionCodec`'s — the
     /// same single implementation the registry's monotone record uses, so
     /// "what the registry kept" and "what the row says" can never disagree.
-    static func pluginNeedsUpdate(
+    package static func pluginNeedsUpdate(
         reported: ClaudeRemotePluginVersionReport?,
         expected: String
     ) -> Bool {
@@ -111,7 +111,7 @@ extension ClaudeIntegrationSettingsModel {
     /// Whether a host REPORTED this build's plugin version or a newer one.
     /// Not the negation of `pluginNeedsUpdate`: a host never heard from is
     /// neither outdated (no hint without evidence) nor current.
-    static func pluginIsCurrent(
+    package static func pluginIsCurrent(
         reported: ClaudeRemotePluginVersionReport?,
         expected: String
     ) -> Bool {
@@ -131,7 +131,7 @@ extension ClaudeIntegrationSettingsModel {
     /// dictation nicety). So a host that was active before a relaunch reads
     /// "never" until its next hook event. That is the existing trade, not a
     /// missing write.
-    static func hostStatusText(isRevoked: Bool, lastSeenAt: Date?, now: Date) -> String {
+    package static func hostStatusText(isRevoked: Bool, lastSeenAt: Date?, now: Date) -> String {
         if isRevoked { return "Revoked" }
         guard let lastSeenAt else { return "Last context: never" }
         let elapsed = now.timeIntervalSince(lastSeenAt)

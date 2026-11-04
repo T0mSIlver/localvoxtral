@@ -2,11 +2,11 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 #if canImport(Darwin)
 import Darwin
-import localvoxtralTestSupport
 #endif
 
 /// A config the test can write into, so the read-only forward-state scan has
@@ -73,19 +73,6 @@ private final class RecordingSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSyste
     }
 }
 
-/// A forward that records instead of spawning ssh. The model's contract is
-/// "persist the flag, then reconcile, then re-render the rows"; whether ssh
-/// reconnects is the supervisor's suite.
-@MainActor
-/// Ordered record of the two shutdowns, so "forwards first, listener second"
-/// is asserted as a SEQUENCE. Both happening is not the property — the whole
-/// failure is a hook arriving in the window between them.
-final class ShutdownJournal: @unchecked Sendable {
-    private let entries = Mutex<[String]>([])
-    func note(_ entry: String) { entries.withLock { $0.append(entry) } }
-    var recorded: [String] { entries.withLock { $0 } }
-}
-
 /// Holds what the model hands to the main actor, so a test runs it at a
 /// point it chooses instead of awaiting a scheduled task.
 private final class MainActorHops: Sendable {
@@ -96,6 +83,9 @@ private final class MainActorHops: Sendable {
     }
 }
 
+/// A forward that records instead of spawning ssh. The model's contract is
+/// "persist the flag, then reconcile, then re-render the rows"; whether ssh
+/// reconnects is the supervisor's suite.
 private final class StubForwarding: ClaudeRemoteForwarding {
     var journal: ShutdownJournal?
     var state: ClaudeRemoteForwardSupervisor.State = .stopped
@@ -611,11 +601,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let registry = try makeRegistry()
         _ = try registry.enroll(label: "builder")
         let listener = StubClaudeRemoteListener(hosts: registry)
-        #if canImport(Darwin)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
-        #else
-        listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: 48)
-        #endif
         let model = makeModel(registry: registry, listener: listener)
 
         model.synchronizeListenerAtLaunch()

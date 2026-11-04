@@ -4,6 +4,7 @@ import SwiftUI
 import XCTest
 
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// Pictures of the app's views, one PNG per view and state, for an agent that
 /// has to show the owner a view: `scripts/view-snapshots.sh` renders them on a

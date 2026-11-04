@@ -10,7 +10,7 @@ extension ClaudeIntegrationSettingsModel {
     /// and a secret left sitting in a SwiftUI string is one screen-share away
     /// from being read out loud. An empty or rejected value REMOVES the stored
     /// password rather than leaving the previous one quietly in force.
-    func saveCmuxPassword() {
+    package func saveCmuxPassword() {
         guard let cmuxPasswords else {
             alert = DetailAlert(
                 title: "Could not save the cmux password",

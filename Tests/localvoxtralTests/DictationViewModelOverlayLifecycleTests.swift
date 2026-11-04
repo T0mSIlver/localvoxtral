@@ -2,6 +2,7 @@ import Carbon.HIToolbox
 import Foundation
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 @MainActor
 final class DictationViewModelOverlayLifecycleTests: XCTestCase {

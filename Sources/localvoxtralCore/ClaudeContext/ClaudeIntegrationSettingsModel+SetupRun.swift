@@ -3,11 +3,11 @@ import Foundation
 
 #if canImport(Darwin)
 import Darwin
-import Synchronization
 #endif
+import Synchronization
 
 extension ClaudeIntegrationSettingsModel {
-    func performSetupRun(_ confirmation: EnrollmentConfirmation) async {
+    package func performSetupRun(_ confirmation: EnrollmentConfirmation) async {
         let hostID: String
         let alias: String
         let snippet: String?
@@ -439,7 +439,7 @@ extension ClaudeIntegrationSettingsModel {
     /// keyed on an `EnrollmentAction` a check does not have. Verification can
     /// only throw two things, and everything else here is a "should not happen"
     /// that must still say something true.
-    static func verificationFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
+    package static func verificationFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
         switch failure.serviceError {
         case .executionNotConfigured:
             return "Checking the setup is not available in this build."

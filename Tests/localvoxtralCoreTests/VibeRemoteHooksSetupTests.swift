@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 import localvoxtralTestSupport
 
 /// A stand-in for an ssh host, reached through the PRODUCTION runner

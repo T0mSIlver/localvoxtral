@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 private final class MemoryHostStore: ClaudeRemoteHostStoreIO {
     private let contents = Mutex<[String: Data]>([:])
@@ -80,6 +81,8 @@ private final class ForwardSpy {
 
 @MainActor
 final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
+    // async: on Linux, sync tests in a @MainActor case abort the test
+    // process at discovery (a failed cast of the main-actor method).
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
         try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-forward-test/\(UUID().uuidString).json"),
@@ -106,7 +109,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         )
     }
 
-    func testOnlyHostsThatOptedInGetAForward() throws {
+    func testOnlyHostsThatOptedInGetAForward() async throws {
         let registry = try makeRegistry()
         let opted = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         _ = try registry.enroll(label: "other", sshHostAlias: "other")
@@ -121,7 +124,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(spy.configurations.first?.listenerPort, 8473)
     }
 
-    func testAHostWithNoAliasOnFileIsNeverForwarded() throws {
+    func testAHostWithNoAliasOnFileIsNeverForwarded() async throws {
         // The label is not a substitute for an alias: a host NAMED prod can be
         // reached as builder, so guessing would ssh somewhere the user never
         // chose (PR #197).
@@ -135,7 +138,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertTrue(spy.started.isEmpty)
     }
 
-    func testRevokingAHostStopsItsForward() throws {
+    func testRevokingAHostStopsItsForward() async throws {
         let registry = try makeRegistry()
         let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         try registry.setPersistentForwardEnabled(true, hostID: host.id)
@@ -151,7 +154,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.states[host.id])
     }
 
-    func testRevocationIsAlsoReconciledIntoPersistentHerdrForwards() throws {
+    func testRevocationIsAlsoReconciledIntoPersistentHerdrForwards() async throws {
         let registry = try makeRegistry()
         let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         let seen = Mutex<[Set<String>]>([])
@@ -168,7 +171,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(seen.withLock { $0 }, [[host.id], []])
     }
 
-    func testTurningTheToggleOffStopsTheForward() throws {
+    func testTurningTheToggleOffStopsTheForward() async throws {
         let registry = try makeRegistry()
         let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         try registry.setPersistentForwardEnabled(true, hostID: host.id)
@@ -182,7 +185,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(spy.stopped, [host.id], "disable must take effect without a relaunch")
     }
 
-    func testReconcilingTwiceStartsNothingTwice() throws {
+    func testReconcilingTwiceStartsNothingTwice() async throws {
         let registry = try makeRegistry()
         let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         try registry.setPersistentForwardEnabled(true, hostID: host.id)
@@ -195,7 +198,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(spy.started, [host.id])
     }
 
-    func testNoForwardRunsWhileTheListenerIsUnbound() throws {
+    func testNoForwardRunsWhileTheListenerIsUnbound() async throws {
         // A forward opened before the bind terminates at a closed port: the
         // hooks get connection-refused and fail open silently, while ssh on
         // THIS Mac prints `connect_to … failed.` into the user's remote
@@ -222,7 +225,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(spy.stopped, [host.id])
     }
 
-    func testStopAllTearsDownEveryForward() throws {
+    func testStopAllTearsDownEveryForward() async throws {
         let registry = try makeRegistry()
         let first = try registry.enroll(label: "one", sshHostAlias: "one").host
         let second = try registry.enroll(label: "two", sshHostAlias: "two").host
@@ -238,7 +241,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.states.isEmpty)
     }
 
-    func testRetryIsForwardedToTheRightHostOnly() throws {
+    func testRetryIsForwardedToTheRightHostOnly() async throws {
         let registry = try makeRegistry()
         let first = try registry.enroll(label: "one", sshHostAlias: "one").host
         let second = try registry.enroll(label: "two", sshHostAlias: "two").host
@@ -255,7 +258,7 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
 
     /// #659: a wake or a network change reaches every running forward; each
     /// supervisor decides for itself whether it has anything to redo.
-    func testAWakeOrNetworkChangeReachesEveryRunningForward() throws {
+    func testAWakeOrNetworkChangeReachesEveryRunningForward() async throws {
         let registry = try makeRegistry()
         let first = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         let second = try registry.enroll(label: "other", sshHostAlias: "other").host

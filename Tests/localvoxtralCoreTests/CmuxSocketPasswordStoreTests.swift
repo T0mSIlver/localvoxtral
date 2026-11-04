@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// An in-memory stand-in for the login keychain.
 ///
@@ -174,6 +175,8 @@ final class CmuxSocketPasswordStoreTests: XCTestCase {
 /// The Settings row's half: what the model does with the typed field.
 @MainActor
 final class CmuxPasswordSettingsRowTests: XCTestCase {
+    // async: on Linux, sync tests in a @MainActor case abort the test
+    // process at discovery (a failed cast of the main-actor method).
     private final class RecordingPasswordStore: CmuxPasswordStoring, @unchecked Sendable {
         private let value = Mutex<String?>(nil)
         private let succeed: Bool
@@ -220,7 +223,7 @@ final class CmuxPasswordSettingsRowTests: XCTestCase {
         )
     }
 
-    func testSavingStoresThePasswordAndForgetsTheTypedText() {
+    func testSavingStoresThePasswordAndForgetsTheTypedText() async {
         let store = RecordingPasswordStore()
         let model = makeModel(passwords: store)
 
@@ -236,14 +239,14 @@ final class CmuxPasswordSettingsRowTests: XCTestCase {
         XCTAssertEqual(model.cmuxStatusText, "Password saved.")
     }
 
-    func testAnExistingPasswordIsReportedButNeverShownBack() {
+    func testAnExistingPasswordIsReportedButNeverShownBack() async {
         let model = makeModel(passwords: RecordingPasswordStore(initial: "hunter2"))
 
         XCTAssertTrue(model.hasCmuxPassword)
         XCTAssertEqual(model.cmuxPasswordField, "")
     }
 
-    func testClearingTheFieldRemovesTheStoredPassword() {
+    func testClearingTheFieldRemovesTheStoredPassword() async {
         let store = RecordingPasswordStore(initial: "hunter2")
         let model = makeModel(passwords: store)
 
@@ -255,7 +258,7 @@ final class CmuxPasswordSettingsRowTests: XCTestCase {
         XCTAssertEqual(model.cmuxStatusText, "No password saved.")
     }
 
-    func testTheSocketVerdictOutranksTheSetupState() {
+    func testTheSocketVerdictOutranksTheSetupState() async {
         let model = makeModel(passwords: RecordingPasswordStore(initial: "hunter2"))
 
         model.cmuxStatus = .authenticationRequired
@@ -263,7 +266,7 @@ final class CmuxPasswordSettingsRowTests: XCTestCase {
         XCTAssertEqual(model.cmuxStatusText, "cmux socket requires password mode.")
     }
 
-    func testAKeychainFailureIsSurfacedAsAnAlertNotASilentNoOp() {
+    func testAKeychainFailureIsSurfacedAsAnAlertNotASilentNoOp() async {
         let model = makeModel(passwords: RecordingPasswordStore(succeed: false))
 
         model.cmuxPasswordField = "hunter2"
@@ -273,7 +276,7 @@ final class CmuxPasswordSettingsRowTests: XCTestCase {
         XCTAssertFalse(model.hasCmuxPassword)
     }
 
-    func testNoKeychainMeansTheRowSaysSoRatherThanPretending() {
+    func testNoKeychainMeansTheRowSaysSoRatherThanPretending() async {
         let model = makeModel(passwords: nil)
 
         model.cmuxPasswordField = "hunter2"

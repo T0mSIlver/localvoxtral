@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// The field capture that named this bug: an installed, enabled plugin whose
 /// marketplace path had been swept from `/private/tmp` (2026-09-21).
@@ -70,6 +71,9 @@ final class ClaudeMarketplaceMirrorTests: XCTestCase {
         )
     }
 
+    // Darwin only: Linux Foundation's `replaceItemAt` refuses to replace a
+    // non-empty directory (ENOTEMPTY), and the mirror only runs on macOS.
+    #if canImport(Darwin)
     func testChangedHookContentRefreshesTheMirror() throws {
         let source = try makeSource()
         _ = try ClaudeMarketplaceMirror.refresh(source: source, mirrorURL: mirrorURL())
@@ -85,6 +89,7 @@ final class ClaudeMarketplaceMirrorTests: XCTestCase {
         let copied = mirrorURL().appendingPathComponent("plugins/localvoxtral/hooks/publish.sh")
         XCTAssertEqual(try String(contentsOf: copied, encoding: .utf8), "publish --new\n")
     }
+    #endif
 
     func testRenamingAFileChangesTheDigest() throws {
         let source = try makeSource()
@@ -98,6 +103,9 @@ final class ClaudeMarketplaceMirrorTests: XCTestCase {
         XCTAssertNotEqual(try ClaudeMarketplaceMirror.digest(of: source), before)
     }
 
+    // Darwin only: Linux Foundation's `replaceItemAt` refuses to replace a
+    // non-empty directory (ENOTEMPTY), and the mirror only runs on macOS.
+    #if canImport(Darwin)
     func testRefreshLeavesNoStagingTreeBehind() throws {
         let source = try makeSource()
         _ = try ClaudeMarketplaceMirror.refresh(source: source, mirrorURL: mirrorURL())
@@ -112,6 +120,7 @@ final class ClaudeMarketplaceMirrorTests: XCTestCase {
             []
         )
     }
+    #endif
 
     func testAFileAtTheMirrorPathIsReplacedRatherThanFailingForever() throws {
         let source = try makeSource()

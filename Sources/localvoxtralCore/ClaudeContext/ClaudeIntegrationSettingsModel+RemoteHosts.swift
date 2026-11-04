@@ -206,7 +206,7 @@ extension ClaudeIntegrationSettingsModel {
 
     /// What `revoke` runs after its write, for a host another running copy
     /// revoked, removed or rotated (#1125). No alert: nobody here asked.
-    func reconcileAfterHostsDroppedElsewhere() {
+    package func reconcileAfterHostsDroppedElsewhere() {
         Log.claudeContext.info("Claude remote hosts changed in another running copy; reconciling forwards and listener")
         refreshHosts()
         reconcileListener(presentAlert: false, logsPortConflict: false)
@@ -284,7 +284,7 @@ extension ClaudeIntegrationSettingsModel {
         )
     }
 
-    static func registryFailureDetail(_ error: any Error) -> String {
+    package static func registryFailureDetail(_ error: any Error) -> String {
         if let pathFailure = error as? ClaudeSocketGuard.PreconditionFailure {
             switch pathFailure {
             case .permissive(let path, _):

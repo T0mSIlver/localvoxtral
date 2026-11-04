@@ -5,8 +5,8 @@ import Foundation
 /// `SettingsView.swift` followed by every file under `Settings/`, in name
 /// order. Read from the repo rather than inlined so the pins run against what
 /// actually ships.
-enum SettingsSourceText {
-    static func load() throws -> String {
+package enum SettingsSourceText {
+    package static func load() throws -> String {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // SettingsSourceText.swift
             .deletingLastPathComponent()  // localvoxtralTests
@@ -26,7 +26,7 @@ enum SettingsSourceText {
 
     /// Where the top-level declaration running at `index` ends: the next
     /// top-level `struct`, or the next file's imports.
-    static func endOfTopLevelDeclaration(
+    package static func endOfTopLevelDeclaration(
         in source: String, after index: String.Index
     ) -> String.Index {
         ["\nstruct ", "\nprivate struct ", "\nimport "]
