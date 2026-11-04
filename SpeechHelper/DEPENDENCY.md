@@ -21,12 +21,14 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "11e8ca2f5f601b4fe64e52090b5e10965d8080f3"
+    revision: "c793e5cc0891c3c0f1856a41ca9151b116ba7c36"
 )
 ```
 
-This fork commit is upstream's `902920c` plus the Nemotron Unified port, which the catalog's
-Unified entry needs. It must become an upstream SHA before merge.
+This fork commit (branch `pin/nemotron-unified-on-902920c-v2`) is upstream's `902920c` plus
+the Nemotron Unified port, which the catalog's Unified entry needs. Its NemotronASR code is
+the port as posted upstream in Neywa-Labs/mlx-audio-swift#374 (`87c2920`), minus the two
+lines upstream's #349 added after `902920c`. It must become an upstream SHA before merge.
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.

@@ -90,7 +90,9 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
         let session: NemotronASRStreamSession
         if model.isBuffered {
             let frames = NemotronUnifiedLayout.frames(forLatencyMilliseconds: rung)
-            session = model.makeStreamSession(
+            // Neither throw can happen: `isBuffered` is checked above, and
+            // NemotronUnifiedLayout's frames are valid by construction.
+            session = try! model.makeStreamSession(
                 language: nil,
                 bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
             )
