@@ -763,6 +763,22 @@ extension DictationSessionController {
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
+        // The watch opens and the capture tap is consumed before anything
+        // modal: the polish-failure alert blocks until dismissed, and an
+        // edit made while it is open must be seen.
+        let pendingRecord = self.beginDiagnosticRecord(
+            recordInputs,
+            historyID: historyID,
+            commitOutcome: overlayCommit.outcome,
+            // Substituted for MEASUREMENT only (the watch window
+            // scales with what was inserted); the record keeps the
+            // placeholder-bearing text above.
+            committedTextForWatch: StopCommitCoordinator.substitutingPayload(
+                recordCommittedText ?? assembly.groundedWorkingText,
+                payload: preparation.clipboardPayload
+            )
+        )
+
         // Before the diagnostic record's await: cleanup already reset the
         // status, and a next dictation can start while the record waits
         // behind History's writes. Reported after it, the failure would
@@ -777,20 +793,10 @@ extension DictationSessionController {
 
         // AFTER the commit and the session record: record latency
         // can only ever land on the tail of this task, never on the
-        // user's paste. `writeDiagnosticRecordIfEnabled` checks the
-        // switch before doing any work.
-        await self.writeDiagnosticRecordIfEnabled(
-            recordInputs,
-            historyID: historyID,
-            commitOutcome: overlayCommit.outcome,
-            // Substituted for MEASUREMENT only (the watch window
-            // scales with what was inserted); the record keeps the
-            // placeholder-bearing text above.
-            committedTextForWatch: StopCommitCoordinator.substitutingPayload(
-                recordCommittedText ?? assembly.groundedWorkingText,
-                payload: preparation.clipboardPayload
-            )
-        )
+        // user's paste.
+        if let pendingRecord {
+            await self.finishDiagnosticRecord(pendingRecord)
+        }
     }
 
     /// What the user sees of a polished reply before the commit: the text in

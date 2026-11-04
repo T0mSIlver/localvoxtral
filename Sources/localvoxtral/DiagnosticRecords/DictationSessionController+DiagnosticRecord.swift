@@ -35,14 +35,39 @@ extension DictationSessionController {
         commitOutcome: OverlayBufferCommitOutcome?,
         committedTextForWatch: String
     ) async {
+        guard let pending = beginDiagnosticRecord(
+            inputs, historyID: historyID, commitOutcome: commitOutcome,
+            committedTextForWatch: committedTextForWatch)
+        else { return }
+        await finishDiagnosticRecord(pending)
+    }
+
+    /// What `beginDiagnosticRecord` hands to `finishDiagnosticRecord`.
+    struct PendingDiagnosticRecord {
+        let inputs: DiagnosticRecordInputs
+        let historyID: UUID
+        let store: DiagnosticRecordStore
+        let started: ContinuousClock.Instant
+        let watchToken: EditSignalWatcher.WatchToken?
+    }
+
+    /// The synchronous half: consumes the capture tap and opens the edit
+    /// watch. Runs before anything modal (a polish-failure alert) so a user
+    /// edit made while it is open is seen, and before any await.
+    func beginDiagnosticRecord(
+        _ inputs: DiagnosticRecordInputs,
+        historyID: UUID?,
+        commitOutcome: OverlayBufferCommitOutcome?,
+        committedTextForWatch: String
+    ) -> PendingDiagnosticRecord? {
         let abstentions = DiagnosticCaptureTap.shared.consumeJoinAbstentions()
         let repoVocabularyHarvest = DiagnosticCaptureTap.shared.consumeRepoVocabularyHarvest()
-        guard diagnosticRecordsWanted, let historyID, let store = diagnosticRecordStore else { return }
+        guard diagnosticRecordsWanted, let historyID, let store = diagnosticRecordStore else { return nil }
         // A stopped-with-no-speech session skipped the polish call and has
         // nothing to attribute; a record of empty stages is retention noise.
         guard !inputs.text.workingText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
+        else { return nil }
 
         var inputs = inputs
         inputs.joinAbstentions = abstentions
@@ -74,6 +99,17 @@ extension DictationSessionController {
             // stages happened and stay attributable), with no behavior block.
             watchToken = nil
         }
+        return PendingDiagnosticRecord(
+            inputs: inputs, historyID: historyID, store: store, started: started, watchToken: watchToken)
+    }
+
+    /// The awaited half: assembles and writes the record.
+    func finishDiagnosticRecord(_ pending: PendingDiagnosticRecord) async {
+        let inputs = pending.inputs
+        let historyID = pending.historyID
+        let store = pending.store
+        let started = pending.started
+        let watchToken = pending.watchToken
 
         // Assembly walks complete retained buffers (harvest re-derivation);
         // `build` is nonisolated, so this await hops off the main actor the
