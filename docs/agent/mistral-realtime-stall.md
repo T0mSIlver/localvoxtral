@@ -2,6 +2,8 @@
 
 Status on 2026-09-19 (D added 2026-10-03): symptom A (the one the owner hits) is not reproduced and has no request ID yet. Symptom B is reproduced on demand and ready to report to Mistral once confirmed. Owner rulings: no second parallel connection (it doubles the bill for Mistral's bug), and no silence-padding workaround (it may move the trigger instead of removing it).
 
+Voxtral Realtime 3 (`voxtral-mini-transcribe-realtime-3-0`, the default since #1967), soaked 2026-11-04 from the dev box with the app's frames: 100 sessions of 2 minutes, 4 at a time. 99 clean: no gap of 5 s or more (no D), no first delta later than 3.9 s (no B), no stream that stopped (no A). One session got no `transcription.done` within 10 s (`ws-01a1a3d5-ac3d-723b-aa5b-4f0d4be3fb44`), in the minutes when the dev box's own connection dropped every open socket. B's 1410 s clip: 3 of 3 clean on Realtime 3 (first delta 1.2 s, 896 chars), 3 of 3 still stalled on 2602 (31.3 s, 476 chars). A 2602 control beside it: 25 of 25 clean. Realtime 3 answers `input_audio.end` more slowly: `done` median 0.74 s and max 2.9 s after the end, against 0.31 s and 0.46 s for 2602.
+
 ## Symptoms
 
 **A. Text stops mid-dictation and never resumes.** Overlay Buffer mode, Mistral API engine. Deltas arrive normally, then stop while the user keeps talking. After stop, no `transcription.done` arrives, the client closes on the finalization idle rule 1.6 s later, and the partial text is inserted. A new dictation always works. One occurrence in ~40 dictations on 2026-09-19 (session opened 15:56:20 local, last delta at 35 s, no request ID because it predates the logging).
