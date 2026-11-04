@@ -33,7 +33,8 @@ public enum NemotronChunkLadder {
 /// (chunk + right) and the GPU cost (frames re-encoded per chunk). These are
 /// NVIDIA's recommended rows with its 5.6 s left context, except at 320 ms: a
 /// 160 ms chunk with 160 ms right context halves the GPU per audio second (MacBook:
-/// 34.7 vs 68.6 ms per 80 ms step) for +0.3 WER points (NeMo, 34 FLEURS clips).
+/// 34.7 vs 68.6 ms per 80 ms step) for +0.6 WER points (NeMo, 50 FLEURS clips in 10
+/// languages: 12.67 vs 12.08 %).
 public enum NemotronUnifiedLayout {
     public static let leftFrames = 70
 
