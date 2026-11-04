@@ -843,7 +843,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "Send it" reads the joined pane back before it presses Return,
             // with the same registry and focused-pane reader as the join.
             let desktopTitles = ClaudeDesktopSessionTitles.live()
-            let terminalFocuser = TerminalSessionPaneFocuser.live(ttyReader: ttyReader)
+            let terminalFocuser = TerminalSessionPaneFocuser.live(
+                ttyReader: ttyReader,
+                sessionOnTTY: { [claudeSessionRegistry] tty in
+                    if case .resolved(let snapshot) = claudeSessionRegistry.resolve(tty: tty) {
+                        return snapshot.sessionID
+                    }
+                    return nil
+                }
+            )
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 focuser: SessionPaneFocuserRouter(

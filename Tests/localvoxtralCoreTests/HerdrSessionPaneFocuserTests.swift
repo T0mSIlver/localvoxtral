@@ -15,16 +15,13 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
     private let client = HerdrSocketClient(timeout: 2)
     private let ghostty = TerminalScreenAllowlist.ghosttyBundleID
 
-    /// A herdr whose focused pane is `focused`.
-    private func herdr(focused: String = "w1:p2") throws -> FakeHerdrSocket {
-        try FakeHerdrSocket { request in
-            switch request.method {
-            case "pane.current":
-                return .result(#"{"type":"pane_current","pane":{"pane_id":"\#(focused)","focused":true}}"#)
-            default:
-                return .error("unexpected")
-            }
-        }
+    /// A herdr whose focused pane is `focused`, running `foreground` (pid,
+    /// name) in its foreground. `localSession`'s agent is pid 2.
+    private func herdr(
+        focused: String = "w1:p2",
+        foreground: @escaping @Sendable () -> [(pid: Int32, name: String)] = { [(2, "claude")] }
+    ) throws -> FakeHerdrSocket {
+        try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane(focused, foreground: foreground))
     }
 
     private func localSession(paneID: String = "w1:p2", socket: String) -> ClaudeSessionSnapshot {
@@ -73,7 +70,43 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         let session = localSession(socket: herdr.socketPath)
         let shows = await focuser(herdr: herdr).focusedPaneShows(session, bundleID: ghostty)
         XCTAssertTrue(shows)
-        XCTAssertEqual(herdr.requests.map(\.method), ["pane.current"], "the read-back asks and writes nothing")
+        XCTAssertEqual(
+            herdr.requests.map(\.method), ["pane.current", "pane.process_info"],
+            "the read-back asks and writes nothing")
+    }
+
+    /// A suspended agent (Ctrl-Z) keeps its pane, tty and registry entry
+    /// while its shell owns the pane: a Return would run the dictated text
+    /// as a command (#1249).
+    func testAnAgentThatIsNotInThePanesForegroundIsNotShown() async throws {
+        let herdr = try herdr(foreground: { [(777, "zsh")] })
+        defer { herdr.stop() }
+        let shows = await focuser(herdr: herdr).focusedPaneShows(localSession(socket: herdr.socketPath), bundleID: ghostty)
+        XCTAssertFalse(shows)
+    }
+
+    /// A remote pid means nothing on this Mac, so a remote pane's agent is
+    /// found by its hook parent or its name. The registry keeps a remote
+    /// session live by TTL, so a suspended remote agent still reads back as
+    /// the pane's session otherwise.
+    func testARemoteAgentIsShownOnlyWhileItIsInThePanesForeground() async throws {
+        let foreground = Box<[(pid: Int32, name: String)]>([(4711, "claude")])
+        let herdr = try herdr(focused: "w2:p5", foreground: { foreground.get() })
+        defer { herdr.stop() }
+        var session = ClaudeSessionSnapshot(
+            sessionID: "remote:h1:s1",
+            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: "h1")),
+            firstSeen: Self.epoch
+        )
+        session.remoteSessionEnvironment = ClaudeRemoteSessionEnvironment(
+            herdrPaneID: "w2:p5", herdrSocketPath: remoteSocket, hookParentPID: "4711"
+        )
+        let subject = focuser(herdr: herdr, paneSessionID: { _ in "remote:h1:s1" })
+        let inForeground = await subject.focusedPaneShows(session, bundleID: ghostty)
+        XCTAssertTrue(inForeground)
+        foreground.set([(900, "zsh")])
+        let atShell = await subject.focusedPaneShows(session, bundleID: ghostty)
+        XCTAssertFalse(atShell, "the pane is back at its shell")
     }
 
     func testAnotherPaneFocusedInHerdrIsNotShown() async throws {

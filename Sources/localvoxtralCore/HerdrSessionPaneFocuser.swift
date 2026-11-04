@@ -75,7 +75,37 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
         else { return false }
         defer { socket.release() }
         guard await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID else { return false }
+        // A suspended agent (Ctrl-Z) keeps its pane, tty and registry entry
+        // while its shell owns the pane, and a Return would run the dictated
+        // text as a command (#1249). herdr names what is in the foreground.
+        guard await agentIsForeground(session, target, socketPath: socket.path) else { return false }
         return await stillShows(target, on: tty, bundleID: bundleID) && paneShows(session, target)
+    }
+
+    /// Whether the session's agent is in the pane's foreground, as herdr
+    /// reports it: its pid for a local pane, the registered agent for a
+    /// remote one (a remote pid means nothing here).
+    private func agentIsForeground(
+        _ session: ClaudeSessionSnapshot, _ target: HerdrPaneFocusTarget, socketPath: String
+    ) async -> Bool {
+        guard let processes = await panes.paneForegroundInfo(
+            socketPath: socketPath, paneID: target.paneID
+        )?.foregroundProcesses else {
+            Log.claudeContext.info("pane read-back: herdr named no foreground process")
+            return false
+        }
+        let holds: Bool
+        switch target {
+        case .local:
+            guard let pid = session.process?.claudePID else { return false }
+            holds = processes.contains { $0.pid == pid }
+        case .remote:
+            holds = ClaudeSessionJoinResolver.remoteAgentIsForeground(
+                snapshot: session, foregroundProcesses: processes, noteAbstention: { _ in }
+            )
+        }
+        if !holds { Log.claudeContext.info("pane read-back: the agent is not in the herdr pane's foreground") }
+        return holds
     }
 
     /// Whether the pane shows `session` rather than another session sharing

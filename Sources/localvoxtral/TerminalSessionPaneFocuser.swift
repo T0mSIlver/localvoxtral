@@ -9,24 +9,37 @@ import Foundation
 /// types nothing.
 ///
 /// The answer is the way the join reads a pane: the terminal's focused-pane
-/// tty (`TerminalFocusedTTYReading`) must equal the session's.
+/// tty (`TerminalFocusedTTYReading`) must equal the session's, and the
+/// registry must still resolve that tty to this session. One opencode TUI
+/// hosts several sessions on one tty and shows one, so the tty alone cannot
+/// say which prompt a Return would submit.
 @MainActor
 final class TerminalSessionPaneFocuser: SessionPaneFocusing {
     private let focusedTTY: (String) async -> String?
     private let frontmostBundleID: () -> String?
+    private let sessionOnTTY: (String) -> String?
 
+    /// - Parameter sessionOnTTY: the session the registry resolves a tty to,
+    ///   as the join does (`ClaudeSessionRegistry.resolve(tty:)`); nil when
+    ///   none, several or a stale one.
     init(
         focusedTTY: @escaping (String) async -> String?,
-        frontmostBundleID: @escaping () -> String?
+        frontmostBundleID: @escaping () -> String?,
+        sessionOnTTY: @escaping (String) -> String?
     ) {
         self.focusedTTY = focusedTTY
         self.frontmostBundleID = frontmostBundleID
+        self.sessionOnTTY = sessionOnTTY
     }
 
-    static func live(ttyReader: any TerminalFocusedTTYReading) -> TerminalSessionPaneFocuser {
+    static func live(
+        ttyReader: any TerminalFocusedTTYReading,
+        sessionOnTTY: @escaping (String) -> String?
+    ) -> TerminalSessionPaneFocuser {
         TerminalSessionPaneFocuser(
             focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
-            frontmostBundleID: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+            frontmostBundleID: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
+            sessionOnTTY: sessionOnTTY
         )
     }
 
@@ -41,6 +54,11 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
 
     func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID: String) async -> Bool {
         guard case .terminalTTY(let tty, _) = SessionPaneFocusRoute.of(session) else { return false }
-        return await focusedTTY(bundleID) == tty
+        guard await focusedTTY(bundleID) == tty else { return false }
+        guard sessionOnTTY(tty) == session.sessionID else {
+            Log.claudeContext.info("pane read-back: the tty resolves to no session or another one")
+            return false
+        }
+        return true
     }
 }
