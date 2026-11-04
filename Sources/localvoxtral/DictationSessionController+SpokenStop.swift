@@ -39,7 +39,7 @@ extension DictationSessionController {
             self.spokenStopArmedWords = nil
             self.fireSpokenStop(after: wait)
         }
-        Log.dictation.info("spoken stop armed: a send or stop phrase ends the dictation after \(wait.displayName, privacy: .public)")
+        Log.dictation.info("spoken stop armed: a send phrase ends the dictation after \(wait.displayName, privacy: .public)")
     }
 
     func disarmSpokenStop() {
