@@ -1325,16 +1325,18 @@ extension DictationSessionController {
     }
 
     /// What a new dictation saves of this one if it starts while the commit
-    /// still waits on a batch reply: the realtime text, unpolished.
+    /// still waits on a batch reply: the realtime text, unpolished, as it is
+    /// then, with the words any backfill restored meanwhile. The interrupt
+    /// runs it before the session cleanup clears the transcript.
     private func armInterruptedCommitSave(sample: OverlayStopSample) {
-        let realtimeText = transcript.currentDictationEventText
         // Only what the history keeps: the closure outlives the stop, and a
         // join can hold an ssh forward open.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         saveInterruptedPolishCommit = { [weak self] in
-            _ = self?.saveSessionRecord(
+            guard let self else { return }
+            _ = self.saveSessionRecord(
                 startedAt: sample.record.startedAt,
-                rawText: realtimeText,
+                rawText: self.transcript.currentDictationEventText,
                 polishedText: nil,
                 polishingDuration: nil,
                 provider: sample.record.provider,

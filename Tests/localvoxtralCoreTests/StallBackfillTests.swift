@@ -115,6 +115,21 @@ final class StallBackfillTests: XCTestCase {
         XCTAssertEqual(transcript.currentDictationEventText, "alpha beta one gamma delta two three epsilon")
     }
 
+    /// The final added a word past the deltas; the late backfill hears it too
+    /// and must not insert it a second time (review finding).
+    func testALateBackfillDoesNotRepeatWhatTheFinalAdded() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("hello world")
+        let mark = transcript.stallMark()
+        _ = transcript.applyFinal("hello world again")
+
+        XCTAssertNil(transcript.spliceBackfill("hello world again", at: mark))
+        XCTAssertEqual(transcript.currentDictationEventText, "hello world again")
+
+        XCTAssertEqual(transcript.spliceBackfill("hello world big again", at: mark), "big")
+        XCTAssertEqual(transcript.currentDictationEventText, "hello world big again")
+    }
+
     func testABackfillForAnOlderSegmentIsDropped() {
         var transcript = TranscriptAccumulator()
         transcript.appendPartial("we should ship it tonight")

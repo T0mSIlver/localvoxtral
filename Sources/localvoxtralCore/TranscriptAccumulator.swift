@@ -103,9 +103,12 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         guard case .closed(var replay, let closing, let eventText, let transcriptText)? = closedSegment,
             mark.epoch == replay.pendingEpoch,
             currentDictationEventText == eventText,
-            self.transcriptText == transcriptText,
-            let words = replay.spliceBackfill(batchText, at: mark)
+            self.transcriptText == transcriptText
         else { return nil }
+        // Words the final added past the deltas line up after the mark too,
+        // or the backfill would insert them and the final append them again.
+        if case .final(let text) = closing { replay.appendFinalOnlySuffix(of: text) }
+        guard let words = replay.spliceBackfill(batchText, at: mark) else { return nil }
         switch closing {
         case .final(let text): _ = replay.applyFinal(text)
         case .promoted(let keepingOverlayMerge):
@@ -116,6 +119,15 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         self.transcriptText = replay.transcriptText
         closedSegment = replay.closedSegment
         return words
+    }
+
+    /// Appends to the deltas what `finalText` adds past them, when it purely
+    /// extends them, so the final then repeats the deltas exactly.
+    private mutating func appendFinalOnlySuffix(of finalText: String) {
+        let final = finalText.trimmed
+        let raw = unsplicedPending.trimmed
+        guard !raw.isEmpty, final.count > raw.count, final.hasPrefix(raw) else { return }
+        appendPartial(String(final.dropFirst(raw.count)))
     }
 
     /// Records the close that just ended the segment `before` held.
