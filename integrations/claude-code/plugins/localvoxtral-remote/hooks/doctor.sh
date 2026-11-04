@@ -20,7 +20,7 @@
 set -u
 umask 077
 
-DOCTOR_VERSION=1.48.0
+DOCTOR_VERSION=1.49.0
 JSON=0
 case "${1:-}" in
 --json) JSON=1 ;;

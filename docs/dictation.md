@@ -466,8 +466,7 @@ local Claude Code, Mistral Vibe or opencode session in a new project starts
 that agent once, headless, in the project's repository.
 
 The agent reads a few files and answers with up to 40 names you would say
-about the project, and one sentence on what the project is and has. The app
-keeps the sentence, and nothing reads it. The names are the
+about the project. The names are the
 project's and its parts', the products, tools, services and models it uses,
 people, and words of its domain. The app drops any name written like code: a
 type or function name, a file name, a path, a flag or an environment
