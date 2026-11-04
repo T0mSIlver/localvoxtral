@@ -47,9 +47,8 @@ Settings.
 
 ### Record a chord of modifier keys
 
-To make **Answer the agent that needs you** or **Copy last dictation** a
-chord of modifier keys, such as left Shift and
-right Shift together:
+To make **Copy last dictation** a chord of modifier keys, such as left
+Shift and right Shift together:
 
 1. Click the shortcut's field.
 2. Press the keys together.
@@ -96,9 +95,9 @@ It offers **Never**, the default, and **After 5 s**, **8 s**, **15 s** or
 commit run as usual.
 
 It applies only to Overlay Buffer dictations started by a tap: a tap of the
-modifier keys, a keyboard shortcut set to **Toggle**, or a destination
-shortcut. A held dictation stops on release, and Live Auto-Paste has typed
-its words already, so neither stops on silence.
+modifier keys or a keyboard shortcut set to **Toggle**. A held dictation
+stops on release, and Live Auto-Paste has typed its words already, so
+neither stops on silence.
 
 - The time counts from the last new words, not from the last sound you
   made.
@@ -125,7 +124,7 @@ Advanced**:
 
 Words then land in the focused app while you talk. The app applies
 dictionary replacements before typing, and never backspaces over text an app
-has already drawn. It has no overlay, so Tab does not apply.
+has already drawn. It has no overlay.
 
 ### Keeping words on their line
 
@@ -141,38 +140,11 @@ straight to the next line and stays there for the rest of the dictation.
 Lines can then end with empty space up to the width of that many letters.
 The committed text is the same either way.
 
-## Where the words go
-
-Press **Tab** during a dictation to send the words somewhere else, and
-**⇧Tab** to go back. The top of the overlay names where the words go, and
-"2 of 5" says how many places they could go, in this order:
-
-- **The app you started in**, named after its coding agent session when it
-  has one. A dictation goes here unless you press Tab.
-- **Each coding agent session that needs you**, oldest first, when
-  [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
-  is on. Picking one brings its pane forward, and your words go there when
-  you stop.
-
-**→** and **←** move the same way. None of these keys reach the app you are
-dictating into while the overlay is open. The first Tab reaches the session
-that has waited longest.
-
-While you move, the overlay lists every destination under its top line. The
-list closes two seconds after your last move. A click on a destination in
-the list picks it, and a click on the name at the top opens the list.
-
 ## Voice commands
 
 Some spoken phrases act instead of being typed:
 
 - "send it" presses Return (below);
-- "go to payments" brings a session forward
-  ([Go to a session by voice](agents.md#go-to-a-session-by-voice));
-- "send that to payments" sends the dictation to that session
-  ([Send a dictation to another session](agents.md#send-a-dictation-to-another-session));
-- "call this session payments" names the session
-  ([Name a session](agents.md#name-a-session));
 - "paste clipboard" inserts the clipboard as a code block
   ([Polishing](coding-agents.md#polishing)).
 
@@ -665,7 +637,7 @@ History; the panes sit under the sidebar's Settings header.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
   [send phrases](#press-return-with-send-it), the wait before pressing
   Return and the Overlay Buffer send phrase switch, the
-  [needs-you cue and its shortcut](agents.md#jump-to-it),
+  [needs-you cue](agents.md#when-an-agent-needs-you),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and

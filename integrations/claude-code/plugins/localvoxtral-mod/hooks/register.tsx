@@ -14,7 +14,6 @@ import {
   type ChannelReply,
   NEW_SESSION_POLL_MS,
   NEW_SESSION_WAIT_MS,
-  NO_TURN,
   NOT_RESTORED,
   type Outcome,
   parseMessage,
@@ -486,15 +485,6 @@ async function handle($: EngineInterface, sessionID: string, message: ChannelMes
   }
   if (await moved($, sessionID)) return changed
   switch (message.kind) {
-    case 'abort': {
-      // A spoken stop phrase (#1696): ends the main loop's running turn, as
-      // Escape would, with no key. Nothing running is not an error the
-      // person needs a key for.
-      const turnId = runningTurn
-      if (turnId === undefined) return { ok: false, reason: NO_TURN }
-      await $.turn.abort({ turnId })
-      return { ok: true }
-    }
     case 'draft':
       // What the person already typed, for polish and the space before the
       // fill (#1406). Read where the dictation will land, at the stop.

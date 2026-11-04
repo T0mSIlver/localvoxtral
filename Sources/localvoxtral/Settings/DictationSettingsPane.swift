@@ -7,13 +7,12 @@ struct DictationSettingsPane: View {
     let dictationShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
 
-    /// The Trigger group's Learn more: what a tap and a hold do, and Tab.
+    /// The Trigger group's Learn more: what a tap and a hold do.
     private static let shortcutsDocsURL = DocsLink.page("docs/dictation/#shortcuts")
     /// The Overlay Buffer group's Learn more: what keeping words on their
     /// line trades for.
     private static let overlayWordHoldDocsURL = DocsLink.page("docs/dictation/#keeping-words-on-their-line")
-    /// The Output group's Learn more: the send phrases, where they press
-    /// Return, and how a dictation stops on one.
+    /// The Output group's Learn more: the needs-you cue.
     private static let agentsDocsURL = DocsLink.page("docs/agents/")
 
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
@@ -34,7 +33,6 @@ struct DictationSettingsPane: View {
     @State private var overlayValidationError: String?
     @State private var livePasteValidationError: String?
     @State private var copyLastDictationValidationError: String?
-    @State private var answerAgentValidationError: String?
     @State private var dictationChordValidationError: String?
     @State private var pendingShortcutMove: PendingShortcutMove?
 
@@ -84,10 +82,6 @@ struct DictationSettingsPane: View {
         copyLastDictationValidationError = viewModel.shortcuts.requestCopyLastDictationShortcut(shortcut)
     }
 
-    private func assignAnswerAgentShortcut(_ shortcut: DictationShortcut?) {
-        answerAgentValidationError = viewModel.shortcuts.requestAnswerAgentShortcut(shortcut)
-    }
-
     /// Turning the needs-you cue on is when macOS is asked to allow its
     /// banner; turning it off empties the queue at once.
     private var agentAttentionBinding: Binding<Bool> {
@@ -101,13 +95,6 @@ struct DictationSettingsPane: View {
                     viewModel.agentAttention?.tracker.clear()
                 }
             }
-        )
-    }
-
-    private var answerAgentShortcutBinding: Binding<DictationShortcut?> {
-        Binding(
-            get: { settings.answerAgentShortcut },
-            set: { assignAnswerAgentShortcut($0) }
         )
     }
 
@@ -290,11 +277,8 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
-                StopPhrasesRow(settings: settings)
-
                 // The needs-you cue (#717): a sound, a banner and the menu
-                // bar icon when a coding agent waits for you, and the waiting
-                // sessions among the overlay's destinations (#840).
+                // bar icon when a coding agent waits for you.
                 SettingsFieldRow(title: "Tell me when an agent needs you") {
                     Toggle("", isOn: agentAttentionBinding)
                         .labelsHidden()
@@ -310,23 +294,6 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                     .fixedSize()
                     .disabled(!settings.agentAttentionEnabled)
-                }
-
-                // Optional: opens a dictation in the pane of the session that
-                // needs you, as Tab to it would.
-                SettingsShortcutRow(
-                    title: "Answer the agent that needs you",
-                    shortcut: answerAgentShortcutBinding,
-                    validationError: $answerAgentValidationError,
-                    acceptsModifierChord: true,
-                    button: .init(title: "Clear", isDisabled: settings.answerAgentShortcut == nil) {
-                        answerAgentValidationError = nil
-                        assignAnswerAgentShortcut(nil)
-                    }
-                ) {
-                    if let answerAgentValidationError {
-                        SettingsInlineMessage(answerAgentValidationError, color: .red)
-                    }
                 }
 
                 SettingsFieldRow(title: "Lower other audio while dictating") {
@@ -570,61 +537,9 @@ struct SendPhrasesRow: View {
 
     private func save() {
         guard let draft else { return }
-        switch SendTriggerPhrases.validate(
-            SendTriggerPhrases.split(draft), stopPhrases: settings.spokenAbortPhrases
-        ) {
+        switch SendTriggerPhrases.validate(SendTriggerPhrases.split(draft)) {
         case .success(let phrases):
             settings.spokenSendTriggerPhrases = phrases
-            self.draft = nil
-            refusal = nil
-        case .failure(let reason):
-            refusal = reason.message
-        }
-    }
-}
-
-/// The stop phrases (#1696), comma-separated; empty turns them off. A list
-/// is saved only when `SpokenAbortPhrases.validate` accepts it.
-struct StopPhrasesRow: View {
-    @Bindable var settings: SettingsStore
-    @State private var draft: String?
-    @State private var refusal: String?
-    @FocusState private var focused: Bool
-
-    init(settings: SettingsStore, draft: String? = nil, refusal: String? = nil) {
-        self.settings = settings
-        _draft = State(initialValue: draft)
-        _refusal = State(initialValue: refusal)
-    }
-
-    private var saved: String { settings.spokenAbortPhrases.joined(separator: ", ") }
-
-    var body: some View {
-        SettingsFieldRow(title: "Phrases that stop Claude Code") {
-            TextField("stop claude", text: Binding(
-                get: { draft ?? saved },
-                set: { draft = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: SettingsLayout.textFieldWidth)
-            .focused($focused)
-            .onSubmit(save)
-            .onChange(of: focused) { _, isFocused in
-                if !isFocused { save() }
-            }
-        } footer: {
-            if let refusal {
-                SettingsInlineMessage(refusal, color: .red)
-            }
-        }
-    }
-
-    private func save() {
-        guard let draft else { return }
-        let phrases = SendTriggerPhrases.split(draft)
-        switch SpokenAbortPhrases.validate(phrases, sendPhrases: settings.spokenSendTriggerPhrases) {
-        case .success(let phrases):
-            settings.spokenAbortPhrases = phrases
             self.draft = nil
             refusal = nil
         case .failure(let reason):

@@ -26,7 +26,6 @@ final class FakeShortcutSession: ShortcutSessionControlling {
     private(set) var toggledModes: [DictationOutputMode?] = []
     private(set) var refusalSignalClears = 0
     private(set) var copyLastDictationCalls = 0
-    private(set) var answerAgentCalls = 0
 
     func startDictation(outputMode: DictationOutputMode?) {
         startedModes.append(outputMode)
@@ -40,5 +39,4 @@ final class FakeShortcutSession: ShortcutSessionControlling {
     func clearSecureInputRefusalSignalsIfAttemptEnded() { refusalSignalClears += 1 }
     func overlayReachabilityDidChange(wasReachable: Bool) {}
     func copyLastDictation() { copyLastDictationCalls += 1 }
-    func answerAgentThatNeedsYou() { answerAgentCalls += 1 }
 }

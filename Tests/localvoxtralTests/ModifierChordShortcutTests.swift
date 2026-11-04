@@ -5,8 +5,8 @@ import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// A left-and-right-Shift chord in an action slot (#831): Settings stores it,
-/// the hotkey manager fires the slot's action from it, and the slots still
-/// refuse each other's shortcut.
+/// the hotkey manager fires the slot's action from it, and the slot still
+/// refuses the dictation key's shortcut.
 @MainActor
 final class ModifierChordShortcutTests: XCTestCase {
     private let bothShifts = DictationShortcut(chord: .bothShifts)
@@ -31,35 +31,20 @@ final class ModifierChordShortcutTests: XCTestCase {
         chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 200.03125)
         chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 200.125)
         XCTAssertEqual(session.copyLastDictationCalls, 1)
-        XCTAssertEqual(session.answerAgentCalls, 0)
     }
 
     func testTheChordReadsBackAfterARelaunchAndAKeyReplacesIt() {
         let (shortcuts, _) = makeShortcuts()
-        XCTAssertNil(shortcuts.requestAnswerAgentShortcut(bothShifts))
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts))
 
         let relaunched = SettingsStore(
             defaults: shortcuts.settings.defaults, environment: [:], secretStore: InMemorySecretStore())
-        XCTAssertEqual(relaunched.answerAgentShortcut, bothShifts)
+        XCTAssertEqual(relaunched.copyLastDictationShortcut, bothShifts)
 
         forceActionRegistrationSuccess()
-        XCTAssertNil(shortcuts.requestAnswerAgentShortcut(optionF13))
-        XCTAssertEqual(shortcuts.settings.answerAgentShortcut, optionF13)
-        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.chords[.answerAgent], "the chord is gone")
-    }
-
-    func testTheSlotsRefuseAChordAnotherSlotHolds() {
-        let (shortcuts, _) = makeShortcuts()
-        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts))
-
-        XCTAssertEqual(
-            shortcuts.requestAnswerAgentShortcut(bothShifts), ShortcutController.copyLastDictationConflictMessage)
-        XCTAssertNil(shortcuts.settings.answerAgentShortcut)
-
-        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(nil))
-        XCTAssertNil(shortcuts.requestAnswerAgentShortcut(bothShifts), "free once cleared")
-        XCTAssertEqual(
-            shortcuts.requestCopyLastDictationShortcut(bothShifts), ShortcutController.answerAgentConflictMessage)
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(optionF13))
+        XCTAssertEqual(shortcuts.settings.copyLastDictationShortcut, optionF13)
+        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.chords[.copyLastDictation], "the chord is gone")
     }
 
     /// A cold launch can report no Accessibility trust with a grant on disk;
@@ -147,8 +132,6 @@ final class ModifierChordShortcutTests: XCTestCase {
     func testTheDictationChordAndTheActionSlotsRefuseEachOther() {
         let (shortcuts, _, _) = makeDictationChord()
         XCTAssertEqual(
-            shortcuts.requestAnswerAgentShortcut(bothShifts), ShortcutController.dictationChordConflictMessage)
-        XCTAssertEqual(
             shortcuts.requestCopyLastDictationShortcut(bothShifts),
             ShortcutController.dictationChordConflictMessage)
         XCTAssertNil(shortcuts.settings.copyLastDictationShortcut)
@@ -216,7 +199,7 @@ final class ModifierChordShortcutTests: XCTestCase {
     private func forceActionRegistrationSuccess() {
         HotKeyManager.debugResetOverridesForTesting()
         HotKeyManager.debugForceHandlerInstallResultForTesting(true)
-        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .answerAgent, status: noErr)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .copyLastDictation, status: noErr)
         addTeardownBlock { @MainActor in
             HotKeyManager.debugResetOverridesForTesting()
         }

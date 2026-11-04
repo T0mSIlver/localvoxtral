@@ -158,8 +158,7 @@ struct OverlayLayoutMetrics: Equatable {
     @MainActor
     func contentHeight(
         text: String,
-        errorMessage: String?,
-        destinations: OverlayDestinationStrip? = nil
+        errorMessage: String?
     ) -> CGFloat {
         let displayText = text.trimmed.isEmpty ? "" : text
 
@@ -168,10 +167,6 @@ struct OverlayLayoutMetrics: Equatable {
             + Self.stackSpacing
             + bodyTextHeight(for: displayText)
 
-        if let destinations, destinations.isOpen {
-            total += Self.stackSpacing + destinationListHeight(rows: destinations.items.count)
-        }
-
         if let errorMessage, !errorMessage.trimmed.isEmpty {
             total += Self.stackSpacing
                 + OverlayTextMeasurer.height(
@@ -179,21 +174,6 @@ struct OverlayLayoutMetrics: Equatable {
         }
 
         return total
-    }
-}
-
-extension OverlayLayoutMetrics {
-    /// The open destination list (#1015) shows this many rows, then scrolls.
-    static let maximumVisibleDestinationRows = 6
-    static let destinationRowSpacing: CGFloat = 2
-
-    /// One destination row: a pill's text plus its padding.
-    var destinationRowHeight: CGFloat { ceil(16 * scale) }
-
-    /// The open destination list, as `DictationOverlayView` draws it.
-    func destinationListHeight(rows: Int) -> CGFloat {
-        let visible = CGFloat(min(max(rows, 1), Self.maximumVisibleDestinationRows))
-        return visible * destinationRowHeight + (visible - 1) * Self.destinationRowSpacing
     }
 }
 

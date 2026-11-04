@@ -76,17 +76,6 @@ extension DictationSessionController {
         return destination
     }
 
-    /// Whether "send that to <name>" in a terminal pane starts with a
-    /// space: the same evidence, judged against the pane's pid and the
-    /// named session (#1480).
-    func addressedCommitNeedsLeadingSpace(session: ClaudeSessionSnapshot, targetPID: pid_t) -> Bool {
-        guard let landing = lastOverlayCommitLanding,
-              landing.isAt(currentLanding(session: session, targetPID: targetPID))
-        else { return false }
-        Log.overlay.info("send to session: continues the unsent prompt; leading space")
-        return true
-    }
-
     /// Whether the last commit went into `session`'s unsent prompt and the
     /// session has submitted nothing since, whichever app shows it: a mod's
     /// fill lands in the session's own box, wherever its pane is.

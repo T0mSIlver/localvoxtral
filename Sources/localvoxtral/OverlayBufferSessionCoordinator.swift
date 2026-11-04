@@ -132,9 +132,6 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// The mic's level, 0...1, for the bars while the dictation runs.
     /// Defaulted so test doubles stay unchanged.
     func updateMicLevel(_ level: Double)
-    /// Shows the overlay's destinations (#840). Defaulted so test doubles
-    /// stay unchanged.
-    func showDestinations(_ strip: OverlayDestinationStrip?)
 }
 
 extension OverlayBufferSessionCoordinating {
@@ -145,7 +142,6 @@ extension OverlayBufferSessionCoordinating {
     var showsSecondPassMiss: Bool { false }
     var showsPolishChange: Bool { false }
     func updateMicLevel(_ level: Double) {}
-    func showDestinations(_ strip: OverlayDestinationStrip?) {}
 }
 
 @MainActor
@@ -391,11 +387,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     func updateMicLevel(_ level: Double) {
         guard stateMachine.phase == .buffering else { return }
         renderer.updateMicLevel(level)
-    }
-
-    func showDestinations(_ strip: OverlayDestinationStrip?) {
-        stateMachine.setDestinations(strip)
-        renderCurrentSnapshot()
     }
 
     func dismissAfterHold(minimumVisibility: TimeInterval) {

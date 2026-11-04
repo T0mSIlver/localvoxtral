@@ -2,9 +2,6 @@ import Foundation
 
 /// The spoken commands Live Auto-Paste holds words back for (#1853).
 enum LiveSpokenCommand: Equatable, Sendable {
-    /// "Go to <name>" and "call this session <name>"
-    /// (`DictationSessionController+LiveGoToSession.swift`).
-    case goTo
     /// The spoken send trigger (`DictationSessionController+SpokenSend.swift`).
     case send
 }
@@ -16,28 +13,19 @@ enum LiveSpokenCommand: Equatable, Sendable {
 /// command arms itself, acts on a final and types the text it lets go in
 /// its own file; this one routes between them.
 extension DictationSessionController {
-    /// The phrase table, in the order the phrases claim a segment. Go-to
-    /// comes first: a segment it holds reaches the send trigger only once
-    /// it is known not to be a go-to (#747).
+    /// The phrase table, in the order the phrases claim a segment.
     nonisolated static let liveSpokenCommandRules: [SpokenCommandRule<LiveSpokenCommand>] = [
-        SpokenCommandRule(
-            phrase: .goTo,
-            hold: .whileOpening(SessionVoiceCommandParser.segmentPrefix),
-            claimsUnheldFinal: { SessionVoiceCommandParser.command(in: $0) != nil }
-        ),
-        SpokenCommandRule(phrase: .send, hold: .wholeSegment, claimsUnheldFinal: { _ in true }),
+        SpokenCommandRule(phrase: .send, claimsUnheldFinal: { _ in true }),
     ]
 
     /// Session start and end: nothing carries over.
     func resetLiveSpokenCommandsForSession() {
         spokenCommandGate.reset()
-        liveGoToLanding = nil
     }
 
     /// Asked when a segment reaches `phrase`, from the world as it is then.
     private func liveSpokenCommandIsArmed(_ phrase: LiveSpokenCommand) -> Bool {
         switch phrase {
-        case .goTo: liveGoToIsArmed
         case .send: liveSpokenSendIsArmed
         }
     }
@@ -50,8 +38,6 @@ extension DictationSessionController {
             break
         case .deliver:
             typeLivePartial(delta)
-        case .release(let held):
-            typeLivePartial(held)
         }
     }
 
@@ -94,8 +80,6 @@ extension DictationSessionController {
 
     private func decideLiveSpokenCommand(rule: Int, _ finalText: String, merged: String, startsMidWord: Bool) {
         switch spokenCommandGate.rules[rule].phrase {
-        case .goTo:
-            decideLiveGoToFinal(finalText, merged: merged, startsMidWord: startsMidWord)
         case .send:
             deliverLiveSpokenSendFinal(finalText, merged: merged, startsMidWord: startsMidWord)
         }
@@ -119,12 +103,6 @@ extension DictationSessionController {
     private func deliverHeldLivePromotion(rule: Int, _ segment: String, startsMidWord: Bool) {
         let phrase = spokenCommandGate.rules[rule].phrase
         switch phrase {
-        case .goTo:
-            guard let next = nextArmedLiveSpokenCommand(after: phrase) else {
-                typeLiveSpokenSendText(segment, startsMidWord: startsMidWord)
-                return
-            }
-            deliverHeldLivePromotion(rule: next, segment, startsMidWord: startsMidWord)
         case .send:
             spokenSendLatch.noteNonSubmittingFinal()
             typeLiveSpokenSendText(segment, startsMidWord: startsMidWord)
@@ -137,7 +115,7 @@ extension DictationSessionController {
     }
 
     /// Delivers the segments that waited, until one of them starts an
-    /// action of its own: a go-to, or a spoken send that reads its pane back.
+    /// action of its own: a spoken send that reads its pane back.
     func drainLiveSpokenCommandQueue() {
         while let next = spokenCommandGate.nextQueued() {
             switch next {

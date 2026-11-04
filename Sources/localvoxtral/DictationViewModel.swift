@@ -87,7 +87,6 @@ final class DictationViewModel {
                 || message == HotKeyManager.livePasteUnavailableErrorMessage
                 || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
                 || message == HotKeyManager.copyLastDictationUnavailableErrorMessage
-                || message == HotKeyManager.answerAgentUnavailableErrorMessage
             {
                 return .hotKeyShortcutUnavailable
             }
@@ -725,12 +724,6 @@ final class DictationViewModel {
         }
 
         session.escapeCancelHandler.onCancel = { [weak session] in session?.cancelDictation() }
-        session.destinationKeyHandler.onMove = { [weak session] forward in
-            session?.moveDestination(forward: forward)
-        }
-        overlayPanel?.onDestinationClick = { [weak session] destination in
-            session?.clickDestination(destination)
-        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -899,7 +892,6 @@ final class DictationViewModel {
         session.overlayBufferCoordinator.reset()
         audio.healthMonitor.cancelTasks()
         session.escapeCancelHandler.stop()
-        session.destinationKeyHandler.stop()
         audio.audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
             audio.stopMicrophoneIfInitialized()

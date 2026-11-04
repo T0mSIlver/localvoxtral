@@ -516,15 +516,13 @@ final class DictationSessionController {
     var microphonePermissionAttemptID: UUID?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
-    /// Resolves "go to <name>" (#723). Nil until the app installs it, and
-    /// then an Overlay Buffer dictation is never a command.
+    /// Reads a joined session's pane back before keys carry a commit into
+    /// it. Nil until the app installs it, and then no pane is read back.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
     /// The needs-you queue (#717). Nil until the app installs it. Observed:
     /// the menu bar icon and the popover read its queue.
     var agentAttention: AgentAttentionModel?
-    @ObservationIgnored
-    var answerAgentTask: Task<Void, Never>?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// The start's lookup of the joined session's git root (#1155).
@@ -541,10 +539,6 @@ final class DictationSessionController {
     /// target app nor History (#526).
     @ObservationIgnored
     var saveInterruptedPolishCommit: (() -> Void)?
-    /// Addressed commits whose text a route or the mod holds while the
-    /// commit awaits the delivery: quit saves each one's record (#1667).
-    @ObservationIgnored
-    var handedOffAddressedCommits: [HandedOffAddressedCommit] = []
     @ObservationIgnored
     // Several finalization callbacks can converge here; keep stop cleanup
     // idempotent until commit/post-processing fully finishes.
@@ -553,27 +547,6 @@ final class DictationSessionController {
     var wasCancelled = false
     @ObservationIgnored
     let escapeCancelHandler = EscapeCancelHandler()
-    /// Tab and ⇧Tab while an Overlay Buffer dictation runs (#840).
-    @ObservationIgnored
-    let destinationKeyHandler = DestinationKeyHandler()
-    /// The running overlay's destinations; nil outside an Overlay Buffer
-    /// dictation.
-    @ObservationIgnored
-    var destinations: SessionDestinations?
-    /// Brings a picked pane forward, or the focused app back.
-    @ObservationIgnored
-    var destinationFocusTask: Task<Void, Never>?
-    /// Closes the overlay's destination list once the user stops moving.
-    @ObservationIgnored
-    var destinationListCloseTask: Task<Void, Never>?
-    /// What the commit checks when the stopped dictation's picks moved the
-    /// focus, kept from the stop to the commit.
-    @ObservationIgnored
-    var sessionCommitGuard: DestinationCommitGuard?
-    /// The picked pane that read back before the polish, read back again
-    /// right before the insertion (#1056).
-    @ObservationIgnored
-    var sessionPickedPane: (sessionID: String, bundleID: String)?
     @ObservationIgnored
     var sessionStartedAt: Date?
     /// When `stopDictation` ran, for History's stop-to-commit time (#1792).
@@ -643,9 +616,6 @@ final class DictationSessionController {
     /// Return: no Return for the rest of this dictation.
     @ObservationIgnored
     var liveSpokenSendPaneLeft = false
-    /// Where the last go-to of this dictation moved the words, if one did.
-    @ObservationIgnored
-    var liveGoToLanding: LiveGoToLanding?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
@@ -859,8 +829,6 @@ final class DictationSessionController {
         guard !isDictating else { return }
         // An answer whose pane is still coming forward would activate its
         // terminal under this dictation and take its words there.
-        answerAgentTask?.cancel()
-        answerAgentTask = nil
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
@@ -1029,7 +997,6 @@ final class DictationSessionController {
         if !isOverlayBufferModeEnabled {
             escapeCancelHandler.stop()
         }
-        endDestinations()
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()

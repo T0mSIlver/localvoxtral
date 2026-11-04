@@ -19,9 +19,6 @@ protocol ShortcutSessionControlling: AnyObject {
     func clearSecureInputRefusalSignalsIfAttemptEnded()
     func overlayReachabilityDidChange(wasReachable: Bool)
     func copyLastDictation()
-    /// The answer shortcut (#717): goes to the agent session that needs you
-    /// and listens, or stops the dictation running.
-    func answerAgentThatNeedsYou()
 }
 
 /// The keyboard triggers: the push-to-talk, toggle and modifier-only
@@ -66,7 +63,6 @@ final class ShortcutController {
         hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
         hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
         hotKeyManager.onCopyLastDictation = { [weak self] in self?.session.copyLastDictation() }
-        hotKeyManager.onAnswerAgent = { [weak self] in self?.session.answerAgentThatNeedsYou() }
     }
 
     func install(session: any ShortcutSessionControlling) {
@@ -87,15 +83,11 @@ final class ShortcutController {
         if case .failure = hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
             applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
         }
-        if case .failure = hotKeyManager.registerAnswerAgent(settings.answerAgentShortcut) {
-            applyHotKeyRegistrationFailure(.answerAgentShortcutUnavailable)
-        }
     }
 
     func unregister() {
         hotKeyManager.unregister()
         hotKeyManager.registerCopyLastDictation(nil)
-        hotKeyManager.registerAnswerAgent(nil)
     }
 
     func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
@@ -242,9 +234,6 @@ final class ShortcutController {
             (settings.copyLastDictationShortcut, hotKeyManager.isCopyLastDictationShortcutRegistered,
              { self.hotKeyManager.registerCopyLastDictation($0) },
              HotKeyManager.copyLastDictationUnavailableErrorMessage),
-            (settings.answerAgentShortcut, hotKeyManager.isAnswerAgentShortcutRegistered,
-             { self.hotKeyManager.registerAnswerAgent($0) },
-             HotKeyManager.answerAgentUnavailableErrorMessage),
         ]
         for (shortcut, registered, register, message) in slots
         where shortcut?.modifierChord != nil && !registered {
@@ -327,7 +316,6 @@ final class ShortcutController {
     }
 
     static let copyLastDictationConflictMessage = "Already the Copy last dictation shortcut."
-    static let answerAgentConflictMessage = "Already the Answer the agent shortcut."
     static let dictationChordConflictMessage = "Already the dictation key."
 
     /// The Modifier key picker. A chord (#863) that an action slot took while
@@ -374,7 +362,6 @@ final class ShortcutController {
     /// The sentence for a shortcut one of the action slots already holds.
     private func actionSlotConflict(_ key: DictationShortcut) -> String? {
         if settings.copyLastDictationShortcut == key { return Self.copyLastDictationConflictMessage }
-        if settings.answerAgentShortcut == key { return Self.answerAgentConflictMessage }
         return nil
     }
 
@@ -391,9 +378,6 @@ final class ShortcutController {
         if let shortcut, settings.copyLastDictationShortcut == shortcut.normalized {
             return .refused(message: Self.copyLastDictationConflictMessage)
         }
-        if let shortcut, settings.answerAgentShortcut == shortcut.normalized {
-            return .refused(message: Self.answerAgentConflictMessage)
-        }
         if let shortcut, settings.livePasteShortcut == shortcut.normalized {
             return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .liveAutoPaste)
         }
@@ -404,9 +388,6 @@ final class ShortcutController {
     func requestLivePasteShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
         if let shortcut, settings.copyLastDictationShortcut == shortcut.normalized {
             return .refused(message: Self.copyLastDictationConflictMessage)
-        }
-        if let shortcut, settings.answerAgentShortcut == shortcut.normalized {
-            return .refused(message: Self.answerAgentConflictMessage)
         }
         if let shortcut, settings.overlayBufferShortcut == shortcut.normalized {
             return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .overlayBuffer)
@@ -518,9 +499,6 @@ final class ShortcutController {
             if settings.livePasteShortcut == key {
                 return "Already the \(DictationOutputMode.liveAutoPaste.displayName) shortcut."
             }
-            if settings.answerAgentShortcut == key {
-                return Self.answerAgentConflictMessage
-            }
             if isDictationChord(key) {
                 return Self.dictationChordConflictMessage
             }
@@ -540,37 +518,6 @@ final class ShortcutController {
         return nil
     }
 
-    /// Records the answer shortcut (#717), nil to clear it, under the copy
-    /// shortcut's rules: a key another slot holds is refused with a sentence,
-    /// and a key macOS refuses puts the previous one back.
-    func requestAnswerAgentShortcut(_ shortcut: DictationShortcut?) -> String? {
-        if let key = shortcut?.normalized {
-            if settings.overlayBufferShortcut == key {
-                return "Already the \(DictationOutputMode.overlayBuffer.displayName) shortcut."
-            }
-            if settings.livePasteShortcut == key {
-                return "Already the \(DictationOutputMode.liveAutoPaste.displayName) shortcut."
-            }
-            if settings.copyLastDictationShortcut == key {
-                return Self.copyLastDictationConflictMessage
-            }
-            if isDictationChord(key) {
-                return Self.dictationChordConflictMessage
-            }
-        }
-        let previous = settings.answerAgentShortcut
-        settings.setAnswerAgentShortcut(shortcut)
-        switch hotKeyManager.registerAnswerAgent(settings.answerAgentShortcut) {
-        case .success:
-            clearHotKeyErrors(actionMessage: HotKeyManager.answerAgentUnavailableErrorMessage)
-        case .failure:
-            settings.setAnswerAgentShortcut(previous)
-            hotKeyManager.registerAnswerAgent(previous)
-            applyHotKeyRegistrationFailure(.answerAgentShortcutUnavailable)
-        }
-        return nil
-    }
-
     /// Clears a hotkey registration error once a registration succeeded.
     /// The dictation triggers and each action shortcut register apart, so
     /// each clears only its own error: a working copy shortcut must not hide
@@ -583,7 +530,6 @@ final class ShortcutController {
         {
             let actionMessages = [
                 HotKeyManager.copyLastDictationUnavailableErrorMessage,
-                HotKeyManager.answerAgentUnavailableErrorMessage,
             ]
             let standingActionMessage = actionMessages.contains(lastError) ? lastError : nil
             guard standingActionMessage == actionMessage else { return }
@@ -618,9 +564,6 @@ final class ShortcutController {
         case .copyLastDictationShortcutUnavailable:
             session.statusText = HotKeyManager.registrationErrorStatus
             session.lastError = HotKeyManager.copyLastDictationUnavailableErrorMessage
-        case .answerAgentShortcutUnavailable:
-            session.statusText = HotKeyManager.registrationErrorStatus
-            session.lastError = HotKeyManager.answerAgentUnavailableErrorMessage
         }
     }
 }
@@ -649,7 +592,6 @@ private final class DetachedShortcutSession: ShortcutSessionControlling {
     func clearSecureInputRefusalSignalsIfAttemptEnded() { note("clearSecureInputRefusalSignals") }
     func overlayReachabilityDidChange(wasReachable _: Bool) { note("overlayReachabilityDidChange") }
     func copyLastDictation() { note("copyLastDictation") }
-    func answerAgentThatNeedsYou() { note("answerAgentThatNeedsYou") }
 
     private func note(_ what: String) {
         Log.dictation.error("shortcut: \(what, privacy: .public) reached no session owner; nothing happened")

@@ -64,7 +64,6 @@ final class SettingsStore {
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
-        static let spokenAbortPhrases = "settings.spoken_abort_phrases"
         static let spokenStopWait = "settings.spoken_stop_wait_ms"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
@@ -151,10 +150,6 @@ final class SettingsStore {
             "settings.copy_last_dictation_shortcut_carbon_modifiers"
         static let copyLastDictationShortcutEnabled = "settings.copy_last_dictation_shortcut_enabled"
         static let copyLastDictationShortcutChord = "settings.copy_last_dictation_shortcut_chord"
-        static let answerAgentShortcutKeyCode = "settings.answer_agent_shortcut_key_code"
-        static let answerAgentShortcutModifiers = "settings.answer_agent_shortcut_carbon_modifiers"
-        static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
-        static let answerAgentShortcutChord = "settings.answer_agent_shortcut_chord"
         static let agentAttentionEnabled = "settings.agent_attention_enabled"
         static let agentAttentionMark = "settings.agent_attention_mark"
         static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
@@ -342,13 +337,6 @@ final class SettingsStore {
     /// loads as the default.
     var spokenSendTriggerPhrases: [String] {
         didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
-    }
-
-    /// The phrases that, said alone, end the joined Claude Code session's
-    /// running turn (#1696). Empty, and so off, unless the user set some;
-    /// only a list `SpokenAbortPhrases` accepted is ever assigned.
-    var spokenAbortPhrases: [String] {
-        didSet { defaults.set(spokenAbortPhrases, forKey: Keys.spokenAbortPhrases) }
     }
 
     /// How long an Overlay Buffer dictation that ends in a send phrase waits
@@ -948,10 +936,6 @@ final class SettingsStore {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
 
-    var answerAgentShortcutEnabled: Bool {
-        didSet { defaults.set(answerAgentShortcutEnabled, forKey: Keys.answerAgentShortcutEnabled) }
-    }
-
     /// Advanced → "Hold the key for Live Auto-Paste" (#840). Off, a hold of
     /// the single modifier key is an Overlay Buffer push to talk.
     var modifierHoldLiveAutoPaste: Bool {
@@ -967,16 +951,6 @@ final class SettingsStore {
     /// The mark the menu bar icon gets while an agent needs you.
     var agentAttentionMark: AgentAttentionMark {
         didSet { defaults.set(agentAttentionMark.rawValue, forKey: Keys.agentAttentionMark) }
-    }
-
-    var answerAgentShortcutKeyCode: UInt32 {
-        didSet { defaults.set(answerAgentShortcutKeyCode, forKey: Keys.answerAgentShortcutKeyCode) }
-    }
-
-    var answerAgentShortcutCarbonModifierFlags: UInt32 {
-        didSet {
-            defaults.set(answerAgentShortcutCarbonModifierFlags, forKey: Keys.answerAgentShortcutModifiers)
-        }
     }
 
     var copyLastDictationShortcutEnabled: Bool {
@@ -1003,10 +977,6 @@ final class SettingsStore {
     /// `ModifierChord.storageValue` form; empty when the slot holds a key.
     var copyLastDictationShortcutChord: String {
         didSet { defaults.set(copyLastDictationShortcutChord, forKey: Keys.copyLastDictationShortcutChord) }
-    }
-
-    var answerAgentShortcutChord: String {
-        didSet { defaults.set(answerAgentShortcutChord, forKey: Keys.answerAgentShortcutChord) }
     }
 
     var livePasteShortcutKeyCode: UInt32 {
@@ -1179,8 +1149,6 @@ final class SettingsStore {
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
         let sendPhrases = SendTriggerPhrases.loaded(defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
         spokenSendTriggerPhrases = sendPhrases
-        spokenAbortPhrases = SpokenAbortPhrases.loaded(
-            defaults.stringArray(forKey: Keys.spokenAbortPhrases), sendPhrases: sendPhrases)
         spokenStopWait =
             (defaults.object(forKey: Keys.spokenStopWait) as? Int)
             .flatMap(SpokenStopWait.init(rawValue:)) ?? .default
@@ -1406,12 +1374,6 @@ final class SettingsStore {
             (defaults.object(forKey: Keys.copyLastDictationShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         copyLastDictationShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.copyLastDictationShortcutEnabled, fallback: false)
-        answerAgentShortcutKeyCode =
-            (defaults.object(forKey: Keys.answerAgentShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
-        answerAgentShortcutCarbonModifierFlags =
-            (defaults.object(forKey: Keys.answerAgentShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
-        answerAgentShortcutEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
         agentAttentionEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentAttentionEnabled, fallback: false)
         agentAttentionMark =
@@ -1420,7 +1382,6 @@ final class SettingsStore {
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         copyLastDictationShortcutChord = defaults.string(forKey: Keys.copyLastDictationShortcutChord) ?? ""
-        answerAgentShortcutChord = defaults.string(forKey: Keys.answerAgentShortcutChord) ?? ""
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)

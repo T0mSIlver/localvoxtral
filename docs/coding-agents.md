@@ -26,11 +26,9 @@ In a terminal, live dictation changes in two ways:
   instead of typing into the void, and an overlay commit copies the text to
   the clipboard instead.
 
-## Jump to the agent that needs you
+## When an agent needs you
 
-The needs-you cue, Tab to a waiting agent, and the voice commands that name,
-reach and send to sessions are in
-[Work with several agents](agents.md).
+The needs-you cue is in [Work with several agents](agents.md).
 
 ## Polishing
 

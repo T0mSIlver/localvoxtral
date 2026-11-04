@@ -8,23 +8,19 @@ import Darwin
 import Glibc
 #endif
 
-/// The opencode plugin's prompt relay as the app sees it (#719): an HTTP
-/// listener on 127.0.0.1, port 0, that records every call and answers each
-/// with the status `status` picks (200 by default; 0 reads the call and
-/// closes the connection without answering). One connection at a time, as
-/// the app's client makes them. `location` adds a Location header, for a
-/// redirect.
-package final class FakeOpencodePromptRelay: @unchecked Sendable {
+/// A loopback HTTP listener on 127.0.0.1, port 0, that records every call and
+/// answers each with the status `status` picks (200 by default; 0 reads the
+/// call and closes the connection without answering). One connection at a
+/// time, as the app's client makes them. `location` adds a Location header,
+/// for a redirect.
+package final class FakeLoopbackHTTPServer: @unchecked Sendable {
     package struct Call: Sendable, Equatable {
         package var method: String
         package var path: String
         package var authorization: String?
-        package var sessionID: String?
-        package var text: String?
     }
 
     package let port: Int
-    package let token = String(repeating: "5a", count: 32)
 
     private let listener: Int32
     private let status: @Sendable (Call) -> Int
@@ -66,20 +62,7 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
         Thread { [self] in serve() }.start()
     }
 
-    /// The relay a focus declaration would have published for this fixture.
-    package func relay(sessionID: String) -> OpencodePromptRelay {
-        OpencodePromptRelay(
-            address: OpencodePromptRelayAddress(port: port, token: token),
-            opencodeSessionID: sessionID
-        )
-    }
-
     package var calls: [Call] { state.withLock { $0.calls } }
-
-    /// The text every append carried, joined in arrival order.
-    package var appendedText: String {
-        calls.filter { $0.path == "/tui/append-prompt" }.compactMap(\.text).joined()
-    }
 
     /// True once `count` calls arrived; false if they did not within
     /// `failAfter` seconds of wall time.
@@ -162,14 +145,10 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
                 authorization = parts[1].trimmingCharacters(in: .whitespaces)
             }
         }
-        let body = Data(buffer[end..<(end + contentLength)])
-        let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
         let call = Call(
             method: requestLine.count > 0 ? String(requestLine[0]) : "",
             path: requestLine.count > 1 ? String(requestLine[1]) : "",
-            authorization: authorization,
-            sessionID: json?["session_id"] as? String,
-            text: json?["text"] as? String
+            authorization: authorization
         )
         let code = status(call)
         if code != 0 {

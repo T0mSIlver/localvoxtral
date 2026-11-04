@@ -101,13 +101,6 @@ struct DictationOverlayView: View {
     /// What this dictation's Claude Code session join resolved to. `.hidden`
     /// renders nothing — see `OverlayClaudeJoinBadge`.
     var claudeJoin: OverlayClaudeJoinBadge = .hidden
-    /// Where the words go at stop (#840). When shown, it takes the join
-    /// badge's place: the first pill carries the join.
-    var destinations: OverlayDestinationStrip? = nil
-    /// Where each destination pill or row sits, in the view's global space
-    /// (top left origin), and nil once it is gone: the panel swallows every
-    /// click, so it finds the clicked one from these (#880).
-    var onDestinationFrame: ((OverlayDestinationTarget, CGRect?) -> Void)? = nil
     private let cornerRadius: CGFloat = 12
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
@@ -212,122 +205,6 @@ struct DictationOverlayView: View {
         }
     }
 
-    /// The picked destination, tinted in its own color: a session is another
-    /// pane, so it may not look like the focused app. Closed, the header shows it whole; open (#1015), the list
-    /// under the header does, and the header keeps only where it sits. The
-    /// Tab key says how to move. A tint, not a fill (#1074): the pill was
-    /// the loudest thing on the panel.
-    private func destinationHeader(_ strip: OverlayDestinationStrip) -> some View {
-        HStack(spacing: 4) {
-            if !strip.isOpen, let item = strip.selectedItem {
-                destinationPill(item)
-                    .layoutPriority(-1)
-                    .reportingFrame(of: OverlayDestinationTarget(destination: item.destination, inList: false), to: onDestinationFrame)
-            }
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.right.to.line")
-                    .font(.system(size: metrics.badgeFontSize * 0.8, weight: .semibold))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5)
-                    )
-                Text(strip.position)
-                    .font(.system(size: metrics.badgeFontSize, weight: .semibold).monospacedDigit())
-            }
-            .foregroundStyle(.tertiary)
-            .fixedSize()
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Destination \(strip.position). Tab changes where the words go")
-        }
-        .layoutPriority(-1)
-    }
-
-    private func destinationPill(_ item: OverlayDestinationStrip.Item) -> some View {
-        let style = DestinationStyle(item.kind)
-        return HStack(spacing: 3) {
-            destinationIcon(item, style: style)
-            Text(item.label)
-                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
-                .foregroundStyle(style.tint)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .padding(.horizontal, metrics.badgeHorizontalPadding)
-        .padding(.vertical, metrics.badgeVerticalPadding)
-        .background(Capsule(style: .continuous).fill(style.tint.opacity(Self.pillTintOpacity)))
-        // The outline keeps the pill's edge on a light desktop, where the
-        // tint alone washes out.
-        .overlay(Capsule(style: .continuous).strokeBorder(style.tint.opacity(0.45), lineWidth: 0.5))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(style.accessibility(item.label))
-        .accessibilityAddTraits(.isSelected)
-    }
-
-    static let pillTintOpacity = 0.14
-    static let rowTintOpacity = 0.18
-
-    /// Every destination, one row each, the picked one tinted. Past
-    /// `maximumVisibleDestinationRows` it scrolls, keeping the picked row
-    /// in view. Heights mirror `OverlayLayoutMetrics.destinationListHeight`.
-    private func destinationList(_ strip: OverlayDestinationStrip) -> some View {
-        let scrolls = strip.items.count > OverlayLayoutMetrics.maximumVisibleDestinationRows
-        return ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: scrolls) {
-                VStack(alignment: .leading, spacing: OverlayLayoutMetrics.destinationRowSpacing) {
-                    ForEach(strip.items, id: \.destination) { item in
-                        destinationRow(item)
-                            .id(item.destination)
-                            .reportingFrame(of: OverlayDestinationTarget(destination: item.destination, inList: true), to: onDestinationFrame)
-                    }
-                }
-            }
-            .scrollDisabled(!scrolls)
-            .frame(height: metrics.destinationListHeight(rows: strip.items.count))
-            .onAppear { scrollToSelected(strip, proxy) }
-            .onChange(of: strip.selectedItem?.destination) { _, _ in scrollToSelected(strip, proxy) }
-        }
-    }
-
-    private func scrollToSelected(_ strip: OverlayDestinationStrip, _ proxy: ScrollViewProxy) {
-        guard let selected = strip.selectedItem?.destination else { return }
-        proxy.scrollTo(selected)
-    }
-
-    private func destinationRow(_ item: OverlayDestinationStrip.Item) -> some View {
-        let style = DestinationStyle(item.kind)
-        return HStack(spacing: 5) {
-            destinationIcon(item, style: style)
-                .frame(width: metrics.badgeFontSize * 1.2)
-            Text(item.label)
-                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
-                .foregroundStyle(item.isSelected ? Color.primary : Color.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, metrics.badgeHorizontalPadding)
-        .frame(height: metrics.destinationRowHeight)
-        .background(
-            RoundedRectangle(cornerRadius: metrics.destinationRowHeight / 3, style: .continuous)
-                .fill(item.isSelected ? style.tint.opacity(Self.rowTintOpacity) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(style.accessibility(item.label))
-        .accessibilityAddTraits(item.isSelected ? .isSelected : [])
-    }
-
-    @ViewBuilder
-    private func destinationIcon(_ item: OverlayDestinationStrip.Item, style: DestinationStyle) -> some View {
-        if let systemImage = style.systemImage {
-            Image(systemName: systemImage)
-                .font(.system(size: metrics.badgeFontSize * (item.kind == .session ? 0.6 : 0.9)))
-                .foregroundStyle(item.isSelected || item.kind == .session ? style.tint : Color.secondary)
-        }
-    }
-
     private func joinPill(
         systemImage: String,
         title: String,
@@ -371,17 +248,9 @@ struct DictationOverlayView: View {
                         .controlSize(.small)
                 }
                 Spacer(minLength: 0)
-                if let destinations {
-                    destinationHeader(destinations)
-                } else {
-                    claudeJoinBadge
-                }
+                claudeJoinBadge
             }
             .frame(height: metrics.headerHeight)
-
-            if let destinations, destinations.isOpen {
-                destinationList(destinations)
-            }
 
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
@@ -430,56 +299,6 @@ struct DictationOverlayView: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .compositingGroup()
         .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 8)
-    }
-}
-
-/// How a destination kind looks in the header pill and the list.
-private struct DestinationStyle {
-    let tint: Color
-    let systemImage: String?
-    let accessibility: (String) -> String
-
-    init(_ kind: OverlayDestinationStrip.Kind) {
-        switch kind {
-        case .focusedApp(let joined):
-            tint = OverlayPalette.focusedApp
-            systemImage = joined.map { $0 ? "link" : "link.slash" }
-            accessibility = { "Into \($0)" }
-        case .session:
-            tint = OverlayPalette.session
-            systemImage = "circle.fill"
-            accessibility = { "Answer \($0), which needs you" }
-        }
-    }
-}
-
-/// One place a destination is drawn: the header pill or its list row. Both
-/// can be on screen for a moment while the list opens or closes, so each
-/// reports its own frame, and one going away never clears the other's.
-struct OverlayDestinationTarget: Hashable {
-    let destination: DictationDestination
-    let inList: Bool
-}
-
-private extension View {
-    /// Reports where this target is drawn, and nil once it is gone. Inside
-    /// a scroll view only the part in view counts: a row scrolled out of
-    /// the list still has a frame, over the transcript or the header, and
-    /// a click there must not pick it.
-    func reportingFrame(
-        of target: OverlayDestinationTarget,
-        to report: ((OverlayDestinationTarget, CGRect?) -> Void)?
-    ) -> some View {
-        onGeometryChange(for: CGRect?.self) { proxy in
-            let frame = proxy.frame(in: .global)
-            guard let visible = proxy.bounds(of: .scrollView) else { return frame }
-            let shown = CGRect(origin: .zero, size: proxy.size).intersection(visible)
-            guard !shown.isNull, shown.height > 0 else { return nil }
-            return shown.offsetBy(dx: frame.minX, dy: frame.minY)
-        } action: { frame in
-            report?(target, frame)
-        }
-        .onDisappear { report?(target, nil) }
     }
 }
 

@@ -58,7 +58,7 @@ extension DictationSessionController {
         }
         sessionStoppedBySpokenPhrase = true
         Log.dictation.notice(
-            "spoken stop: a send or stop phrase and \(wait.displayName, privacy: .public) without new text; stopping as if pressed"
+            "spoken stop: a send phrase and \(wait.displayName, privacy: .public) without new text; stopping as if pressed"
         )
         stopDictation(reason: "spoken stop")
     }
@@ -66,9 +66,6 @@ extension DictationSessionController {
     /// The whole decision, asked on arming and again on firing.
     private func spokenStopWouldStop(_ text: String) -> Bool {
         guard SpokenStopRule.stopsByVoice(spokenStopGesture) else { return false }
-        // A stop phrase said alone ends the joined session's turn at the
-        // stop (#1696).
-        if isSpokenAbort(text) { return true }
         // Only a stop that will send: a phrase the commit would keep as text
         // must not end the dictation.
         if case .send = planOverlaySpokenSend(for: text) { return true }

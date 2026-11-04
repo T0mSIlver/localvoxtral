@@ -13,7 +13,7 @@ final class SessionShownNamesTests: XCTestCase {
 
     // MARK: - Recorded sessions, before and after
 
-    func testRecordedSessionsKeepSpeakableNamesAndStayApart() {
+    func testRecordedSessionsAreShownAndStayApart() {
         let desktop = remoteSession(
             "desktop", cwd: "/home/dev/work/localvoxtral/.claude/worktrees/zealous-chaplygin-aa1a02",
             project: "localvoxtral", desktopID: "local_7e66212b-6bd0-4eb5-b551-068eda22432a", seen: 0
@@ -55,59 +55,11 @@ final class SessionShownNamesTests: XCTestCase {
             "mac-claude-2": "supervoxtral · 2",
             "branch": "overlay-names",
         ])
-
-        let spoken: [(String, String?)] = [
-            ("better session names", "desktop"),
-            ("zealous chaplygin", "desktop"),
-            ("zealous chaplygin aa1a02", "desktop"),
-            ("ci speed optimizations", "worktree"),
-            ("supervoxtral one", "mac-claude"),
-            ("supervoxtral codex", "mac-codex"),
-            ("supervoxtral two", "mac-claude-2"),
-            ("supervoxtral 2", "mac-claude-2"),
-            ("overlay names", "branch"),
-            ("wt 17", "branch"),
-            ("billing", "branch"),
-            // Three panes share it: which one is meant is unknown.
-            ("supervoxtral", nil),
-            // One title word is too little to be a name.
-            ("better", nil),
-        ]
-        for (name, expected) in spoken {
-            XCTAssertEqual(resolvedID(name, candidates), expected, name)
-        }
-        XCTAssertEqual(
-            SessionNameResolver.resolve(spokenName: "localvoxtral", candidates: candidates),
-            .resolved(devCheckout),
-            "the checkout's own folder wins over the worktrees' repository"
-        )
     }
 
     // MARK: - The rule
 
-    func testANicknameIsShownAndKeepsTheBareName() {
-        var named = candidate(localSession("late", cwd: "/r/payments", tty: "/dev/ttys002", seen: 9))
-        named.nickname = "payments"
-        let first = candidate(localSession("first", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0))
-        XCTAssertEqual(SessionShownNames.of([first, named]), ["late": "payments", "first": "payments · 1"])
-    }
-
-    func testATitleNeverBeatsAFolderName() {
-        let folder = candidate(localSession("folder", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0))
-        let titled = candidate(localSession("titled", cwd: "/r/other", tty: "/dev/ttys002", seen: 1), title: "Payments")
-        XCTAssertEqual(resolvedID("payments", [titled, folder]), "folder")
-        XCTAssertEqual(resolvedID("payments", [titled]), "titled")
-    }
-
-    /// A name ending in a negative number is ordinary text, not a suffix to
-    /// say as a word (#1034).
-    func testANameEndingInANegativeNumberHasNoNumberWord() {
-        XCTAssertEqual(SessionShownNames.spokenForms("rollback · -1"), ["rollback · -1"])
-        let titled = candidate(localSession("titled", cwd: "/r/other", tty: "/dev/ttys001", seen: 0), title: "Rollback · -1")
-        XCTAssertEqual(resolvedID("rollback 1", [titled]), "titled")
-    }
-
-    /// The name the user reads is the one that answers, suffix included.
+    /// Duplicates are told apart by a suffix; a titled pane keeps its title.
     func testATitledPaneLeavesTheShownSuffixesToTheOthers() {
         let titled = candidate(localSession("titled", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0), title: "Fix refunds")
         let second = candidate(localSession("second", cwd: "/r/payments", tty: "/dev/ttys002", seen: 1))
@@ -116,13 +68,9 @@ final class SessionShownNamesTests: XCTestCase {
         XCTAssertEqual(SessionShownNames.of(three), [
             "titled": "Fix refunds", "second": "payments · 1", "third": "payments · 2",
         ])
-        XCTAssertEqual(resolvedID("payments one", three), "second")
-        XCTAssertEqual(resolvedID("payments two", three), "third")
-        XCTAssertEqual(resolvedID("fix refunds", three), "titled")
 
         let two = [titled, second]
         XCTAssertEqual(SessionShownNames.of(two)["second"], "payments")
-        XCTAssertEqual(resolvedID("payments", two), "second")
     }
 
     /// The popover names sessions by their cwd; its suffixed names answer
@@ -135,8 +83,6 @@ final class SessionShownNamesTests: XCTestCase {
             candidate(a, root: .root("/r/payments")),
             candidate(b, root: .root("/r/billing")),
         ]
-        XCTAssertEqual(resolvedID("docs two", walked), "b")
-        XCTAssertEqual(resolvedID("billing", walked), "b")
     }
 
     func testSessionsOnOnePaneShareOneName() {
@@ -183,10 +129,6 @@ final class SessionShownNamesTests: XCTestCase {
         XCTAssertEqual(AgentAttentionText.name(of: second, among: [first, second]), "payments · 2")
         XCTAssertEqual(AgentAttentionText.name(of: first, among: [first, second]), "payments · 1")
         XCTAssertEqual(
-            AgentAttentionText.name(of: second, among: [first, second], nickname: { $0 == "b" ? "billing" : nil }),
-            "billing"
-        )
-        XCTAssertEqual(
             AgentAttentionText.name(of: first, among: [second], title: { $0.sessionID == "a" ? "Fix the overlay list" : nil }),
             "Fix the overlay list",
             "a session the registry dropped is still named"
@@ -216,9 +158,6 @@ final class SessionShownNamesTests: XCTestCase {
             "branched": "overlay-names",
             "checkout": "localvoxtral",
         ])
-        XCTAssertEqual(resolvedID("carry harness titles", candidates), "titled")
-        XCTAssertEqual(resolvedID("overlay names", candidates), "branched")
-        XCTAssertEqual(resolvedID("bold bose", candidates), "titled", "the folder still answers")
         XCTAssertEqual(
             AgentAttentionText.name(of: branched, among: [titled, branched, checkout]), "overlay-names"
         )
@@ -250,7 +189,6 @@ final class SessionShownNamesTests: XCTestCase {
             "second": "localvoxtral · 2",
             "branched": "projects-session-names",
         ])
-        XCTAssertEqual(resolvedID("projects session names", candidates), "branched")
         XCTAssertFalse(SessionDefaultNames.isRemoteControlWorktree("bridge-builder"))
     }
 
@@ -348,12 +286,6 @@ final class SessionShownNamesTests: XCTestCase {
             snapshot: snapshot,
             names: SessionDefaultNames.of(snapshot, repositoryRoot: root, title: title, branch: branch)
         )
-    }
-
-    private func resolvedID(_ spoken: String, _ candidates: [SessionNameCandidate]) -> String? {
-        guard case .resolved(let snapshot) = SessionNameResolver.resolve(spokenName: spoken, candidates: candidates)
-        else { return nil }
-        return snapshot.sessionID
     }
 
     private func temporaryDirectory() throws -> URL {
