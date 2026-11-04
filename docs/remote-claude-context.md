@@ -71,7 +71,7 @@ Then enroll it:
 1. In **Settings › Remote hosts**, fill in the enrollment form. If the machine
    is saved in herdr, you can import it instead (see below).
 2. Press **Set Up** in the enrollment sheet. For a host that is already
-   enrolled, press **Update host…** in its row, then **Set Up**.
+   enrolled, press **Update Host…** in its row, then **Set Up**.
 3. Read the status lines. The run stops at the first failure and shows the
    exact fix.
 
@@ -105,7 +105,7 @@ status sentence per step and stops at the first failure with the exact fix.
 5. **Remote herdr.** When herdr is on the host, adds the agents-panel row (only
    when no agents table or rows key exists) and reloads herdr's config. "Not
    installed" and an already-customized table are reported, not failed.
-6. **Check Setup.** Runs the two read-only checks last and shows their verdict
+6. **Check setup.** Runs the two read-only checks last and shows their verdict
    as the final status line. See [Checking the setup](#checking-the-setup).
 
 While the host's **Keep the tunnel open** is off, the first step also checks
@@ -209,7 +209,9 @@ The remote plugin, localvoxtral-remote, is separate from the local localvoxtral
 plugin, not a mode of it. It declares hooks and one executable,
 `localvoxtral`, which Claude Code puts on its sessions' PATH and which runs
 only `localvoxtral doctor` (see [Checking the setup](#checking-the-setup)).
-It adds no skill, agent or status line, so it never spends your tokens.
+It adds no agent or status line. Its one skill, `localvoxtral-doctor`, puts a
+one-line description in each session's context and loads the rest only when
+you ask.
 
 Its [hook script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh)
 needs only POSIX sh and curl. The host needs no localvoxtral binary, no jq and
@@ -265,7 +267,7 @@ altogether, since the token goes through SSH stdin (see above).
 
 ## Checking the setup
 
-The last step of the setup run, **Check Setup**, runs two read-only checks and
+The last step of the setup run, **Check setup**, runs two read-only checks and
 explains the results. The checks below run them by hand.
 
 Or run `localvoxtral doctor` in a Claude Code session on the host, or ask
@@ -360,7 +362,7 @@ unavailable. Dictation context should never cost you your login. The block
 therefore sets it to no.
 
 The price of no is that a failed forward is *silent*. The hooks get connection
-refused, fail open, and you get no context. Step 6's **Check Setup** exists to
+refused, fail open, and you get no context. Step 6's **Check setup** exists to
 catch that.
 
 ### A second session to the same host
@@ -463,7 +465,7 @@ try, so context returns with your first prompt once the app is back.
 An enrollment made before per-Mac ports uses the legacy shared 8473 on both
 ends and keeps working. The app never forces a migration.
 
-When you want one, use **Update host…** in the host's row. It updates the
+When you want one, use **Update Host…** in the host's row. It updates the
 marketplace copy and the plugin, stores this Mac's allocated port, and rewrites
 this host's SSH config block in the same action, so the two halves always
 agree.
@@ -504,17 +506,16 @@ app for work, the app holds the request until it has something, and the mod
 answers on a second request. Both ends sign every request and answer with a
 channel key, so a process that takes the tunnel's port on the host cannot put
 text into your prompt. Setup stores the key in the plugin's config. A host
-enrolled before 1.41.0 gets the key the next time you run **Update host…** or
+enrolled before 1.41.0 gets the key the next time you run **Update Host…** or
 set it up again, and the mod stays off until then. Rotating the host's token
 changes the key, so run setup again after a rotation. The app answers only
-mods from 1.42.0 on, so a host on 1.41.0 needs **Update host…** too.
+mods from 1.42.0 on, so a host on 1.41.0 needs **Update Host…** too.
 
 When the tunnel or the app is down, the mod waits five minutes between tries,
 as the hook script does, and tries again sooner once a hook gets through.
 
-A mod from 1.42.0 to 1.45.0 also offered `/inbox`. The app no longer
-answers it: it replies 410, and the pane says "localvoxtral could not list the
-Inbox." Update the host to remove the command.
+A mod from 1.42.0 to 1.45.0 also offers `/inbox`, which no longer works.
+Update the host to remove the command.
 
 ### Mistral Vibe on an enrolled host
 
@@ -638,12 +639,10 @@ too; the host's stamp bounds that to one run per project per 24 hours.
 
 ### Routes older hosts still call
 
-Before this release the host's hook reply could ask for a project's README or
-a drafted capture, and the host then posted to `/v1/readme` and `/v1/draft*`.
-The app asks for neither now, and answers 410 on those routes and on
-`/v1/mod/inbox*`. The shims treat 410 like any failed post: they print
-nothing and exit 0, so a host on localvoxtral-remote 1.45.0 or earlier needs
-no update to keep working.
+A host on localvoxtral-remote 1.45.0 or earlier still posts to `/v1/readme`,
+`/v1/draft*` and `/v1/mod/inbox*`. The app answers 410 there, and the hook
+scripts treat 410 like any failed post: they print nothing and exit 0, so
+such a host keeps working without an update.
 
 ### Federated herdr machines
 
@@ -750,7 +749,7 @@ with exit code 48, and a plugin this run installed is uninstalled again, so the
 next run installs it with a token.
 
 The plugin step finds claude the same way the plugin check does (see
-[The Check Setup step](#the-check-setup-step)).
+[The Check setup step](#the-check-setup-step)).
 
 ### The environment step
 
@@ -797,7 +796,7 @@ printf '%s\n' LVX_HERDR_CONFIGURED
 
 When the grep matches, the step stops without changing the file.
 
-### The Check Setup step
+### The Check setup step
 
 The tunnel check runs in two steps. The first clears forwardings, so it can
 only reach a tunnel another connection already holds (the app's own, a

@@ -16,7 +16,8 @@ Turn on **Tell me when an agent needs you**, under **Settings → Dictation →
 Output**.
 
 A session waits when Claude Code, Codex or opencode shows a permission
-prompt or asks a question, on this Mac or an enrolled host. A session that
+prompt or asks a question on this Mac, and when Claude Code does on an
+enrolled host. A session that
 finishes its turn while you look at another window or pane counts too, and
 Mistral Vibe sessions count only then, since Vibe reports no waits. A turn
 that ends in the pane you are looking at counts for nothing.

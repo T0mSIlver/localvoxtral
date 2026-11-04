@@ -33,8 +33,8 @@ holding one Shift while typing never starts a dictation. The hold delay
 starts once the last key of the chord is down, and a hold ends as soon as one
 of them goes up.
 
-**Keyboard shortcut.** You record one dictation shortcut, and the **Toggle**
-or **Push to Talk** setting decides how it behaves. A shortcut needs at least
+**Keyboard shortcut.** You record one dictation shortcut, and **Shortcut action**
+(**Toggle** or **Push to Talk**) decides how it behaves. A shortcut needs at least
 one modifier, except for a function key.
 
 F1 to F20 can be recorded on their own, so a spare F13 to F20 on a full-size
@@ -161,8 +161,8 @@ Dictation**; the Live Auto-Paste switch is under **Advanced**.
 **Your own phrases.** **Settings → Dictation → Output → Send phrases**
 replaces "send it" and "send now" with your list, separated by commas, in
 both modes. A phrase has at most four words. The app refuses a
-single common word ("go", "done", "enter"), since you say it in ordinary
-prompts.
+single word of two letters or fewer, or a common one ("go", "done", "enter"),
+since you say it in ordinary prompts.
 
 **Overlay Buffer stops on its own.** When the words end in a send phrase and
 the wait passes with no new words, the dictation stops as if you pressed
@@ -331,7 +331,7 @@ dictations. Live Auto-Paste dictations get no record.
 
 ### Insights
 
-**Insights**, under History in the sidebar, counts the saved dictations over
+**Insights**, below History in the sidebar, counts the saved dictations over
 the last 7 days, the last 30, or all of them. The app computes all of it on
 this Mac from the history store. With history off, the pane is empty.
 
@@ -379,8 +379,8 @@ you made, and your coding agent.
 **Settings → Text Processing → About you** holds a few lines on your work in
 your own words. It also holds **Global terms**, the names and terms you say
 often in every project, spelled the way they should appear ("Qwen", "Claude
-Code", "vLLM"). Terms that belong to one project are in **Settings →
-Projects**, under that project.
+Code", "vLLM"). Terms that belong to one project are in the
+**Projects** pane, under that project.
 
 The app sends both to the polishing model with every dictation, whichever
 endpoint you chose. You never list how a name gets misheard; the polisher
@@ -390,7 +390,7 @@ The app fixes the casing of a multi-word or mixed-case term even in Live
 Auto-Paste with no polishing.
 
 Your project names go with every dictation too: each project in
-**Settings → Projects** and its repository's name, whichever session the
+the **Projects** pane and its repository's name, whichever session the
 dictation joins. So do the names of your coding agents' skills and commands,
 on this Mac and on your ssh hosts; a host sends them when a session starts
 there. Neither belongs in Global terms. When a Global term only repeats one,
@@ -426,7 +426,7 @@ These terms also show as tags in **Suggestions**, with no API credits. The
 app keeps terms per project, and a project is a git repository (see
 [One project per repository](#one-project-per-repository)).
 
-Every term is in **Settings → Projects**: click a project to see its terms,
+Every term is in the **Projects** pane: click a project to see its terms,
 or **No project** at the end of the list for terms learned outside any
 project and those of projects no longer listed. A long list has a search
 field. Each term shows how often it was applied and when it last was:
@@ -481,7 +481,7 @@ asked with an older version of the request is asked once more, and its new
 answer replaces the old names you never used or pinned. The app retries a run
 that fails a day later.
 
-The names show under the project's terms (**Settings → Projects**) as
+The names show under the project's terms in the **Projects** pane as
 "Proposed by Claude Code", "Proposed by Mistral Vibe" or "Proposed by
 opencode". They are suggestions:
 
@@ -535,7 +535,7 @@ Learned terms and the coding agent's proposals are kept per project. A project i
 repository its `origin` remote names (`github.com/owner/repository`, or the
 same on another host). Every checkout of it, on this Mac or on an ssh host,
 whatever its folder is called, shares one list of terms and one entry in
-**Settings → Projects**, under the repository's name. A checkout with no
+the **Projects** pane, under the repository's name. A checkout with no
 `origin` is a project of its own, under its folder's name. A fork is its own
 repository, since its `origin` is yours.
 
@@ -552,7 +552,7 @@ repository, since its `origin` is yours.
 - **Projects left over from an older plugin** are not merged into their
   repository. Their terms expire 90 days after last use, unless you pinned
   one, and the list then drops the project. To remove one sooner, forget its
-  terms under **No project** in **Settings → Projects**.
+  terms under **No project** in the **Projects** pane.
 
 ## Lower other audio while dictating
 
@@ -622,7 +622,8 @@ request is in [History](#history).
 ## Settings
 
 Open **Settings…** from the menu bar popover. Settings shares a window with
-History; the panes sit under the sidebar's Settings header.
+History, Insights and Projects, which sit above the sidebar's Settings
+header.
 
 - **General**: permission status for Microphone and Accessibility, with
   grant buttons, **Re-run setup**, and two startup switches. **Open
