@@ -73,6 +73,18 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
+    /// Nemotron boosts the session's terms while it decodes (LVX-2); Voxtral's
+    /// decoder takes none yet.
+    func testOnlyNemotronTakesASessionList() throws {
+        let nemotron = try XCTUnwrap(
+            SpeechModelCatalog.option(
+                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+            )
+        )
+        XCTAssertEqual(nemotron.capabilities.termBias, .sessionList(maxTerms: 100))
+        XCTAssertEqual(SpeechModelCatalog.defaultOption.capabilities, .audioOnly)
+    }
+
     /// The app passes `--engine <rawValue>` and the helper's
     /// `SpeechASREngineKind` parses it; the helper is a separate package, so
     /// its accepted values are spelled out here.

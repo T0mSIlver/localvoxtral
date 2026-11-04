@@ -1,6 +1,7 @@
 /// The terms a client expects to hear in its dictation, sent as `context_bias`
 /// in `session.update` (Mistral's name for the same list). An engine that can
-/// bias its decoding toward them does; one that cannot ignores the list. Only
+/// bias its decoding toward them does (Nemotron's term boost, LVX-2); one that
+/// cannot (Voxtral) ignores the list. Only
 /// counts ever reach the helper log, never the terms.
 public struct SessionTerms: Equatable, Sendable {
     /// Beyond this many terms, later ones are dropped. The app sends its most
@@ -29,4 +30,29 @@ public struct SessionTerms: Equatable, Sendable {
     }
 
     public static let empty = SessionTerms([])
+}
+
+/// Bonus sizes for engines that boost the session's terms, in logits; see
+/// `NemotronASRTermBoostConfig` upstream. `--term-boost` overrides them for
+/// tuning runs; the app never passes it.
+public struct TermBoostSettings: Equatable, Sendable {
+    public var firstTokenBoost: Float
+    public var continuationBoost: Float
+    public var margin: Float
+
+    public init(firstTokenBoost: Float, continuationBoost: Float, margin: Float) {
+        self.firstTokenBoost = firstTokenBoost
+        self.continuationBoost = continuationBoost
+        self.margin = margin
+    }
+
+    /// `first,continuation,margin`, e.g. `1.5,3,4`. Nil unless all three are
+    /// finite and non-negative.
+    public init?(parsing value: String) {
+        let parts = value.split(separator: ",", omittingEmptySubsequences: false).map { Float($0) }
+        guard parts.count == 3, parts.allSatisfy({ $0 != nil && $0!.isFinite && $0! >= 0 }) else {
+            return nil
+        }
+        self.init(firstTokenBoost: parts[0]!, continuationBoost: parts[1]!, margin: parts[2]!)
+    }
 }

@@ -27,9 +27,8 @@ package struct DictationModelCapabilities: Equatable, Sendable {
         self.languages = languages
     }
 
-    /// A model that takes audio and nothing else: the local models but
-    /// Nemotron Unified, and an External URL server, whose model the app
-    /// can't vouch for.
+    /// A model that takes audio and nothing else: an External URL server,
+    /// whose model the app can't vouch for.
     package static let audioOnly = DictationModelCapabilities(termBias: .none)
 
     /// The language a session sends at start: the user's choice when the model
