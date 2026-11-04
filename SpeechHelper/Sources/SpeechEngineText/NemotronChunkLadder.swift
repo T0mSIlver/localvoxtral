@@ -5,9 +5,8 @@ import Foundation
 /// the engine's latency: no text comes out of a chunk until all of it is in.
 /// This maps the helper's `--transcription-delay-ms` knob (Voxtral's native
 /// unit) onto Nemotron 3.5's ladder, so one app-level setting drives both
-/// engines. Nemotron Unified takes the chosen value as its latency (chunk plus
-/// right context) and snaps it to the nearest of its own table (160, 240, 320,
-/// 560, 1120, 2080 ms); the default 320 ms is one of them.
+/// engines. Nemotron Unified takes the rung as its latency; see
+/// `NemotronUnifiedLayout`.
 public enum NemotronChunkLadder {
     /// The rungs the model card measures, in milliseconds.
     public static let supportedMilliseconds = [80, 160, 320, 560, 1120]
@@ -26,5 +25,25 @@ public enum NemotronChunkLadder {
         guard let delayMilliseconds else { return defaultMilliseconds }
         return supportedMilliseconds.last { $0 <= delayMilliseconds }
             ?? supportedMilliseconds[0]
+    }
+}
+
+/// Nemotron Unified streams buffered: each step re-encodes left context + chunk +
+/// right context, in 80 ms encoder frames, so the layout sets both the latency
+/// (chunk + right) and the GPU cost (frames re-encoded per chunk). These are
+/// NVIDIA's recommended rows with its 5.6 s left context, except at 320 ms: a
+/// 160 ms chunk with 160 ms right context halves the GPU per audio second (MacBook:
+/// 34.7 vs 68.6 ms per 80 ms step) for +0.3 WER points (NeMo, 34 FLEURS clips).
+public enum NemotronUnifiedLayout {
+    public static let leftFrames = 70
+
+    /// `[left, chunk, right]` encoder frames for a `NemotronChunkLadder` rung.
+    public static func frames(forLatencyMilliseconds latency: Int) -> [Int] {
+        switch latency {
+        case ..<240: return [leftFrames, 1, 1]
+        case ..<560: return [leftFrames, 2, 2]
+        case ..<1120: return [leftFrames, 2, 5]
+        default: return [leftFrames, 7, 7]
+        }
     }
 }

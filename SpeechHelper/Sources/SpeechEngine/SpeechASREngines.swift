@@ -84,15 +84,18 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit
     ) -> SpeechASRStreamingSession {
-        NemotronASRSession(
-            session: model.makeStreamSession(
+        let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
+        let session: NemotronASRStreamSession
+        if model.isBuffered {
+            let frames = NemotronUnifiedLayout.frames(forLatencyMilliseconds: rung)
+            session = model.makeStreamSession(
                 language: nil,
-                chunkMs: NemotronChunkLadder.chunkMilliseconds(
-                    forTranscriptionDelayMs: transcriptionDelayMs
-                )
-            ),
-            utteranceLimit: utteranceLimit
-        )
+                bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
+            )
+        } else {
+            session = model.makeStreamSession(language: nil, chunkMs: rung)
+        }
+        return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
     }
 }
 

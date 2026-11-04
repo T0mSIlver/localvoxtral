@@ -124,3 +124,16 @@ final class NemotronChunkLadderTests: XCTestCase {
         )
     }
 }
+
+final class NemotronUnifiedLayoutTests: XCTestCase {
+    /// Latency is chunk + right context, 80 ms per frame, and never above the rung.
+    func testEveryRungKeepsItsLatency() {
+        for rung in NemotronChunkLadder.supportedMilliseconds {
+            let frames = NemotronUnifiedLayout.frames(forLatencyMilliseconds: rung)
+            XCTAssertEqual(frames[0], 70)
+            XCTAssertLessThanOrEqual((frames[1] + frames[2]) * 80, max(rung, 160))
+        }
+        XCTAssertEqual(NemotronUnifiedLayout.frames(forLatencyMilliseconds: 320), [70, 2, 2])
+        XCTAssertEqual(NemotronUnifiedLayout.frames(forLatencyMilliseconds: 1120), [70, 7, 7])
+    }
+}
