@@ -1269,11 +1269,19 @@ extension DictationSessionController {
         let audioSeconds: Double
         let apiKey: String
         let endpoint: URL
+        let terms: ContextTermSources
+    }
+
+    /// Where a Mistral request's `context_bias` comes from: the second pass
+    /// at stop, or Voxtral Realtime 3 at session start (#1944).
+    struct ContextTermSources {
+        /// The host the terms go to, asked about again after the root lookup.
+        let endpoint: URL
         let userTerms: [String]
         let dictionarySpellings: [String]
         let contextTrusted: Bool
-        /// The session's and the screen's, read at stop. The repository's
-        /// wait for the project, which may need the git root.
+        /// The session's and, at stop, the screen's. The repository's wait
+        /// for the project, which may need the git root.
         let context: StopSecondPass.ContextTerms
         /// The joined session's workspace, the project's first word.
         let workspace: ClaudeWorkspaceReference?
@@ -1343,12 +1351,25 @@ extension DictationSessionController {
             audioSeconds: Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond),
             apiKey: configuration.apiKey,
             endpoint: endpoint,
+            terms: contextTermSources(
+                endpoint: endpoint, contextTrusted: contextTrusted, join: join,
+                context: contextTrusted
+                    ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
+                    : .none)
+        )
+    }
+
+    /// The term sources for a request to `endpoint` on behalf of `join`.
+    func contextTermSources(
+        endpoint: URL, contextTrusted: Bool, join: ClaudeSessionJoin?,
+        context: StopSecondPass.ContextTerms
+    ) -> ContextTermSources {
+        ContextTermSources(
+            endpoint: endpoint,
             userTerms: settings.polishSpeakerTerms,
             dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
             contextTrusted: contextTrusted,
-            context: contextTrusted
-                ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
-                : .none,
+            context: context,
             workspace: contextTrusted ? join?.snapshot.learnedTermWorkspace : nil,
             joinedRepositoryRoot: join?.repositoryRoot ?? .unknown,
             // An agent's unconfirmed proposals go only where repo vocabulary
@@ -1384,11 +1405,26 @@ extension DictationSessionController {
     /// it can take 3 s, and it nominates only what the realtime text nearly
     /// spells.
     func stopSecondPassTerms(for request: StopSecondPassRequest) async -> [String] {
+        await contextBias(
+            from: request.terms, cut: MistralBatchTranscription.contextBias(from:),
+            logLabel: "second pass terms")
+    }
+
+    /// The `context_bias` list `sources` give, once the project is known,
+    /// cut by `cut`. Logs counts per source under `logLabel`, never terms.
+    func contextBias(
+        from request: ContextTermSources, cut: ([String]) -> [String], logLabel: String
+    ) async -> [String] {
         var context = request.context
         var learnedTerms: [String] = []
         if request.contextTrusted {
-            var repositoryRoot = LearnedTermProjectResolver.RepositoryRoot.unknown
-            if request.repositoryTermsPermitted, needsRepositoryRoot(request.workspace) {
+            // A root the start already found for this join is reused: a
+            // second lookup while that one holds the single-flight gate
+            // would answer `.unknown` at once.
+            var repositoryRoot = request.joinedRepositoryRoot
+            if repositoryRoot == .unknown, request.repositoryTermsPermitted,
+                needsRepositoryRoot(request.workspace)
+            {
                 let started = ContinuousClock.now
                 repositoryRoot = await repoVocabularyGrounding.repositoryRoot(
                     joinedWorkspace: request.workspace?.localPath,
@@ -1437,10 +1473,10 @@ extension DictationSessionController {
             context: context,
             contextTrusted: contextTrusted
         )
-        let contextBias = MistralBatchTranscription.contextBias(from: candidates)
+        let contextBias = cut(candidates)
         // Counts only: the terms are screen, session and repository content.
         Log.backends.info(
-            "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
+            "\(logLabel, privacy: .public): context \(contextTrusted ? "trusted" : "not sent", privacy: .public), own \(request.userTerms.count + request.dictionarySpellings.count, privacy: .public), learned \(learnedTerms.count, privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
         )
         return contextBias
     }

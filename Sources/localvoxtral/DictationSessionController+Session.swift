@@ -433,6 +433,9 @@ extension DictationSessionController {
         await captureTerminalScreenContextForSession(isCurrent: {
             !Task.isCancelled && self.ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         })
+        // Before the ownership check, which then covers this wait too.
+        let startContextBias = await realtimeStartContextBias(
+            endpoint: endpoint, capabilities: modelCapabilities)
         let ownsSharedSessionState = ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
             if ownsSharedSessionState {
@@ -475,10 +478,45 @@ extension DictationSessionController {
             apiKey: apiKey,
             model: model,
             usageBackend: usageBackend,
-            contextBias: Self.realtimeContextBias(
-                settings: settings, dictionary: sessionReplacementDictionary,
-                capabilities: modelCapabilities)
+            contextBias: startContextBias
         )
+    }
+
+    /// The terms a realtime socket takes at session start, cut as the
+    /// session's model takes them; empty for a model that takes none.
+    /// Voxtral Realtime 3 locks its session at the first audio chunk, so a
+    /// term not listed here never reaches it (#1944).
+    ///
+    /// The user's own terms go to any endpoint. With the trusted-endpoint
+    /// opt-in, so does what the second pass would send from the joined
+    /// session and its project: learned and group terms, the agent's
+    /// proposals where repo vocabulary may go, and the session's terms. Not
+    /// the screen's, which hold the most terms nobody is about to say. The
+    /// project's git root is waited for at most
+    /// `StopSecondPass.repositoryRootBound`, as at stop, through the lookup
+    /// the capture already started when it needs one.
+    func realtimeStartContextBias(
+        endpoint: URL, capabilities: DictationModelCapabilities
+    ) async -> [String] {
+        guard capabilities != .audioOnly else { return [] }
+        let contextTrusted = PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpoint, trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled)
+        // The capture started the join's own root lookup, which holds the
+        // single-flight gate: wait for its answer (bounded like any lookup)
+        // rather than race it, or the project's group stays unknown and the
+        // list takes every group's terms (Codex review, 2026-11-04).
+        if contextTrusted { await joinedRepositoryRootLookup?.value }
+        let join = context.claudeSessionJoin
+        var terms = StopSecondPass.ContextTerms()
+        if contextTrusted {
+            terms.session = StopSecondPass.speakableTerms(
+                in: context.claudeSessionTextIfEnabled(join: join, endpointURL: endpoint))
+        }
+        return await contextBias(
+            from: contextTermSources(
+                endpoint: endpoint, contextTrusted: contextTrusted, join: join, context: terms),
+            cut: capabilities.sessionTerms(from:),
+            logLabel: "realtime start terms")
     }
 
     /// Whether the start that took `generation` and `ownerTaskID` before its
@@ -494,10 +532,9 @@ extension DictationSessionController {
             && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
     }
 
-    /// The terms a realtime socket takes at session start: the user's own,
-    /// as the stall backfill sends them, since the context sources pass their
-    /// gates only at stop, cut as the session's model takes them. Empty for a
-    /// model that takes none. `capabilities` comes from the same snapshot as
+    /// The user's own terms, as the stall backfill sends them, cut as the
+    /// model takes them: what a transcription with no session behind it
+    /// (a voice memo) can send. Empty for a model that takes none. `capabilities` comes from the same snapshot as
     /// the session's model and key (`SettingsStore.dictationModelCapabilities`).
     static func realtimeContextBias(
         settings: SettingsStore, dictionary: ReplacementDictionary?,

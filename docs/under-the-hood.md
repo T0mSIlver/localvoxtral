@@ -157,10 +157,12 @@ setting, low. Models without reasoning get no reasoning setting at all.
 ### Your terms with Voxtral Realtime 3
 
 Voxtral Realtime 3 takes a list of terms when the dictation starts, to spell
-names and jargon right as you speak. The app sends it up to 100 of your
-Global terms and your replacement dictionary's spellings, phrases included.
-Context from the screen or the joined session is not sent at the start.
-Voxtral Realtime 2602 takes no terms.
+names and jargon right as you speak. It takes none later, so the app sends
+up to 100 at the start, phrases included: your Global terms and your
+replacement dictionary's spellings first, then, only with **Send context to
+non-local polishing servers** on, the joined session's project terms. Those
+are the second pass's terms below, without the screen's. Voxtral Realtime
+2602 takes no terms.
 
 ### The second pass in the Overlay Buffer
 

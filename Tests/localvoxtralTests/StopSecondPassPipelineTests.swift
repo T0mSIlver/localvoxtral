@@ -290,6 +290,33 @@ final class StopSecondPassPipelineTests: XCTestCase {
         }
     }
 
+    /// Voxtral Realtime 3 locks its terms at the first audio chunk, so the
+    /// start sends what the second pass would from the joined project
+    /// (#1944): with the trusted-endpoint opt-in, the agent's proposal after
+    /// the user's own terms; without it, the user's own only. A model that
+    /// takes no terms gets none.
+    func testARealtime3StartSendsTheJoinedProjectsTermsOnlyWithTheTrustedEndpointOptIn() async {
+        let harness = makeHarness(transcriber: FakeBatchTranscriber(.text(Self.batchText)))
+        let session = harness.viewModel.session
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.learnedTermStore = storeProposing("inkwell", in: Self.projectDirectory)
+        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
+        join(harness, cwd: Self.projectDirectory)
+        let endpoint = MistralRealtimeWebSocketClient.defaultEndpoint
+        let realtime3 = MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3)
+
+        for (trusted, expected) in [
+            (false, ["localvoxtral", "Claude Code"]),
+            (true, ["localvoxtral", "Claude Code", "inkwell"]),
+        ] {
+            harness.viewModel.settings.polishContextTrustedEndpointEnabled = trusted
+            let terms = await session.realtimeStartContextBias(endpoint: endpoint, capabilities: realtime3)
+            XCTAssertEqual(terms, expected, "trusted: \(trusted)")
+            let none = await session.realtimeStartContextBias(endpoint: endpoint, capabilities: .audioOnly)
+            XCTAssertEqual(none, [], "trusted: \(trusted)")
+        }
+    }
+
     /// A joined session in a subdirectory of a linked worktree (#705): the
     /// proposals are filed under the main checkout (#652), which only the git
     /// root names. The lookup starts from the session's own directory.
@@ -373,6 +400,30 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let unjoined = await groupedDictation(joinedIn: nil)
         XCTAssertTrue(unjoined.bias.contains("Kubrix") && unjoined.bias.contains("Florabel"))
         XCTAssertTrue(unjoined.systemPrompt.contains("acme") && unjoined.systemPrompt.contains("garden"))
+    }
+
+    /// The start's list waits for the join's own git-root lookup, which the
+    /// capture starts: read before it answers, a Work worktree outside its
+    /// checkout finds no group, and the start sent the Personal project's
+    /// terms too (Codex review of #1968).
+    func testARealtime3StartWaitsForTheJoinsRootLookupBeforePickingTheGroup() async {
+        let harness = makeHarness(transcriber: FakeBatchTranscriber(.text(Self.batchText)))
+        let session = harness.viewModel.session
+        harness.viewModel.settings.polishContextTrustedEndpointEnabled = true
+        harness.viewModel.learnedTermStore = groupedStore()
+        let worktree = Self.workProject + "-feature"
+        let grounding = FakeRepoVocabularyGrounding(outcome: nil)
+        grounding.secondPassRoot = .root(worktree, mainCheckout: Self.workProject)
+        harness.viewModel.dependencies.repoVocabularyGrounding = grounding
+        join(harness, cwd: worktree + "/Sources")
+        session.joinedRepositoryRootLookup = Task { await session.lookUpJoinedRepositoryRoot() }
+
+        let terms = await session.realtimeStartContextBias(
+            endpoint: MistralRealtimeWebSocketClient.defaultEndpoint,
+            capabilities: MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3))
+
+        XCTAssertTrue(terms.contains("Kubrix"), "\(terms)")
+        XCTAssertFalse(terms.contains("Florabel"), "a Personal term reached a Work start: \(terms)")
     }
 
     /// A session in a `git worktree add` checkout outside its Work main
