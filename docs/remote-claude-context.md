@@ -624,12 +624,11 @@ label for it, never a path it could hand to ssh. The run goes like this:
    it asked, from the agent it asked, once.
 
    It files the terms under the project it recorded in step 1, never one the
-   host names, through the same filters as a local answer, and keeps the
-   sentence on the project. Anything else is refused with a status and a log
+   host names, through the same filters as a local answer. Anything else is refused with a status and a log
    line that names the reason, never the body.
 
-Only the answer crosses the tunnel, as a JSON list of terms and one sentence:
-a few hundred bytes. With Claude Code's result object around it, about 3.4 KiB
+Only the answer crosses the tunnel, as a JSON list of terms: a few hundred
+bytes. With Claude Code's result object around it, about 3.4 KiB
 for 40 terms, the answer adds only token counts, the cost and the run's
 timings.
 
