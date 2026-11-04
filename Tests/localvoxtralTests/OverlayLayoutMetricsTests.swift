@@ -123,6 +123,16 @@ final class OverlayLayoutMetricsTests: XCTestCase {
                     accuracy: 1, "\(context): viewport isn't N whole lines")
             }
         }
+        // The cap holds at every font size the setting offers, not only the
+        // three rendered above.
+        for size in fontSizeRange {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            let overflows = Array(repeating: "dictated line", count: metrics.visibleLines + 1)
+                .joined(separator: "\n")
+            XCTAssertEqual(
+                metrics.bodyTextHeight(for: overflows),
+                metrics.maxScrollableBodyHeight, "font size \(size): body row isn't capped")
+        }
     }
 
     // The header's pills ("Polished", the Claude join badge) used a hardcoded
