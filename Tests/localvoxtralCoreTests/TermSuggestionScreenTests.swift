@@ -21,6 +21,22 @@ final class TermSuggestionScreenTests: XCTestCase {
         )
     }
 
+    /// Shapes on the owner's refused list that are never terms (2026-11-04):
+    /// a lone letter and two words glued across a full stop. A refused term
+    /// that never shows up in the dictations read is kept by the rule above
+    /// (the model may have recovered it), so these need the shape check.
+    /// None of his 50 accepted terms has either shape.
+    func testLoneLettersAndGluedSentencesAreNeverTerms() {
+        let dictations = [Dictation(raw: "something else", final: "Something else.")]
+        XCTAssertEqual(
+            TermSuggestionScreen.screened(
+                ["I", "x", "today.Then", "done.Next", "3090", "vLLM", "llama.cpp", "AGENTS.md", "Qwen3.5",
+                 "Claude Code"],
+                dictations: dictations),
+            ["3090", "vLLM", "llama.cpp", "AGENTS.md", "Qwen3.5", "Claude Code"]
+        )
+    }
+
     /// One right spelling is not enough when polishing fixed it elsewhere.
     func testAFixAnywhereOutweighsRightSpellingsElsewhere() {
         let dictations = [
