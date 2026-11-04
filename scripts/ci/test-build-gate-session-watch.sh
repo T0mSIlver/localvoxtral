@@ -60,12 +60,15 @@ mkdir -p "$FAKE_HOME/work/localvoxtral-session-1"
 
 # --- the session ends: the gate ends the payload ------------------------------
 
+# As on a CI runner: the gate starts with HUP ignored, so it cannot trap it.
+
 sleep 300 &
 session=$!
 spawned+=("$session")
-env "${gate_env[@]}" LOCALVOXTRAL_GATE_SESSION_PID="$session" \
-  SSH_ORIGINAL_COMMAND='cd work/localvoxtral-session-1 && swift build --build-system native' \
-  bash "$GATE" >/dev/null 2>&1 &
+( trap '' HUP
+  exec env "${gate_env[@]}" LOCALVOXTRAL_GATE_SESSION_PID="$session" \
+    SSH_ORIGINAL_COMMAND='cd work/localvoxtral-session-1 && swift build --build-system native' \
+    bash "$GATE" >/dev/null 2>&1 ) &
 gate=$!
 spawned+=("$gate")
 wait_for_file "$TMP_DIR/payload.pid" "the payload never started"
@@ -77,11 +80,13 @@ for _ in $(seq 1 100); do
   /bin/sleep 0.1
 done
 (( recorded )) || fail "the payload group was not recorded"
+/bin/sleep 0.5
+kill -0 "$payload" 2>/dev/null || fail "the payload ended while its session was still alive"
 kill -KILL "$session"
 ends_soon "$payload" || fail "the payload outlived its session"
 status=0
 wait "$gate" || status=$?
-[[ "$status" == 129 ]] || fail "the gate exited $status when its session ended, not 129"
+(( status != 0 )) || fail "the gate reported success for a payload its ended session stopped"
 [[ -z "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null)" ]] || fail "the gate left its payload record behind"
 rm -f "$TMP_DIR/payload.pid"
 

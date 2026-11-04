@@ -728,9 +728,11 @@ gate_session_pid() {
 # A dropped or killed client sends a pty-less session nothing: sshd only ends
 # its session process, and a payload that writes to its own log never hits
 # SIGPIPE (a package build kept an 8 GB Mac loaded for 40 minutes after its
-# client was gone, 2026-11-04). The watcher hangs this gate up once the
-# session process is gone, and the HUP trap's cleanup ends the payload group.
-# Its stdio is /dev/null, so it never holds the ssh channel open.
+# client was gone, 2026-11-04). The watcher ends the payload group itself once
+# the session process is gone; the gate's wait then returns and its usual
+# drain finishes the group. It signals the group, not the gate, because a
+# signal ignored when the gate started (a CI runner ignores HUP) cannot be
+# trapped. Its stdio is /dev/null, so it never holds the ssh channel open.
 # A session that exited but is not yet reaped is a zombie, which `kill -0`
 # still finds: only a live, non-zombie process counts.
 session_is_alive() {
@@ -740,15 +742,15 @@ session_is_alive() {
 }
 
 start_session_watcher() {
-  local session_pid gate_pid="$$"
+  local session_pid pgid="$LV_GATE_PAYLOAD_PGID"
   local poll="${LOCALVOXTRAL_GATE_SESSION_POLL_SECONDS:-1}"
   session_pid="${LOCALVOXTRAL_GATE_SESSION_PID:-$(gate_session_pid)}"
-  [[ "$session_pid" =~ ^[0-9]+$ ]] || return 0
+  [[ "$session_pid" =~ ^[0-9]+$ && "$pgid" =~ ^[0-9]+$ ]] || return 0
   (
     while session_is_alive "$session_pid"; do
       sleep "$poll"
     done
-    kill -HUP "$gate_pid" 2>/dev/null || true
+    kill -TERM -- "-$pgid" 2>/dev/null || true
   ) </dev/null >/dev/null 2>&1 &
   LV_GATE_WATCHER_PID=$!
 }
