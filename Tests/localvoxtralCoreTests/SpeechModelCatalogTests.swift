@@ -74,7 +74,7 @@ final class SpeechModelCatalogTests: XCTestCase {
             )
         )
         XCTAssertEqual(option.engine, .nemotron)
-        XCTAssertEqual(option.revision, "0000000000000000000000000000000000000000")
+        XCTAssertEqual(option.revision, "b7108f135cd732fbdf86af5fa7bc8a30f38cb069")
         // The whole point of the second entry: it is the small one.
         XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
     }

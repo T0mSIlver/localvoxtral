@@ -50,8 +50,7 @@ package enum SpeechModelCatalog {
         // bundles them.
         SpeechModelOption(
             repoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit",
-            // TODO(LVX-35): revision after the Hugging Face upload
-            revision: "0000000000000000000000000000000000000000",
+            revision: "b7108f135cd732fbdf86af5fa7bc8a30f38cb069",
             displayName: "Nemotron Unified ASR 0.6B (8-bit)",
             engine: .nemotron,
             sizeOnDiskGB: 0.7,

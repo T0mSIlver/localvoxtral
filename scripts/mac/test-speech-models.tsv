@@ -9,4 +9,4 @@
 #
 # name	port	repo	revision
 voxtral	8000	T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead	247f2eeccf962fbcaf85e361731a5e75b2d8cac1
-nemotron	8001	T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit	0000000000000000000000000000000000000000
+nemotron	8001	T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit	b7108f135cd732fbdf86af5fa7bc8a30f38cb069
