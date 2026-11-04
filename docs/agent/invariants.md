@@ -633,7 +633,9 @@ there is not.
   same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
   polishes each settled piece (whole sentences past 30 words of backend
   finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
-  time. A piece request carries only the templates, the reference guide and
+  time. The bundled speech helper sends its one final at the stop and never
+  revises a delta, so its pieces come from the deltas up to their last
+  whitespace (`TranscriptAccumulator.settledStreamedText`, LVX-69). A piece request carries only the templates, the reference guide and
   About you. The stop still gathers and assembles the request for the whole
   text, and polishes only the tail when that request equals the bare one
   (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
