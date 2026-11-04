@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// Mistral's hosted `/v1/chat/completions` has a CLOSED request schema: a body
 /// field it does not name is a 422, not an ignored extra. The OpenAI-compatible

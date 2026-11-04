@@ -1,20 +1,38 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+#if canImport(os)
+import os
+#endif
 
 /// One model Mistral serves to this key, as `GET /v1/models` describes it.
 /// Mistral lists every alias as its own entry (`zai-glm-5-3`, `zai-glm-5`,
 /// `zai-glm-latest` are three rows with the same `name`); this is the group,
 /// so a picker shows each model once.
-struct MistralModel: Codable, Equatable, Sendable, Identifiable {
+package struct MistralModel: Codable, Equatable, Sendable, Identifiable {
     /// The group's canonical id (`name` in the listing).
-    let id: String
+    package let id: String
     /// Every id that reaches this model, `id` included.
-    let ids: [String]
-    let supportsChat: Bool
-    let supportsRealtimeTranscription: Bool
-    let supportsReasoning: Bool
-    let isDeprecated: Bool
+    package let ids: [String]
+    package let supportsChat: Bool
+    package let supportsRealtimeTranscription: Bool
+    package let supportsReasoning: Bool
+    package let isDeprecated: Bool
 
-    func answers(to modelID: String) -> Bool {
+    package init(
+        id: String, ids: [String], supportsChat: Bool, supportsRealtimeTranscription: Bool,
+        supportsReasoning: Bool, isDeprecated: Bool
+    ) {
+        self.id = id
+        self.ids = ids
+        self.supportsChat = supportsChat
+        self.supportsRealtimeTranscription = supportsRealtimeTranscription
+        self.supportsReasoning = supportsReasoning
+        self.isDeprecated = isDeprecated
+    }
+
+    package func answers(to modelID: String) -> Bool {
         ids.contains(modelID)
     }
 }
@@ -22,7 +40,7 @@ struct MistralModel: Codable, Equatable, Sendable, Identifiable {
 extension MistralReasoningEffort {
     /// The effort for `modelID`, when the catalog says whether the model
     /// reasons at all; one it lists without reasoning gets no field.
-    static func forModel(_ modelID: String, catalog: [MistralModel]) -> Self {
+    package static func forModel(_ modelID: String, catalog: [MistralModel]) -> Self {
         if let model = catalog.first(where: { $0.answers(to: modelID) }),
             !model.supportsReasoning
         {
@@ -34,21 +52,27 @@ extension MistralReasoningEffort {
 
 /// One row of a Mistral model picker. `tag` is what Settings stores: empty for
 /// the pinned default, so a user on the default follows it when the pin moves.
-struct MistralModelPickerEntry: Equatable, Identifiable, Sendable {
-    let tag: String
-    let label: String
-    let section: MistralModelCatalog.Section
+package struct MistralModelPickerEntry: Equatable, Identifiable, Sendable {
+    package let tag: String
+    package let label: String
+    package let section: MistralModelCatalog.Section
 
-    var id: String { tag }
+    package init(tag: String, label: String, section: MistralModelCatalog.Section) {
+        self.tag = tag
+        self.label = label
+        self.section = section
+    }
+
+    package var id: String { tag }
 }
 
-enum MistralModelCatalog {
-    enum Section: String, CaseIterable, Sendable {
+package enum MistralModelCatalog {
+    package enum Section: String, CaseIterable, Sendable {
         case mistral = "Mistral"
         case zai = "Z.ai"
     }
 
-    enum Purpose: Sendable {
+    package enum Purpose: Sendable {
         case dictation
         case polishing
     }
@@ -56,26 +80,26 @@ enum MistralModelCatalog {
     // MARK: Parsing
 
     private struct ListResponse: Decodable {
-        struct Entry: Decodable {
-            struct Capabilities: Decodable {
-                let completionChat: Bool?
-                let audioTranscriptionRealtime: Bool?
-                let reasoning: Bool?
+        package struct Entry: Decodable {
+            package struct Capabilities: Decodable {
+                package let completionChat: Bool?
+                package let audioTranscriptionRealtime: Bool?
+                package let reasoning: Bool?
 
-                enum CodingKeys: String, CodingKey {
+                package enum CodingKeys: String, CodingKey {
                     case completionChat = "completion_chat"
                     case audioTranscriptionRealtime = "audio_transcription_realtime"
                     case reasoning
                 }
             }
 
-            let id: String
-            let name: String?
-            let capabilities: Capabilities?
-            let deprecation: String?
+            package let id: String
+            package let name: String?
+            package let capabilities: Capabilities?
+            package let deprecation: String?
         }
 
-        let data: [Entry]
+        package let data: [Entry]
     }
 
     /// `GET /v1/models` → one `MistralModel` per `name`, in the order the
@@ -83,7 +107,7 @@ enum MistralModelCatalog {
     /// (Voxtral's "Voxtral Mini Transcribe Realtime 3.0", 2026-10-22), not
     /// an id the API takes: the group's id is then its longest member id,
     /// the most specific spelling, and the name only matches a stored value.
-    static func models(fromListResponse data: Data) throws -> [MistralModel] {
+    package static func models(fromListResponse data: Data) throws -> [MistralModel] {
         let entries = try JSONDecoder().decode(ListResponse.self, from: data).data
         var order: [String] = []
         var groups: [String: [ListResponse.Entry]] = [:]
@@ -120,7 +144,7 @@ enum MistralModelCatalog {
     /// model that can do the job, one row per model. A stored id the catalog
     /// does not know (an env override, a model retired since, a catalog not
     /// fetched yet) keeps its own row rather than silently reading as another.
-    static func pickerEntries(
+    package static func pickerEntries(
         for purpose: Purpose,
         catalog: [MistralModel],
         storedModel: String,
@@ -188,7 +212,7 @@ enum MistralModelCatalog {
     /// answers it with a 403 (owner's log, 2026-10-22). It reads the ids,
     /// not `id`, because a catalog cached by that picker still has the
     /// name as its `id`. Anything else is sent as stored.
-    static func requestModelID(for stored: String, catalog: [MistralModel]) -> String {
+    package static func requestModelID(for stored: String, catalog: [MistralModel]) -> String {
         guard isDisplayName(stored),
             let model = catalog.first(where: { $0.answers(to: stored) }),
             let id = mostSpecificID(in: model.ids)
@@ -198,7 +222,7 @@ enum MistralModelCatalog {
 
     /// The row a stored id selects: an alias selects its model's row, and
     /// anything that reaches the default selects the default row.
-    static func selectionTag(
+    package static func selectionTag(
         storedModel: String,
         catalog: [MistralModel],
         defaultModel: String
@@ -211,7 +235,7 @@ enum MistralModelCatalog {
         return model.answers(to: defaultModel) ? "" : model.id
     }
 
-    static func section(for modelID: String) -> Section {
+    package static func section(for modelID: String) -> Section {
         let lowered = modelID.lowercased()
         return MistralReasoningEffort.isGLM(lowered) || lowered.hasPrefix("zai-") ? .zai : .mistral
     }
@@ -220,7 +244,7 @@ enum MistralModelCatalog {
     /// Medium 3.5", `zai-glm-5-3` → "GLM 5.3" (the section says Z.ai),
     /// `ministral-8b-2512` → "Ministral 8B 25.12". Derived rather than
     /// looked up, so a model Mistral adds tomorrow gets a sensible row too.
-    static func displayName(for modelID: String) -> String {
+    package static func displayName(for modelID: String) -> String {
         let tokens = modelID.split(separator: "-").map(String.init)
         var words: [String] = []
         var versionParts: [String] = []
@@ -268,11 +292,11 @@ enum MistralModelCatalog {
 
 /// Loading the model list. Injected so Settings, previews and the unit suite
 /// share one seam and only production ever opens a socket.
-protocol MistralModelListing: Sendable {
+package protocol MistralModelListing: Sendable {
     func listModels(apiKey: String) async -> MistralModelListResult
 }
 
-enum MistralModelListResult: Equatable, Sendable {
+package enum MistralModelListResult: Equatable, Sendable {
     case loaded([MistralModel])
     case rejected(statusCode: Int)
     case failed(String)
@@ -280,8 +304,10 @@ enum MistralModelListResult: Equatable, Sendable {
 
 /// Production listing: the same authenticated `GET /v1/models` the key check
 /// uses, this time reading the body.
-struct MistralModelLister: MistralModelListing {
-    func listModels(apiKey: String) async -> MistralModelListResult {
+package struct MistralModelLister: MistralModelListing {
+    package init() {}
+
+    package func listModels(apiKey: String) async -> MistralModelListResult {
         let trimmed = apiKey.trimmed
         guard !trimmed.isEmpty else { return .failed("Enter an API key first.") }
 
@@ -329,13 +355,13 @@ struct MistralModelLister: MistralModelListing {
 }
 
 /// UI state of the model list, for the picker rows' one-line status.
-enum MistralModelListState: Equatable, Sendable {
+package enum MistralModelListState: Equatable, Sendable {
     case idle
     case loading
     case loaded
     case failed(MistralModelListResult)
 
-    var statusLine: String? {
+    package var statusLine: String? {
         switch self {
         case .idle, .loaded:
             return nil
