@@ -62,11 +62,16 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         // Keep the weights wired, for the life of the helper. macOS otherwise compresses
         // or swaps an idle helper's weights (2.5 of 2.6 GB on the owner's MacBook after
         // two idle days, LVX-33), and the next dictation sends nothing for seconds while
-        // they page back in. After the warm-up, active memory is the weights.
+        // they page back in. After the warm-up, active memory is the weights; Metal
+        // allocates a little more than MLX counts and the residency set skips any
+        // buffer that would overflow it, hence the headroom, within what the device
+        // recommends for its working set.
         let weights = Memory.snapshot().activeMemory
-        let wiredLimit = await WiredSumPolicy().ticket(size: weights).start()
+        var budget = weights + weights / 8 + 64 * 1_048_576
+        if let recommended = GPU.maxRecommendedWorkingSetBytes() { budget = min(budget, recommended) }
+        let wiredLimit = await WiredSumPolicy().ticket(size: budget).start()
         FileHandle.standardError.write(Data(
-            "speechd: \(weights / 1_048_576) MB of weights kept wired (limit \(wiredLimit / 1_048_576) MB)\n".utf8))
+            "speechd: \(weights / 1_048_576) MB of weights, \(budget / 1_048_576) MB kept wired (limit \(wiredLimit / 1_048_576) MB)\n".utf8))
         return try RealtimeSpeechServer(
             engine: engine,
             port: port,
