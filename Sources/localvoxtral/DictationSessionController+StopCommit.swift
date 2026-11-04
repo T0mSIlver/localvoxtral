@@ -1305,17 +1305,27 @@ extension DictationSessionController {
             }
             return nil
         }
-        guard !transcript.currentDictationEventText
+        let realtimeIsEmpty = transcript.currentDictationEventText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            Log.backends.info("second pass skipped: the realtime transcript is empty")
+        guard let pcm = sessionAudio, !pcm.isEmpty else {
+            if realtimeIsEmpty {
+                Log.backends.info("second pass skipped: the realtime transcript is empty")
+            } else {
+                Log.backends.notice(
+                    "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
+                )
+            }
             return nil
         }
-        guard let pcm = sessionAudio, !pcm.isEmpty else {
-            Log.backends.notice(
-                "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
-            )
-            return nil
+        // A dictation that sat inside a stall has no realtime text although
+        // the speech is on the recording (LVX-71). The pass still runs when
+        // the audio reached speech level; a quiet tap stays off the API.
+        if realtimeIsEmpty {
+            guard StallBackfill.recordingReachesSpeech(pcm16: pcm) else {
+                Log.backends.info("second pass skipped: the realtime transcript is empty and the audio is quiet")
+                return nil
+            }
+            Log.backends.notice("second pass running on an empty realtime transcript: the audio reached speech level")
         }
         // The key and host the session dialed, never a fresh read of Settings.
         guard let configuration = sessionRealtimeConfiguration,
