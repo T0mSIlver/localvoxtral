@@ -3939,6 +3939,81 @@ final class DictationPipelineTests: XCTestCase {
             pipeline.records.all.map(\.rawText), ["Hello from the first session. And the second."])
     }
 
+    // MARK: - llama-server's /v1/realtime (#1943)
+
+    /// llama-server answers every commit with an item of its own and pads
+    /// the stream with silence for it, so the session's periodic commit
+    /// never reaches it: the stop's final commit is the only one, and its
+    /// `completed` commits the dictation.
+    func testOverlayBufferOnLlamaServerSendsOnlyTheFinalCommit() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, server: .llamaServer)
+
+        await startAndSpeak(pipeline)
+        for _ in 0 ..< 2 {
+            pipeline.clock.advance(by: TimingConstants.commitInterval)
+            await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+        }
+        sendLlamaPartials(pipeline, Self.phrase)
+        await stopAndFinalize(pipeline, server: .llamaServer)
+
+        XCTAssertEqual(commitFrames(pipeline), [true], "only the stop's final commit")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+    }
+
+    /// A rollover on llama-server: the retiring session gets a final commit
+    /// alone, the next one starts with no commit, and the stop commits both
+    /// sides once.
+    func testOverlayBufferOnLlamaServerCommitsBothSidesOfARolloverOnce() async throws {
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, contextBudget: Self.tinyContext, server: .llamaServer)
+        let first = "Hello from the first session."
+        let both = "Hello from the first session. And the second."
+
+        await startAndSpeak(pipeline)
+        sendLlamaPartials(pipeline, first)
+        XCTAssertTrue(pipeline.microphone.deliver(Self.speech(seed: 4)))
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        await pipeline.server.awaitFrame("the rollover's final commit") { $0.isFinalCommit }
+        XCTAssertEqual(commitFrames(pipeline), [true], "the retiring session gets the final commit alone")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a rollover is not a stop")
+        pipeline.server.forgetFrames()
+
+        pipeline.server.send(RealtimeServerModel.llamaCompleted(first))
+        await pipeline.server.awaitFrame("the next session's session.update") { $0.type == "session.update" }
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == both { shown.resolve() }
+        }
+        sendLlamaPartials(pipeline, "And the second.")
+        let shownBoth = await shown.value(failAfter: 10)
+        XCTAssertTrue(
+            shownBoth,
+            "overlay shows: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "nothing")"
+        )
+        pipeline.overlay.onRefresh = nil
+
+        await stopAndFinalize(pipeline, finalText: "And the second.", server: .llamaServer)
+
+        XCTAssertEqual(commitFrames(pipeline), [true], "the next session starts with no commit")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [both])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [both])
+    }
+
+    /// llama-server's spelling of the streamed text.
+    private func sendLlamaPartials(_ pipeline: Pipeline, _ text: String) {
+        pipeline.server.send([
+            "type": "conversation.item.input_audio_transcription.delta", "item_id": "item_test",
+            "content_index": 0, "delta": text,
+        ])
+    }
+
+    /// Each commit the server received since it last forgot its frames:
+    /// true for a final one.
+    private func commitFrames(_ pipeline: Pipeline) -> [Bool] {
+        pipeline.server.frames.filter { $0.type == "input_audio_buffer.commit" }.map(\.isFinalCommit)
+    }
+
     /// The second chunk passes the margin: the client ends the server session
     /// with a final commit, the server answers it with `retiringText`, and
     /// the client dials a fresh session on the same server, which starts its
@@ -4303,6 +4378,7 @@ final class DictationPipelineTests: XCTestCase {
     /// the client closes, and the session commits and records.
     private func stopAndFinalize(
         _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
+        server kind: RealtimeServerModel.Kind = .vllm,
         expectedError: String? = nil,
         finalStatus: String = DictationViewModel.StatusStrings.ready,
         alerts: [String] = [],
@@ -4331,7 +4407,9 @@ final class DictationPipelineTests: XCTestCase {
             XCTAssertLessThan(flushed, finalCommit, "and sends it ahead of the final commit", file: file, line: line)
         }
 
-        pipeline.server.send(["type": "transcription.done", "text": finalText])
+        pipeline.server.send(
+            kind == .llamaServer
+                ? RealtimeServerModel.llamaCompleted(finalText) : ["type": "transcription.done", "text": finalText])
         let recorded = await pipeline.records.waitForCount(recordsBefore + 1)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)
@@ -4416,9 +4494,10 @@ final class DictationPipelineTests: XCTestCase {
         overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         workspaceCenter: NotificationCenter? = nil,
         backendManager: (any ManagedBackendManaging)? = nil,
-        editKeyMonitor: (@MainActor () -> any EditKeyMonitoring)? = nil
+        editKeyMonitor: (@MainActor () -> any EditKeyMonitoring)? = nil,
+        server kind: RealtimeServerModel.Kind = .vllm
     ) async throws -> Pipeline {
-        let server = try FakeRealtimeServer()
+        let server = try FakeRealtimeServer(sessionCreated: RealtimeServerModel.sessionCreated(kind))
         addTeardownBlock { server.stop() }
         let endpoint = try await server.start()
 
