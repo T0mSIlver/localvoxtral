@@ -169,6 +169,13 @@ extension DictationSessionController {
         }
 
         transcript.appendPartial(processedDelta)
+        // The bundled speech helper never revises a delta and sends its one
+        // final at the stop, so early polish takes its pieces from the deltas
+        // there; every other backend settles its text with finals.
+        if let earlyPolishRun, sessionUsesManagedSpeechHelper, !isFinalizingStop,
+            let settled = transcript.settledStreamedText {
+            earlyPolishRun.settledTextChanged(settled)
+        }
         noteTranscriptTextForSilenceAutoStop()
         if isLiveAutoPasteModeEnabled {
             gateLivePartial(processedDelta)

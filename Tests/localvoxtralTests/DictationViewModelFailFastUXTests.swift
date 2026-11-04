@@ -666,6 +666,30 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(backendManager.ensureCalls.contains(.init(dictation: false, polishing: true)))
     }
 
+    /// Turning polishing off while both helpers start lets the dictation go
+    /// ahead unpolished; the connect latch never sticks (LVX-72).
+    func testTurningPolishingOffWhileManagedStartupWaitsStartsTheDictationUnpolished() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.session.isShowingConnectionFailureAlert = true
+        viewModel.fakeMicrophone.authorization = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitForEnsureCallCount(2)
+        viewModel.settings.llmPolishingEnabled = false
+        backendManager.resumeEnsure()
+        await viewModel.session.managedStartupTask?.value
+
+        XCTAssertNotNil(viewModel.session.sessionProvider, "the dictation went ahead without polishing")
+        viewModel.session.abortConnectingSession()
+        XCTAssertFalse(viewModel.session.isConnectingRealtimeSession)
+    }
+
     /// A first dictation does not wait for the polishing model's download:
     /// once the dictation engine is ready, the session connects while the
     /// polishing model is still downloading (#1933).

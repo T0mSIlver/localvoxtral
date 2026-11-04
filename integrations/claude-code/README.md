@@ -693,7 +693,7 @@ does so only when the config has no agents table and no rows key, and
 otherwise leaves the file unchanged. The row is defined in the
 [enrollment service](../../Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift).
 
-**4. Check it.** Press **Check Setup** in the sheet. The app runs two
+**4. Check it.** The run's last step, **Check Setup**, runs two
 read-only checks over ssh and reports what they mean:
 
 * **Connection & tunnel.** The app sends an unauthenticated session-start hook

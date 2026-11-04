@@ -130,6 +130,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         var phase: Phase = .http
         var buffer = Data()
         var session: SpeechASRStreamingSession?
+        /// The client's `context_bias` list, handed to every session this
+        /// connection opens from now on. Inference queue only, like `session`.
+        var terms = SessionTerms.empty
         let feed: CoalescingStepFeed
         // Append-only delta contract lives in OUR layer now (the engine is an upstream
         // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
@@ -139,6 +142,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         // Latches an early engine stop (length cap or end-of-stream) so it is reported once
         // per engine session. Inference queue only, like `session`.
         var stopReporter = UtteranceStopReporter()
+        // Step timings for the helper log (LVX-33). Inference queue only, like `session`.
+        var stepStats = UtteranceStepStats()
         enum Phase { case http, webSocket }
 
         init(stepMilliseconds: Int) {
@@ -188,6 +193,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         // pool with no clear behind them. Serial queue: this lands after
         // the connection's already-queued work, which the closed feed skips.
         inferenceQueue.async {
+            Self.logStepStats(ctx, ending: "close")
             ctx.session = nil
             ctx.stopReporter.reset()
             Memory.clearCache()
@@ -263,12 +269,13 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             inferenceQueue.async { [weak self] in
                 guard let self, let batch = ctx.feed.receive(samples) else { return }
                 let session = self.ensureSession(ctx)
-                session.step(batch)
+                let stepTime = ContinuousClock().measure { session.step(batch) }
                 // Emit the append-only delta from the full transcript snapshot, NOT the
                 // engine's raw `Delta` (which re-emits the whole transcript on a non-prefix
                 // step — our no-backspace insertion path would duplicate it).
                 let delta = ctx.deltas.emit(fullText: session.text)
                 if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
+                Self.recordStep(ctx, stepTime, batch, producedText: !delta.isEmpty)
                 self.reportEarlyStopIfNeeded(session, connection, ctx)
             }
             return
@@ -276,7 +283,14 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             switch message {
-            case .sessionUpdate:
+            case .sessionUpdate(let terms):
+                // A list sent mid-utterance takes effect at the next one: the
+                // open session was built with the list it started with.
+                if let terms {
+                    ctx.terms = terms
+                    FileHandle.standardError.write(Data(
+                        "speechd: session.update carries \(terms.terms.count) context_bias terms\n".utf8))
+                }
                 self.sendServer(connection, .sessionUpdated)
             case .audioAppend:
                 break  // queued above
@@ -284,18 +298,27 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
                 guard !ctx.feed.isClosed else { return }  // nobody to answer
                 let session = self.ensureSession(ctx)
-                for batch in ctx.feed.flushRemainder() { session.step(batch) }
-                self.reportGrownSteps(ctx)
-                // The remainder can be what crosses the limit (Nemotron then drops it).
-                // Check before finish(), which ends every Voxtral stream and would
-                // read as the model stopping early.
-                self.reportEarlyStopIfNeeded(session, connection, ctx)
-                session.finish()
-                let tail = ctx.deltas.emit(fullText: session.text)
-                if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }
+                let finished = FinalFlush.run(
+                    session: session,
+                    feed: ctx.feed,
+                    deltas: &ctx.deltas,
+                    send: { self.sendServer(connection, .transcriptDelta($0)) },
+                    didStep: { Self.recordStep(ctx, $1, $0, producedText: $2) },
+                    beforeFinish: {
+                        self.reportGrownSteps(ctx)
+                        // The remainder can be what crosses the limit (Nemotron then drops
+                        // it). Check before finish(), which ends every Voxtral stream and
+                        // would read as the model stopping early.
+                        self.reportEarlyStopIfNeeded(session, connection, ctx)
+                    }
+                )
+                // The client left mid-flush: `close` queued the session drop and cache
+                // clear behind this work, and nobody is left to answer.
+                guard finished else { return }
                 // Use the append-only emitted text (== sum of every delta), so the final
                 // payload can never contradict what was streamed on the wire.
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
+                Self.logStepStats(ctx, ending: "commit")
                 ctx.session = nil  // ready for the next utterance
                 ctx.deltas = TranscriptDeltaEmitter()
                 ctx.stopReporter.reset()
@@ -308,6 +331,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // next utterance re-warms the pool while it streams.
                 Memory.clearCache()
             case .clear:
+                Self.logStepStats(ctx, ending: "clear")
                 ctx.session = nil
                 ctx.deltas = TranscriptDeltaEmitter()
                 ctx.stopReporter.reset()
@@ -321,12 +345,35 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         }
     }
 
+    /// One step into the utterance's stats, and the slow-step line the first time one
+    /// is slow. Must be called on `inferenceQueue`.
+    private static func recordStep(
+        _ ctx: Connection, _ duration: Duration, _ samples: [Float], producedText: Bool
+    ) {
+        let milliseconds = Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1e15
+        guard let line = ctx.stepStats.record(
+            milliseconds: milliseconds, samples: samples, producedText: producedText
+        ) else { return }
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
+    /// The utterance's step summary, once, for the helper log. Must be called on
+    /// `inferenceQueue`, before the session is dropped.
+    private static func logStepStats(_ ctx: Connection, ending: String) {
+        guard let line = ctx.stepStats.finish(
+            ending: ending, decodedTokens: ctx.session?.decodedTokenCount ?? 0
+        ) else { return }
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
     /// Must be called on `inferenceQueue`.
     private func ensureSession(_ ctx: Connection) -> SpeechASRStreamingSession {
         if let s = ctx.session { return s }
         let s = engine.makeSession(
             transcriptionDelayMs: transcriptionDelayMs,
-            utteranceLimit: utteranceLimit
+            utteranceLimit: utteranceLimit,
+            terms: ctx.terms
         )
         ctx.session = s
         return s

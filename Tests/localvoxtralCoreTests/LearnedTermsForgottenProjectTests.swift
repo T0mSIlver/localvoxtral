@@ -63,6 +63,25 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         XCTAssertEqual(cleared.projects, [], "the cleared tombstone is written")
     }
 
+    /// A proposal run under way when the user forgets the project answers
+    /// later. Neither its terms nor its failure stamp bring the project back
+    /// or clear the tombstone (Codex term-pipeline hunt, 2026-11-04).
+    func testALateProposalAnswerDoesNotBringAForgottenProjectBack() {
+        let store = LearnedTermStore(fileURL: nil, now: { Self.start })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.forgetProject(keys: [mac.key, quill.key])
+
+        store.recordProposal(["inkwell", "Quillmark"], agent: .claude, project: mac, excluding: [])
+        store.recordProposalFailure(project: mac)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.snapshot().projects, [])
+        XCTAssertTrue(store.snapshot().forgotten.contains(key: mac.key), "the tombstone stays")
+        XCTAssertFalse(
+            store.snapshot().needsProposal(projectKey: mac.key, now: Self.start),
+            "no agent run whose answer would be thrown away")
+    }
+
     func testAHookBringsAForgottenProjectBack() {
         let store = LearnedTermStore(fileURL: nil, now: { Self.start })
         let host = LearnedTermProjectIdentity(key: "remote:quill", name: "quill")

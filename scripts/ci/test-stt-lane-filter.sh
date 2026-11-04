@@ -54,7 +54,7 @@ expect false "the view model's realtime event handling does not" \
   "Sources/localvoxtral/DictationSessionController+RealtimeEvents.swift"
 expect false "the reconnect policy does not" \
   Sources/localvoxtralCore/RealtimeReconnectPolicy.swift
-expect true "the scorer's normalizer runs the lane" \
+expect false "transcript merging does not: the scorer no longer calls it" \
   Sources/localvoxtralCore/TextMergingAlgorithms.swift
 expect true "the suite's client half runs the lane" \
   Tests/localvoxtralCoreTests/RealtimeAPIVLLMIntegrationTests.swift

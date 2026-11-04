@@ -64,7 +64,6 @@ PATTERNS=(
   'Sources/localvoxtral/VoiceMemoCapture.swift'           # the memo decoder the live test uses
   'Sources/localvoxtral/MicrophoneCaptureService.swift'
   'Sources/localvoxtral/AudioDeviceManager.swift'         # the unavailable-device test
-  'Sources/localvoxtralCore/TextMergingAlgorithms.swift'  # the scorer normalizes through it
   'Tests/localvoxtralCoreTests/RealtimeAPIVLLMIntegrationTests.swift' # the client half
   'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'     # the microphone half
   'Tests/localvoxtralTestSupport/IntegrationTestSupport.swift'

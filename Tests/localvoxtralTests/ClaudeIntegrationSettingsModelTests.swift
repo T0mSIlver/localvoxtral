@@ -238,7 +238,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
         hasEnabledHerdrMachineReport: @escaping @Sendable () -> Bool = { false },
         vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
-        hops: MainActorHops = MainActorHops()
+        hops: MainActorHops = MainActorHops(),
+        performVerificationAsync: (@Sendable (
+            @escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]
+        ) async -> ClaudeVerificationAttempt)? = nil
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -266,7 +269,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                     )
                 }
             },
-            performVerificationAsync: { body in
+            performVerificationAsync: performVerificationAsync ?? { body in
                 do {
                     return ClaudeVerificationAttempt(checks: try body(), failure: nil)
                 } catch {
@@ -1916,89 +1919,70 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
     }
 
-    // MARK: Step 3 — in-app verification
+    // MARK: Final check of the setup run
 
-    /// Collects probe invocations. A class rather than a `Mutex` because
-    /// `Mutex` is noncopyable and cannot be an optional parameter.
-    private final class InvocationLog: @unchecked Sendable {
-        private let storage = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
-        var all: [ClaudeRemoteEnrollmentService.Invocation] { storage.withLock { $0 } }
-        func record(_ invocation: ClaudeRemoteEnrollmentService.Invocation) {
-            storage.withLock { $0.append(invocation) }
+    /// An enrolled-model fixture for a setup run on a fresh host, with the
+    /// final check's async seam supplied by the test. The listener starts
+    /// bound. The caller enrolls.
+    @MainActor
+    private func finalCheckModel(
+        script: SetupFlowScript = SetupFlowScript(),
+        performVerificationAsync: (@Sendable (
+            @escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]
+        ) async -> ClaudeVerificationAttempt)? = nil
+    ) throws -> (model: ClaudeIntegrationSettingsModel, listener: StubClaudeRemoteListener) {
+        let registry = try makeRegistry()
+        let listener = StubClaudeRemoteListener(hosts: registry)
+        listener.isListening = true
+        let service = ClaudeRemoteEnrollmentService(
+            runner: setupFlowRunner(script: script, recorder: SetupFlowRecorder()),
+            sshConfigFileSystem: StubSSHConfigFileSystem()
+        )
+        let model = setupFlowModel(
+            registry: registry,
+            listener: listener,
+            service: service,
+            rcFileSystem: StubRCFileSystem(state: ClaudeShellRCState(
+                fileExists: true, data: Data("export EDITOR=vim\n".utf8), permissions: 0o644
+            )),
+            performVerificationAsync: performVerificationAsync
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        return (model, listener)
+    }
+
+    /// Parks the final check until the gate yields, then runs it. Cooperative
+    /// yields only, no wall-clock.
+    private func gatedVerification(
+        _ gate: AsyncStream<Void>
+    ) -> @Sendable (
+        @escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]
+    ) async -> ClaudeVerificationAttempt {
+        { body in
+            var latch = gate.makeAsyncIterator()
+            _ = await latch.next()
+            do {
+                return ClaudeVerificationAttempt(checks: try body(), failure: nil)
+            } catch {
+                return ClaudeVerificationAttempt(checks: [], failure: ClaudeEnrollmentActionFailure(error))
+            }
         }
     }
 
-    /// Both probes answer healthily; whether that counts as a pass is the
-    /// model's call, because only it knows about this Mac's listener.
-    private func healthyVerificationService(
-        recording log: InvocationLog? = nil
-    ) -> ClaudeRemoteEnrollmentService {
-        let index = Mutex(0)
-        return ClaudeRemoteEnrollmentService(runner: { invocation in
-            log?.record(invocation)
-            let call = index.withLock { value -> Int in
-                defer { value += 1 }
-                return value
-            }
-            return call == 0
-                ? .init(exitCode: 0, message: "LVX_HTTP:401")
-                : .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral")
-        })
-    }
-
-    private func listeningModel(
-        registry: ClaudeRemoteHostRegistry,
-        service: ClaudeRemoteEnrollmentService,
-        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
-    ) async -> ClaudeIntegrationSettingsModel {
-        let model = makeModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            enrollmentService: service,
-            remoteForwardPort: remoteForwardPort
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        return model
-    }
-
-    func testCheckSetupPublishesInterpretedVerdictsAndNeedsNoConfirmation() async throws {
-        let registry = try makeRegistry()
-        let log = InvocationLog()
-        let model = await listeningModel(
-            registry: registry, service: healthyVerificationService(recording: log)
-        )
-        XCTAssertTrue(model.verificationChecks.isEmpty, "a sheet must not spawn ssh on opening")
-
-        await model.runVerification()
-
-        // Read-only, so there is deliberately no confirmation gate here — that
-        // gate exists for actions that WRITE.
-        XCTAssertNil(model.enrollmentConfirmation)
-        XCTAssertEqual(model.verificationChecks.map(\.passed), [true, true])
-        XCTAssertNil(model.alert, "all-pass must not raise an alert")
-        XCTAssertEqual(log.all.count, 2)
-        XCTAssertFalse(model.isPerformingVerification)
-    }
-
     /// Review finding, round 1: the 401 verdict needs a fact only this Mac has.
-    func testA401WithNoLocalListenerIsReportedAsASquatterNotAPass() async throws {
-        let registry = try makeRegistry()
-        let listener = StubClaudeRemoteListener(hosts: registry)
+    /// A squatter on our listener port answers forwarded requests too.
+    @MainActor
+    func testSetupRunReportsA401WithNoLocalListenerAsASquatterNotAPass() async throws {
+        let (model, listener) = try finalCheckModel()
+        listener.isListening = false
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
-        let model = makeModel(
-            registry: registry,
-            listener: listener,
-            enrollmentService: healthyVerificationService()
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
         await model.enroll()
         XCTAssertEqual(model.listenerStatus, .portConflict(port: 8473))
         model.alert = nil
 
-        await model.runVerification()
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
 
         let tunnel = try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel })
         XCTAssertFalse(
@@ -2006,219 +1990,76 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "a squatter on our listener port answers forwarded requests too, and its 401 is not ours"
         )
         XCTAssertTrue(tunnel.summary.contains("Something else answered"))
+        let last = try XCTUnwrap(model.setupRun?.items.last)
+        XCTAssertEqual(last.step, .checkSetup)
+        XCTAssertNotNil(failedReason(last.state))
         XCTAssertTrue(model.alert?.detail.contains("not listening") ?? false)
     }
 
-    func testAFailedCheckIsAShortLineInTheSheetAndTheDetailGoesToTheAlert() async throws {
-        let registry = try makeRegistry()
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 255, message: String(repeating: "ssh debug line\n", count: 100))
-        })
-        let model = await listeningModel(registry: registry, service: service)
+    /// Owner rule: the step gets one short sentence, the alert gets the hint,
+    /// and the host's own bytes reach neither.
+    @MainActor
+    func testAFailedFinalCheckStopsTheRunWithAShortReasonAndNoHostBytes() async throws {
+        var script = SetupFlowScript()
+        script.tunnelMessage = "ssh debug line\nLVX_HTTP:500\nssh debug line"
+        let (model, _) = try finalCheckModel(script: script)
+        await model.enroll()
 
-        await model.runVerification()
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
 
-        let tunnel = try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        // Owner rule: the sheet gets one sentence, the alert and the log get
-        // the diagnostics.
-        XCTAssertLessThan(tunnel.summary.count, 80)
-        XCTAssertFalse(tunnel.summary.contains("ssh debug line"))
-        XCTAssertTrue(model.alert?.detail.contains("255") ?? false)
-        // And the host's own bytes are in NEITHER, by construction.
+        let last = try XCTUnwrap(model.setupRun?.items.last)
+        XCTAssertEqual(last.step, .checkSetup)
+        let reason = try XCTUnwrap(failedReason(last.state))
+        XCTAssertEqual(reason, "Something else answered on port 8473.")
+        XCTAssertEqual(model.alert?.title, "Check setup")
+        XCTAssertTrue(model.alert?.detail.hasPrefix(reason) ?? false)
         XCTAssertFalse(model.alert?.detail.contains("ssh debug line") ?? true)
+        XCTAssertEqual(model.hosts.first?.setupStatusText, "Setup stopped at Check setup.")
     }
 
-    /// Review finding, round 1. `claude plugin list` prints the plugin's stored
-    /// config; after a rotation that is the host's OLD token, which this model
-    /// cannot redact because it only ever knew the new one. The guarantee that
-    /// survives rotation is that no probe output travels at all.
-    func testAnOldTokenEchoedByTheHostCannotReachTheAlertOrTheChecks() async throws {
-        let registry = try makeRegistry()
-        let staleToken = Mutex("")
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(
-                exitCode: 0,
-                message: "LVX_HTTP:401\nlocalvoxtral-remote@localvoxtral config: token=\(staleToken.withLock { $0 })"
+    /// The final check could not run at all (no runner, bad alias).
+    @MainActor
+    func testSetupRunSaysSoWhenTheFinalCheckCannotRun() async throws {
+        let (model, _) = try finalCheckModel(performVerificationAsync: { _ in
+            ClaudeVerificationAttempt(
+                checks: [],
+                failure: ClaudeEnrollmentActionFailure(
+                    ClaudeRemoteEnrollmentService.ServiceError.executionNotConfigured
+                )
             )
         })
-        let model = await listeningModel(registry: registry, service: service)
-        // The token the host still has configured is the pre-rotation one.
-        let old = try XCTUnwrap(model.presentedPlan).token
-        staleToken.withLock { $0 = old }
-        model.dismissPlan()
-        await model.rotate(hostID: try XCTUnwrap(model.hosts.first).id)
-        let new = try XCTUnwrap(model.presentedPlan).token
-        XCTAssertNotEqual(old, new)
-
-        await model.runVerification()
-
-        for check in model.verificationChecks {
-            XCTAssertFalse(check.summary.contains(old))
-            XCTAssertFalse(check.hint?.contains(old) ?? false)
-            XCTAssertFalse(check.detail.contains(old), check.detail)
-        }
-        XCTAssertFalse(model.alert?.detail.contains(old) ?? false)
-    }
-
-    func testAnEnrollmentActionAndACheckCannotInterleave() async throws {
-        let registry = try makeRegistry()
-        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
-        let model = ClaudeIntegrationSettingsModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            pluginService: { StubClaudePluginService() },
-            enrollmentService: healthyVerificationService(),
-            performAsync: { _ in nil },
-            performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
-            performVerificationAsync: { body in
-                // Park until released — cooperative yields only, no wall-clock.
-                var latch = gate.makeAsyncIterator()
-                _ = await latch.next()
-                do {
-                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
-                } catch {
-                    return ClaudeVerificationAttempt(
-                        checks: [], failure: ClaudeEnrollmentActionFailure(error)
-                    )
-                }
-            },
-            now: { Date(timeIntervalSince1970: 1_000_000) }
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
         await model.enroll()
 
-        let inFlight = Task { await model.runVerification() }
-        await awaitCondition { model.isPerformingVerification }
-        XCTAssertTrue(model.isEnrollmentBusy)
-
-        // Every write path must refuse while a check runs: they share the sheet,
-        // the seams, and the result rows.
         model.requestHostSetup()
-        model.requestPluginUpdate(hostID: try XCTUnwrap(model.hosts.first).id)
-        XCTAssertNil(model.enrollmentConfirmation)
-        XCTAssertNil(model.presentedPluginUpdate)
-        await model.runVerification()
+        await model.confirmEnrollmentAction()
 
-        releaseGate.yield(())
-        releaseGate.finish()
-        await inFlight.value
-        XCTAssertEqual(model.verificationChecks.count, 2)
-    }
-
-    func testALateCheckResultFromBeforeARotationNeverSurfacesUnderTheNewToken() async throws {
-        let registry = try makeRegistry()
-        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
-        let model = ClaudeIntegrationSettingsModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            pluginService: { StubClaudePluginService() },
-            enrollmentService: healthyVerificationService(),
-            performAsync: { _ in nil },
-            performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
-            performVerificationAsync: { body in
-                var latch = gate.makeAsyncIterator()
-                _ = await latch.next()
-                do {
-                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
-                } catch {
-                    return ClaudeVerificationAttempt(
-                        checks: [], failure: ClaudeEnrollmentActionFailure(error)
-                    )
-                }
-            },
-            now: { Date(timeIntervalSince1970: 1_000_000) }
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        let hostID = try XCTUnwrap(model.presentedPlan).host.id
-
-        let inFlight = Task { await model.runVerification() }
-        await awaitCondition { model.isPerformingVerification }
-
-        model.dismissPlan()
-        await model.rotate(hostID: hostID)
+        XCTAssertTrue(model.verificationChecks.isEmpty)
+        XCTAssertEqual(model.alert?.title, "Check setup")
         XCTAssertEqual(
-            model.presentedPlan?.host.id, hostID,
-            "rotation reuses the host id — that reuse is the trap"
+            model.alert?.detail,
+            "The final setup check could not run.\n\nChecking the setup is not available in this build."
         )
-
-        releaseGate.yield(())
-        releaseGate.finish()
-        await inFlight.value
-
-        XCTAssertTrue(
-            model.verificationChecks.isEmpty,
-            "a check from the previous generation must not render under the rotation sheet"
-        )
-    }
-
-    func testDismissingTheSheetClearsTheVerdicts() async throws {
-        let registry = try makeRegistry()
-        let model = await listeningModel(registry: registry, service: healthyVerificationService())
-        await model.runVerification()
-        XCTAssertFalse(model.verificationChecks.isEmpty)
-
-        model.dismissPlan()
-
-        XCTAssertTrue(model.verificationChecks.isEmpty)
-    }
-
-    func testCheckSetupIsUnavailableWithoutARunnerAndSaysSo() async throws {
-        let registry = try makeRegistry()
-        let model = await listeningModel(
-            registry: registry, service: ClaudeRemoteEnrollmentService()
-        )
-
-        await model.runVerification()
-
-        XCTAssertTrue(model.verificationChecks.isEmpty)
-        XCTAssertEqual(model.alert?.detail, "Checking the setup is not available in this build.")
     }
 
     /// MAJOR 1 (review round 2): the listener fact handed to the service is up
     /// to a full timeout old by the time the verdicts come back. A listener that
     /// died in between leaves the port to whoever takes it next, and that
-    /// squatter's 401 is indistinguishable from ours over the wire — so the ✓
+    /// squatter's 401 is indistinguishable from ours over the wire, so the pass
     /// requires bound at BOTH moments, and this pins the second one.
-    func testAListenerThatDiesDuringTheProbesCannotLeaveAStalePass() async throws {
-        let registry = try makeRegistry()
+    @MainActor
+    func testAListenerThatDiesDuringTheFinalCheckCannotLeaveAStalePass() async throws {
         let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
-        let listener = StubClaudeRemoteListener(hosts: registry)
-        let model = ClaudeIntegrationSettingsModel(
-            registry: registry,
-            listener: listener,
-            pluginService: { StubClaudePluginService() },
-            enrollmentService: healthyVerificationService(),
-            performAsync: { _ in nil },
-            performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
-            performVerificationAsync: { body in
-                // The probes run while the test kills the listener — cooperative
-                // yields only, no wall-clock.
-                var latch = gate.makeAsyncIterator()
-                _ = await latch.next()
-                do {
-                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
-                } catch {
-                    return ClaudeVerificationAttempt(
-                        checks: [], failure: ClaudeEnrollmentActionFailure(error)
-                    )
-                }
-            },
-            now: { Date(timeIntervalSince1970: 1_000_000) }
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
+        let (model, listener) = try finalCheckModel(performVerificationAsync: gatedVerification(gate))
         await model.enroll()
         XCTAssertEqual(model.listenerStatus, .listening(port: 8473))
         XCTAssertTrue(model.listenerIsBound, "bound when the probes are launched")
 
-        let inFlight = Task { await model.runVerification() }
-        await awaitCondition { model.isPerformingVerification }
+        model.requestHostSetup()
+        let inFlight = Task { await model.confirmEnrollmentAction() }
+        await awaitCondition { model.setupRun?.items.last?.state == .running }
 
-        // …and gone by the time they answer: our bind dropped and something
+        // ...and gone by the time they answer: our bind dropped and something
         // else now holds the port.
         listener.isListening = false
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
@@ -2235,152 +2076,55 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "the 401 that arrived was answered by whatever holds the port now, not by us"
         )
         XCTAssertTrue(tunnel.summary.contains("Something else answered"))
+        let last = try XCTUnwrap(model.setupRun?.items.last)
+        XCTAssertNotNil(failedReason(last.state))
     }
 
-    /// MINOR 1 (review round 2): a legacy host with no stored alias shows the
-    /// placeholder, and checking `your-ssh-host` would report on whatever
-    /// machine answers to that name — a wrong answer that looks like an answer.
-    func testAHostWithNoStoredAliasCannotBeChecked() async throws {
-        let registry = try makeRegistry()
-        let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            XCTFail("a placeholder alias must never reach ssh")
-            return .init(exitCode: 0, message: "")
-        })
-        let model = makeModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            enrollmentService: service
-        )
-        // A host from before aliases were persisted.
-        let enrollment = try registry.enroll(label: "legacy")
-        model.refreshHosts()
-        await model.rotate(hostID: enrollment.host.id)
-
-        let presentation = try XCTUnwrap(model.presentedPlan)
-        XCTAssertFalse(presentation.canRunRemoteSetup)
-        XCTAssertEqual(presentation.sshHostAlias, ClaudeIntegrationSettingsModel.unknownAliasPlaceholder)
-
-        await model.runVerification()
-
-        XCTAssertTrue(model.verificationChecks.isEmpty, "no alias, no checks — and no guessing")
-        XCTAssertNil(model.alert, "the sheet already explains why; a modal would be noise")
-    }
-
-    /// MINOR 1 (review round 3), model half: the check follows `~/.ssh/config`,
-    /// so a host whose block still forwards the legacy port is DIAGNOSED
-    /// ("re-run step 1") instead of misreported as a dead tunnel.
-    func testAStaleSSHConfigPortIsProbedAndNamedRatherThanMisdiagnosed() async throws {
-        let registry = try makeRegistry()
-        let log = InvocationLog()
-        // The user's config still forwards 8473 for this host…
-        let filesystem = StubSSHConfigFileSystem()
-        let model = makeModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            enrollmentService: ClaudeRemoteEnrollmentService(
-                runner: { invocation in
-                    log.record(invocation)
-                    return .init(exitCode: 0, message: "LVX_HTTP:401")
-                },
-                sshConfigFileSystem: filesystem
-            ),
-            // …while THIS install allocates a different one.
-            remoteForwardPort: 28542
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        let hostID = try XCTUnwrap(model.presentedPlan).host.id
-        filesystem.configText = """
-        # BEGIN localvoxtral claude context (\(hostID))
-        Host builder
-            RemoteForward 8473 127.0.0.1:8473
-            ExitOnForwardFailure no
-        # END localvoxtral claude context (\(hostID))
-        """
-
-        await model.runVerification()
-
-        let script = String(decoding: log.all[0].standardInput, as: UTF8.self)
-        XCTAssertTrue(
-            script.contains("127.0.0.1:8473"),
-            "the probe must ask about the tunnel that EXISTS, not the one the plan describes"
-        )
-        XCTAssertFalse(script.contains("28542"))
-        let tunnel = try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel })
-        XCTAssertFalse(tunnel.passed)
-        XCTAssertTrue(tunnel.summary.contains("8473"))
-        XCTAssertTrue(try XCTUnwrap(tunnel.hint).contains("28542"))
-        XCTAssertTrue(try XCTUnwrap(tunnel.hint).contains("step 1"))
-    }
-
-    func testAConfigThatAlreadyForwardsThisMacsPortIsProbedAsUsual() async throws {
-        let registry = try makeRegistry()
-        let log = InvocationLog()
-        let filesystem = StubSSHConfigFileSystem()
-        let model = makeModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            enrollmentService: ClaudeRemoteEnrollmentService(
-                runner: { invocation in
-                    log.record(invocation)
-                    return .init(exitCode: 0, message: "LVX_HTTP:401")
-                },
-                sshConfigFileSystem: filesystem
-            ),
-            remoteForwardPort: 28542
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        let presentation = try XCTUnwrap(model.presentedPlan)
-        filesystem.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
-            to: "", snippet: presentation.plan.sshConfigSnippet, hostID: presentation.host.id
-        )
-
-        await model.runVerification()
-
-        let script = String(decoding: log.all[0].standardInput, as: UTF8.self)
-        XCTAssertTrue(script.contains("127.0.0.1:28542"))
-        XCTAssertTrue(try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel }).passed)
-    }
-
-    func testWithNoBlockOnDiskTheCheckFallsBackToThePlansPort() async throws {
-        // Nothing written yet — the ordinary state right after enrolling, and
-        // the plan's port is the only thing there is to ask about.
-        let registry = try makeRegistry()
-        let log = InvocationLog()
-        let model = makeModel(
-            registry: registry,
-            listener: StubClaudeRemoteListener(hosts: registry),
-            enrollmentService: ClaudeRemoteEnrollmentService(
-                runner: { invocation in
-                    log.record(invocation)
-                    return .init(exitCode: 0, message: "LVX_HTTP:401")
-                },
-                sshConfigFileSystem: StubSSHConfigFileSystem()
-            ),
-            remoteForwardPort: 28542
-        )
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
+    /// Every write path shares the sheet, the seams and the result rows, so
+    /// each must refuse during a run.
+    @MainActor
+    func testNoOtherActionStartsDuringASetupRunsFinalCheck() async throws {
+        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
+        let (model, _) = try finalCheckModel(performVerificationAsync: gatedVerification(gate))
         await model.enroll()
 
-        await model.runVerification()
+        model.requestHostSetup()
+        let inFlight = Task { await model.confirmEnrollmentAction() }
+        await awaitCondition { model.setupRun?.items.last?.state == .running }
+        XCTAssertTrue(model.isEnrollmentBusy)
 
-        let script = String(decoding: log.all[0].standardInput, as: UTF8.self)
-        XCTAssertTrue(script.contains("127.0.0.1:28542"))
-        XCTAssertFalse(script.contains("8473"), "the legacy port is not this Mac's tunnel")
-        XCTAssertTrue(try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel }).passed)
+        model.requestHostSetup()
+        model.requestPluginUpdate(hostID: try XCTUnwrap(model.hosts.first).id)
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertNil(model.presentedPluginUpdate)
+
+        releaseGate.yield(())
+        releaseGate.finish()
+        await inFlight.value
+        XCTAssertFalse(model.isEnrollmentBusy)
+        XCTAssertEqual(model.verificationChecks.count, 2)
+    }
+
+    func testDismissingTheSheetClearsTheVerdicts() async throws {
+        let (model, _) = try finalCheckModel()
+        await model.enroll()
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
+        XCTAssertFalse(model.verificationChecks.isEmpty)
+
+        model.dismissPlan()
+
+        XCTAssertTrue(model.verificationChecks.isEmpty)
     }
 
     /// MINOR 3 (review round 3): a verdict about the setup BEFORE a mutation
     /// must not sit beside that mutation's result, where it reads as describing
     /// the state after it.
-    func testStartingAMutationClearsTheVerdictsItWouldOtherwiseOutlive() async throws {
-        let registry = try makeRegistry()
-        let model = await listeningModel(registry: registry, service: healthyVerificationService())
-        await model.runVerification()
+    func testStartingASetupRunClearsTheVerdictsItWouldOtherwiseOutlive() async throws {
+        let (model, _) = try finalCheckModel()
+        await model.enroll()
+        model.requestHostSetup()
+        await model.confirmEnrollmentAction()
         XCTAssertFalse(model.verificationChecks.isEmpty)
 
         model.requestHostSetup()
@@ -2426,7 +2170,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         model.requestHostSetup()
         await model.confirmEnrollmentAction()
-        await model.runVerification()
 
         XCTAssertNil(model.enrollmentConfirmation)
         XCTAssertNil(model.setupRun)
@@ -2748,7 +2491,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         shell: ClaudeShellKind? = .zsh,
         rcFileSystem: StubRCFileSystem? = nil,
         vibeFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
-        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
+        performVerificationAsync: (@Sendable (
+            @escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]
+        ) async -> ClaudeVerificationAttempt)? = nil
     ) -> ClaudeIntegrationSettingsModel {
         let rc = rcFileSystem
         return makeModel(
@@ -2758,7 +2504,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             remoteForwardPort: remoteForwardPort,
             loginShell: { shell },
             shellRCWriter: { _ in rc.map { ClaudeShellRCWriter(fileSystem: $0) } },
-            vibeRemoteFiles: vibeFiles
+            vibeRemoteFiles: vibeFiles,
+            performVerificationAsync: performVerificationAsync
         )
     }
 
