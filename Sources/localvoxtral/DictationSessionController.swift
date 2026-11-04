@@ -577,9 +577,15 @@ final class DictationSessionController {
     /// or not.
     @ObservationIgnored
     var sessionHasStallBackfill = false
-    /// The stall backfills in flight, cancelled when the session resets.
+    /// The session's stall backfills, cancelled when the session resets.
     @ObservationIgnored
     var stallBackfillTasks: [Task<Void, Never>] = []
+    /// The ones still waiting on the batch model: a stop holds its commit
+    /// for them (LVX-75).
+    @ObservationIgnored
+    var stallBackfillsInFlight: Set<Int> = []
+    @ObservationIgnored
+    var nextStallBackfillID = 0
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored

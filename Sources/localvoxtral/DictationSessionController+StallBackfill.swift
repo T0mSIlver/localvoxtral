@@ -5,8 +5,9 @@ import os
 /// speech sent during the stall (symptom D, #1648). When an Overlay Buffer
 /// dictation's stream resumes after a stall that carried speech, the stalled
 /// stretch of the recording goes to the batch model, and its words are
-/// spliced into the overlay where the stream skipped them. The stop's second
-/// pass, when on, still replaces the whole text.
+/// spliced into the overlay where the stream skipped them. A stop with no
+/// second pass holds its commit until the backfills in flight answer or miss
+/// their deadline (LVX-75); the second pass, when on, replaces the whole text.
 extension DictationSessionController {
     func startStallBackfill(after stall: MistralStreamHealth.StallEnd) {
         guard sessionHasStallBackfill, acceptsRealtimeEvents else { return }
@@ -56,6 +57,9 @@ extension DictationSessionController {
         Log.backends.notice(
             "stall backfill: sending \(String(format: "%.1f", audioSeconds), privacy: .public)s of audio after a \(described, privacy: .public), deadline \(String(describing: deadline), privacy: .public)"
         )
+        let id = nextStallBackfillID
+        nextStallBackfillID += 1
+        stallBackfillsInFlight.insert(id)
         let task = Task { @MainActor [weak self] in
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
                 // Billed like the second pass, which it is a slice of.
@@ -77,7 +81,9 @@ extension DictationSessionController {
                     onUpload: { uploadRates.record($0, for: endpoint) }
                 ).text
             }
-            guard let self, !Task.isCancelled else { return }
+            guard let self else { return }
+            self.stallBackfillsInFlight.remove(id)
+            guard !Task.isCancelled else { return }
             self.applyStallBackfill(outcome, at: mark)
         }
         stallBackfillTasks.append(task)
