@@ -659,7 +659,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
-        guard !isIgnored(projectKey: projectKey) else { return false }
+        // A forgotten project takes no answer (`recordProposal`), so asking
+        // would run a paid agent whose reply is thrown away, on every join.
+        guard !isIgnored(projectKey: projectKey), !forgotten.contains(key: projectKey) else { return false }
         guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }

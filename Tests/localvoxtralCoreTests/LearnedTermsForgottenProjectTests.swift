@@ -77,6 +77,9 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot().projects, [])
         XCTAssertTrue(store.snapshot().forgotten.contains(key: mac.key), "the tombstone stays")
+        XCTAssertFalse(
+            store.snapshot().needsProposal(projectKey: mac.key, now: Self.start),
+            "no agent run whose answer would be thrown away")
     }
 
     func testAHookBringsAForgottenProjectBack() {
