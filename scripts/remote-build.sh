@@ -66,7 +66,9 @@ set -euo pipefail
 #                  multiple (#1670), and a mic buffer in µs (default 0) that
 #                  models the app's sends instead: a timer every cadence that
 #                  drains whole mic buffers, and the helper holding an append
-#                  under its minimum step (10667 = 512 frames at 48 kHz);
+#                  under its minimum step (10667 = 512 frames at 48 kHz), and
+#                  `terms` to run the helper twice on that audio, without and
+#                  then with a 100-term list, timing the term boost (LVX-2);
 #                  requires a prior `package`
 #     polishd-bench
 #                  time the packaged polishing helper on the polish eval
@@ -119,14 +121,22 @@ set -euo pipefail
 #                  of counts and copies the run file back to
 #                  EvalRecordings/term-recall/runs/<label>.jsonl. Options:
 #                  `--asr <name>` (a row of scripts/mac/test-speech-models.tsv,
-#                  default voxtral), `--label <name>` (default <asr>-none),
+#                  default voxtral), `--label <name>` (default <asr>-<bias>, or
+#                  <asr>-helper-<bias> with --helper),
 #                  `--limit N`, `--case <id>` (repeatable),
 #                  `--recordings EvalRecordings/term-recall/<set>` (human WAVs
 #                  in the agent-dictation manifest format), or
 #                  `--hypotheses EvalRecordings/term-recall/<file>.jsonl` to
 #                  score {"id","text"} rows with no speech engine;
+#                  `--bias none|session|noise` (the term list each case sends
+#                  as context_bias in session.update: none, its session's
+#                  terms, or the set's noise terms), `--helper` (launch the
+#                  packaged helper from a prior `package` run instead of the
+#                  test service; needed to measure a helper or engine change)
+#                  and `--term-boost first,continuation,margin` (passed to
+#                  that helper);
 #                  `compare <before> <after>` pairs two runs by label, e.g.
-#                  eval-term-recall --asr nemotron
+#                  eval-term-recall --asr nemotron --helper --bias session
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -820,8 +830,8 @@ case "$CMD" in
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
-    if [[ $# -gt 8 ]]; then
-      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, audio, phase-ms, and mic-buffer-us arguments" >&2
+    if [[ $# -gt 9 ]]; then
+      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, audio, phase-ms, mic-buffer-us, and terms arguments" >&2
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
@@ -834,6 +844,7 @@ case "$CMD" in
     SPEECHD_BENCH_AUDIO="${6:-noise}"
     SPEECHD_BENCH_PHASE="${7:-0}"
     SPEECHD_BENCH_MIC_BUFFER="${8:-0}"
+    SPEECHD_BENCH_TERMS="${9:-}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1
@@ -866,6 +877,10 @@ case "$CMD" in
       echo "speechd-bench mic-buffer-us must be a non-negative integer" >&2
       exit 1
     fi
+    if [[ -n "$SPEECHD_BENCH_TERMS" && "$SPEECHD_BENCH_TERMS" != terms ]]; then
+      echo "speechd-bench's ninth argument must be terms" >&2
+      exit 1
+    fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
     trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
     # The optional fields are omitted rather than nulled, so the test's decoder
@@ -885,6 +900,9 @@ case "$CMD" in
     fi
     if [[ "$SPEECHD_BENCH_MIC_BUFFER" != 0 ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"micBufferMicroseconds\":$SPEECHD_BENCH_MIC_BUFFER"
+    fi
+    if [[ "$SPEECHD_BENCH_TERMS" == terms ]]; then
+      SPEECHD_BENCH_OPTIONAL+=",\"terms\":true"
     fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
@@ -910,9 +928,16 @@ case "$CMD" in
     TR_RECORDINGS=""
     TR_HYPOTHESES=""
     TR_COMPARE=()
+    TR_BIAS=""
+    TR_HELPER=0
+    TR_TERM_BOOST=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --asr|--label|--limit|--case|--recordings|--hypotheses)
+        --helper)
+          TR_HELPER=1
+          shift
+          ;;
+        --asr|--label|--limit|--case|--recordings|--hypotheses|--bias|--term-boost)
           if [[ $# -lt 2 ]]; then
             echo "eval-term-recall: $1 needs a value" >&2
             exit 1
@@ -924,6 +949,8 @@ case "$CMD" in
             --case) TR_CASES+=("$2") ;;
             --recordings) TR_RECORDINGS="$2" ;;
             --hypotheses) TR_HYPOTHESES="$2" ;;
+            --bias) TR_BIAS="$2" ;;
+            --term-boost) TR_TERM_BOOST="$2" ;;
           esac
           shift 2
           ;;
@@ -952,6 +979,20 @@ case "$CMD" in
       echo "eval-term-recall: --limit must be a positive integer" >&2
       exit 1
     fi
+    if [[ -n "$TR_BIAS" && "$TR_BIAS" != none && "$TR_BIAS" != session && "$TR_BIAS" != noise ]]; then
+      echo "eval-term-recall: --bias must be none, session or noise" >&2
+      exit 1
+    fi
+    if [[ -n "$TR_TERM_BOOST" ]]; then
+      if [[ ! "$TR_TERM_BOOST" =~ ^[0-9]+(\.[0-9]+)?,[0-9]+(\.[0-9]+)?,[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "eval-term-recall: --term-boost must be first,continuation,margin (three non-negative numbers)" >&2
+        exit 1
+      fi
+      if [[ "$TR_HELPER" != 1 ]]; then
+        echo "eval-term-recall: --term-boost configures the packaged helper, so it needs --helper" >&2
+        exit 1
+      fi
+    fi
     for private_only in session-map.json terms.json; do
       if [[ -f "$ROOT_DIR/$TR_DIR/$private_only" ]]; then
         echo "$TR_DIR/$private_only must never leave the harvest machine; the harvester" >&2
@@ -960,13 +1001,14 @@ case "$CMD" in
       fi
     done
     # Options that one mode would silently ignore are mistakes: refuse them.
-    if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES" \
+    if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || "$TR_HELPER" == 1 \
+          || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES$TR_BIAS$TR_TERM_BOOST" \
           || ${#TR_CASES[@]} -gt 0 ) ]]; then
       echo "eval-term-recall compare takes no other options" >&2
       exit 1
     fi
-    if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_RECORDINGS" ) ]]; then
-      echo "eval-term-recall: --hypotheses scores text, so --asr and --recordings do not apply" >&2
+    if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || "$TR_HELPER" == 1 || -n "$TR_RECORDINGS$TR_BIAS" ) ]]; then
+      echo "eval-term-recall: --hypotheses scores text, so --asr, --helper, --bias and --recordings do not apply" >&2
       exit 1
     fi
     TR_MARKER="$ROOT_DIR/.term-recall-eval-enable.json"
@@ -1009,11 +1051,25 @@ case "$CMD" in
           TR_OPTIONAL+=",\"recordingDirectory\":\"$TR_RECORDINGS\""
         fi
         speech_model_row "$TR_ASR" eval-term-recall
-        TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
-        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
+        TR_BIAS="${TR_BIAS:-none}"
+        if [[ "$TR_HELPER" == 1 ]]; then
+          # Its own default label, so a helper run never overwrites the test
+          # service's baseline of the same arm.
+          TR_LABEL="${TR_LABEL:-$TR_ASR-helper-$TR_BIAS}"
+          TR_OPTIONAL+=",\"helperPath\":\"dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd\""
+          if [[ -n "$TR_TERM_BOOST" ]]; then
+            TR_OPTIONAL+=",\"helperArguments\":[\"--term-boost\",\"$TR_TERM_BOOST\"]"
+          fi
+        fi
+        TR_LABEL="${TR_LABEL:-$TR_ASR-$TR_BIAS}"
+        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"%s"%s}\n' \
           "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
-          "$TR_OPTIONAL" >"$TR_MARKER"
-        ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+          "$TR_BIAS" "$TR_OPTIONAL" >"$TR_MARKER"
+        # The packaged helper loads its own copy of the weights; the test
+        # service would only hold a second one.
+        if [[ "$TR_HELPER" != 1 ]]; then
+          ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+        fi
       fi
       # The run file comes back through the log: the Mac's copy is under a
       # work dir that a fresh LV_BUILD_DIR or the gc verb can drop.
