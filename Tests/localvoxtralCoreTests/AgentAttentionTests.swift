@@ -300,7 +300,7 @@ final class AgentAttentionTests: XCTestCase {
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { _ in focusedTTY.get() },
-            focusedDesktopSessionURL: { _ in "https://claude.ai/epitaxy/local_0f3a" }
+            focusedDesktopSessionURL: { _ in .address("https://claude.ai/epitaxy/local_0f3a") }
         )
         let ghostty = TerminalScreenTarget(pid: 77, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
         let shownInGhostty = await resolver.sessionShown(target: ghostty)

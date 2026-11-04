@@ -55,7 +55,7 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
         let resolver = ClaudeSessionJoinResolver(
             registry: sessions,
             focusedTerminalTTY: { _ in nil },
-            focusedDesktopSessionURL: { _ in address }
+            focusedDesktopSessionURL: { _ in ClaudeDesktopFocusRead(address: address) }
         )
         return await resolver.resolve(target: desktop)
     }

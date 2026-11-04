@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 final class SpeakerTermSuggestionsTests: XCTestCase {
@@ -80,7 +81,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
     @MainActor
     func testTheRequestGoesOutAsOneUserMessageWithNoSystemMessage() throws {
         let settings = SettingsStore(
-            defaults: UserDefaults(suiteName: "localvoxtral.SuggestBody.\(UUID().uuidString)")!,
+            defaults: makeTestDefaults(),
             environment: [:], secretStore: InMemorySecretStore()
         )
         settings.llmPolishingEnabled = true

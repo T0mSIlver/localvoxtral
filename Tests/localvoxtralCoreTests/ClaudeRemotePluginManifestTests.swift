@@ -1838,7 +1838,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let shown = Mutex<String?>("https://claude.ai/epitaxy/local_eeda27ee-43ae-4ab3-8e26-0fdc50fb1c7c")
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            focusedDesktopSessionURL: { _ in shown.withLock { $0 } }
+            focusedDesktopSessionURL: { _ in ClaudeDesktopFocusRead(address: shown.withLock { $0 }) }
         )
         let desktop = TerminalScreenTarget(pid: 4_100, bundleID: ClaudeDesktopAllowlist.bundleID)
         let tracker = AgentAttentionTracker(

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -772,20 +773,14 @@ final class PolishPromptWarmupTests: XCTestCase {
 @MainActor
 final class PolishPromptWarmupPlanTests: XCTestCase {
     private var defaults: UserDefaults!
-    private var defaultsSuiteName = ""
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.PolishPromptWarmupPlanTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 

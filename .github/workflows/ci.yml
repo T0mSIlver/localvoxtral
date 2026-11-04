@@ -383,6 +383,7 @@ jobs:
           # One xctest process per core, each running whole test classes
           # (scripts/lib/unit-test-shards.sh, #442): the same shape as
           # `remote-build.sh test`, and one complete log.
+          touch "$RUNNER_TEMP/unit-suite-start"
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             900 "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
             ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
@@ -391,6 +392,14 @@ jobs:
             AgentDictationE2EEvalTests \
             HerdrIntegrationTests \
             PolishContextPreparationTests
+
+      - name: Unit suite left no preference suites
+        # A UserDefaults suite named like localvoxtral.SomeTests.<UUID> is a
+        # plist in ~/Library/Preferences that outlives the run; the owner's
+        # MacBook had 310k of them. TestDefaults.swift keeps tests' suites in
+        # a temp folder instead.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: ./scripts/ci/check-test-preferences.sh "$RUNNER_TEMP/unit-suite-start"
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}

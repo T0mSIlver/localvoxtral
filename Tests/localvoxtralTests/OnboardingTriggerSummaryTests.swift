@@ -1,25 +1,20 @@
 import Carbon.HIToolbox
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
 final class OnboardingTriggerSummaryTests: XCTestCase {
     private var defaults: UserDefaults!
-    private var defaultsSuiteName = ""
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.OnboardingTriggerSummaryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 
