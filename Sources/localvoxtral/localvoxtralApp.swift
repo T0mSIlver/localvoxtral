@@ -617,6 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sshConnection: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
             federation: { HerdrMachineFederationReader.live().federation() },
             liveLocalHerdrSockets: { [claudeSessionRegistry] in claudeSessionRegistry.liveLocalHerdrSocketPaths() },
+            wholeViewClientSession: { HerdrClientTTYProbe.wholeViewSessionName(onTTYDevicePath: $0) },
             enrolledHosts: { [weak self] destination in
                 self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
             },
@@ -626,7 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         return HerdrSessionPaneFocuser(
-            windowTTY: { await locator.windowTTY(for: $0) },
+            windowShows: { await locator.windowShows($0, tty: $1) },
             openSocket: { [weak self] target in
                 switch target {
                 case .local(_, let socketPath):
