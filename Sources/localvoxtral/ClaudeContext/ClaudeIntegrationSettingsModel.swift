@@ -39,7 +39,9 @@ public final class ClaudeIntegrationSettingsModel {
     public internal(set) var enrollmentConfirmation: EnrollmentConfirmation?
     public internal(set) var isPerformingEnrollmentAction = false
     /// The final check's verdicts. Empty until a setup run reaches it: a check
-    /// nobody asked for would spawn ssh on opening a sheet.
+    /// nobody asked for would spawn ssh on opening a sheet. No view renders
+    /// them; the run reports a failed check through its own step and alert,
+    /// and tests read them.
     public internal(set) var verificationChecks: [ClaudeRemoteEnrollmentService.VerificationCheck] = []
     public internal(set) var setupRun: RemoteHostSetupRun?
     public internal(set) var setupManualInstructions: String?
