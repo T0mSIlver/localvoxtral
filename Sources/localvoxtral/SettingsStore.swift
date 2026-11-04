@@ -24,7 +24,6 @@ final class SettingsStore {
     }
 
     enum Keys {
-        static let realtimeProvider = "settings.realtime_provider"
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         /// LEGACY. The three API keys now live in the login Keychain
         /// (`SecretKey` / `KeychainSecretStore`); these defaults keys exist
@@ -198,9 +197,9 @@ final class SettingsStore {
     /// is expected to serve.
     static let defaultLLMPolishingModel = PolishModelCatalog.defaultOption.repoID
 
-    var realtimeProvider: RealtimeProvider {
-        didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
-    }
+    /// The only provider. Its old key, `settings.realtime_provider`, is in
+    /// `retiredKeys`; `dictationBackendMode` holds the real choice.
+    var realtimeProvider: RealtimeProvider { .realtimeAPI }
 
     var dictationBackendMode: BackendMode {
         didSet {
@@ -1066,16 +1065,6 @@ final class SettingsStore {
                 defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
             }
         }
-
-        let configuredProvider = Self.loadString(
-            defaults: defaults, key: Keys.realtimeProvider,
-            envKey: "REALTIME_PROVIDER", fallback: RealtimeProvider.realtimeAPI.rawValue,
-            environment: environment
-        )
-        // A previously-selected provider may no longer exist (deprecated backends
-        // have been removed). Fall back to the default rather than crash or
-        // produce an invalid state.
-        realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
 
         for key in Self.retiredKeys {
             defaults.removeObject(forKey: key)

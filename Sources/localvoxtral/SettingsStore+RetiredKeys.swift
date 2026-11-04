@@ -19,6 +19,8 @@ extension SettingsStore {
         "settings.speechd_cache_limit",
         // Dogfood capture (removed 2026-09, #797).
         "debug.dogfood_capture_enabled",
+        // Realtime provider: one provider left (2026-11).
+        "settings.realtime_provider",
         // Quick capture and voice memos (removed 2026-11).
         "settings.quick_capture_shortcut_key_code",
         "settings.quick_capture_shortcut_carbon_modifiers",
