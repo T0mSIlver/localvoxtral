@@ -1,14 +1,14 @@
 import Foundation
 
 /// The stretch of history the Insights pane counts.
-enum DictationInsightsPeriod: String, CaseIterable, Identifiable, Sendable {
+package enum DictationInsightsPeriod: String, CaseIterable, Identifiable, Sendable {
     case week
     case month
     case allTime
 
-    var id: String { rawValue }
+    package var id: String { rawValue }
 
-    var label: String {
+    package var label: String {
         switch self {
         case .week: return "Last 7 days"
         case .month: return "Last 30 days"
@@ -17,7 +17,7 @@ enum DictationInsightsPeriod: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Nil for all time.
-    func start(now: Date) -> Date? {
+    package func start(now: Date) -> Date? {
         switch self {
         case .week: return now.addingTimeInterval(-7 * 86_400)
         case .month: return now.addingTimeInterval(-30 * 86_400)
@@ -28,82 +28,82 @@ enum DictationInsightsPeriod: String, CaseIterable, Identifiable, Sendable {
 
 /// What a set of saved dictations adds up to. A value computed from the
 /// entries and nothing else, so every number here has a test.
-struct DictationInsights: Equatable, Sendable {
+package struct DictationInsights: Equatable, Sendable {
     /// The speed the saving is measured against.
-    static let typingWordsPerMinute = TypingPace.wordsPerMinute
+    package static let typingWordsPerMinute = TypingPace.wordsPerMinute
     /// A recurring fix is one polishing made in at least this many dictations:
     /// the bar `LearnedTerms` uses for a habit rather than a repeat.
-    static let recurringFixMinimumDictations = 3
-    static let maxRecurringFixes = 8
-    static let maxApps = 5
+    package static let recurringFixMinimumDictations = 3
+    package static let maxRecurringFixes = 8
+    package static let maxApps = 5
     /// A change longer than this on either side is a rephrasing, not a
     /// misheard word. Four covers a spoken file name ("local voxtral dot js").
-    static let maxFixWords = 4
+    package static let maxFixWords = 4
     /// One dictation cannot count for more than this. The start and end times
     /// are wall-clock, so a Mac that slept mid-dictation would otherwise own
     /// the total.
-    static let maxDictationSeconds: TimeInterval = WidgetSnapshot.DictationSample.maxDictatingSeconds
+    package static let maxDictationSeconds: TimeInterval = WidgetSnapshot.DictationSample.maxDictatingSeconds
 
-    struct RecurringFix: Equatable, Sendable, Identifiable {
+    package struct RecurringFix: Equatable, Sendable, Identifiable {
         /// What the recognizer wrote, lowercased.
-        let heard: String
+        package let heard: String
         /// What polishing wrote instead.
-        let written: String
-        let dictations: Int
+        package let written: String
+        package let dictations: Int
 
-        var id: String { "\(heard)\u{1F}\(written)" }
+        package var id: String { "\(heard)\u{1F}\(written)" }
     }
 
     private struct FixKey: Hashable {
-        let heard: String
-        let written: String
+        package let heard: String
+        package let written: String
     }
 
-    struct AppCount: Equatable, Sendable, Identifiable {
-        let bundleID: String
-        let dictations: Int
+    package struct AppCount: Equatable, Sendable, Identifiable {
+        package let bundleID: String
+        package let dictations: Int
 
-        var id: String { bundleID }
+        package var id: String { bundleID }
     }
 
-    var dictations = 0
+    package var dictations = 0
     /// Words of the text each dictation ended up as.
-    var words = 0
+    package var words = 0
     /// Start to finish of every dictation, polishing wait taken out.
-    var dictatingSeconds: TimeInterval = 0
-    var notInserted = 0
-    var polishFailed = 0
+    package var dictatingSeconds: TimeInterval = 0
+    package var notInserted = 0
+    package var polishFailed = 0
     /// Dictations a polish request answered for, whether or not it changed them.
-    var polishRan = 0
+    package var polishRan = 0
     /// Of those, the ones it changed. A dictation only the replacement
     /// dictionary changed is in neither count.
-    var polishChanged = 0
+    package var polishChanged = 0
     /// Dictations whose insertion was watched to the end of its window: the
     /// ones the user erased right away plus the ones left alone. A window a
     /// new dictation cut short says neither, so it is in neither count.
-    var editWatched = 0
+    package var editWatched = 0
     /// Of those, the ones erased within seconds (Backspace, forward delete or
     /// ⌘A): the "edited soon after insertion" share #519 trends.
-    var editedSoon = 0
-    var medianPolishSeconds: Double?
-    var slowPolishSeconds: Double?
-    var recurringFixes: [RecurringFix] = []
-    var topApps: [AppCount] = []
+    package var editedSoon = 0
+    package var medianPolishSeconds: Double?
+    package var slowPolishSeconds: Double?
+    package var recurringFixes: [RecurringFix] = []
+    package var topApps: [AppCount] = []
 
     /// Nil under ten seconds of dictating, where the ratio is noise.
-    var wordsPerMinute: Double? {
+    package var wordsPerMinute: Double? {
         TypingPace.wordsPerMinute(words: words, dictatingSeconds: dictatingSeconds)
     }
 
     /// What typing the same words would have taken, less what dictating them
     /// took. Never negative: a slow day is not a debt.
-    var secondsSavedOverTyping: TimeInterval {
+    package var secondsSavedOverTyping: TimeInterval {
         TypingPace.secondsSaved(words: words, dictatingSeconds: dictatingSeconds)
     }
 
-    init() {}
+    package init() {}
 
-    init(entries: [DictationHistoryEntry]) {
+    package init(entries: [DictationHistoryEntry]) {
         var polishSeconds: [Double] = []
         var fixDictations: [FixKey: Int] = [:]
         var appCounts: [String: Int] = [:]
@@ -117,7 +117,7 @@ struct DictationInsights: Equatable, Sendable {
             // A quick capture is polished in the Inbox after its record
             // is written (#970): its polish is not in its duration, and
             // nobody waited on it, so it is left out of the polish counts.
-            let isQuickCapture = entry.outputMode == DictationSessionRecord.quickCaptureOutputMode
+            let isQuickCapture = entry.outputMode == DictationHistoryEntry.quickCaptureOutputMode
             let elapsed = entry.finishedAt.timeIntervalSince(entry.startedAt)
                 - (isQuickCapture ? 0 : entry.polishingDurationSeconds ?? 0)
             dictatingSeconds += min(max(0, elapsed), Self.maxDictationSeconds)
@@ -160,7 +160,7 @@ struct DictationInsights: Equatable, Sendable {
             .prefix(Self.maxApps).map { $0 }
     }
 
-    static func median(of sorted: [Double]) -> Double? {
+    package static func median(of sorted: [Double]) -> Double? {
         guard !sorted.isEmpty else { return nil }
         let middle = sorted.count / 2
         return sorted.count.isMultiple(of: 2)
@@ -168,7 +168,7 @@ struct DictationInsights: Equatable, Sendable {
     }
 
     /// Nearest-rank, so the answer is always a wait that happened.
-    static func percentile(_ fraction: Double, of sorted: [Double]) -> Double? {
+    package static func percentile(_ fraction: Double, of sorted: [Double]) -> Double? {
         guard !sorted.isEmpty else { return nil }
         let rank = Int((fraction * Double(sorted.count)).rounded(.up))
         return sorted[min(max(rank, 1), sorted.count) - 1]
@@ -178,7 +178,7 @@ struct DictationInsights: Equatable, Sendable {
     /// stretches where it wrote something else, not ones it only dropped
     /// (fillers), only added, only re-punctuated, or only capitalized because
     /// a sentence starts there.
-    static func fixes(in entry: DictationHistoryEntry) -> [RecurringFix] {
+    package static func fixes(in entry: DictationHistoryEntry) -> [RecurringFix] {
         guard entry.polishRan, let polished = entry.polishedText else { return [] }
         let raw = entry.rawText
         return TranscriptDiff.hunks(from: raw, to: polished).compactMap { hunk in
@@ -211,13 +211,13 @@ struct DictationInsights: Equatable, Sendable {
 
     /// Hesitations polishing drops. Not a language model of them: the ones
     /// Voxtral writes down in English and French.
-    static let fillers: Set<String> = [
+    package static let fillers: Set<String> = [
         "um", "uh", "uhm", "er", "erm", "ah", "eh", "hm", "hmm", "mm", "euh", "heu", "hum",
     ]
 
     /// The word without the punctuation around it; what is inside stays
     /// (`localvoxtral.js`, `--dry-run`'s hyphen between letters).
-    static func bare(_ word: Substring) -> String {
+    package static func bare(_ word: Substring) -> String {
         func isEdge(_ character: Character) -> Bool {
             character.unicodeScalars.allSatisfy(wordEdge.contains)
         }
@@ -241,8 +241,8 @@ struct DictationInsights: Equatable, Sendable {
 /// "2 h 14 min", "14 min", "45 s": the app's own words rather than a
 /// formatter's, so the pane reads the same in every locale the rest of it
 /// does not follow either.
-enum DictationInsightsText {
-    static func duration(_ seconds: TimeInterval) -> String {
+package enum DictationInsightsText {
+    package static func duration(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
         if total < 60 { return "\(total) s" }
         let minutes = (total + 30) / 60
@@ -250,7 +250,7 @@ enum DictationInsightsText {
         return minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
     }
 
-    static func share(_ part: Int, of whole: Int) -> String {
+    package static func share(_ part: Int, of whole: Int) -> String {
         guard whole > 0 else { return "—" }
         return (Double(part) / Double(whole)).formatted(.percent.precision(.fractionLength(0)))
     }

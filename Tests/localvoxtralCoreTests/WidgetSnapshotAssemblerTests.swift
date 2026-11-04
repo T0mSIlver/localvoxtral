@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class WidgetSnapshotAssemblerTests: XCTestCase {
     /// A second-pass transcription (#317) bills as speech, but its audio was
@@ -32,7 +32,7 @@ final class WidgetSnapshotAssemblerTests: XCTestCase {
         let capture = DictationHistoryEntry(
             id: UUID(), startedAt: now.addingTimeInterval(-60), finishedAt: now.addingTimeInterval(-40),
             rawText: "buy milk", polishedText: "Buy milk.", polishingDurationSeconds: 9,
-            provider: "test", model: "test", outputMode: DictationSessionRecord.quickCaptureOutputMode,
+            provider: "test", model: "test", outputMode: DictationHistoryEntry.quickCaptureOutputMode,
             targetAppBundleID: nil, status: .completed, commitSucceeded: true,
             polishProfile: nil, polishContextSummary: nil)
 
