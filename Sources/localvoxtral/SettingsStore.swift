@@ -621,18 +621,27 @@ final class SettingsStore {
     /// A read can lag this copy's own last write when the preferences daemon
     /// is slow: a hosted run lost half of 401 refusals that way (LVX-102),
     /// because the merge took each missing newest item for another copy's
-    /// removal. A saved value this copy wrote is not another copy's change.
+    /// removal. Content alone cannot tell that lag from another copy that
+    /// restored an earlier list (Codex review), so each save also records its
+    /// writer under `<key>.writer`; a saved list counts as this copy's only
+    /// while that names this copy. A build without it never updates the
+    /// writer, so a removal it makes while this copy runs can still be missed.
     @ObservationIgnored
     private var listWrites: [String: [[String]]] = [:]
+    @ObservationIgnored
+    private let listWriterID = UUID().uuidString
 
-    /// The saved list to merge with, nil when nothing is saved. A saved value
-    /// this copy wrote stands for `base`: no other copy changed anything.
+    /// The saved list to merge with, nil when nothing is saved. A list this
+    /// copy saved, while no other copy has saved since, stands for `base`.
     private func savedList(_ key: String, base: [String]) -> [String]? {
         guard let saved = defaults.stringArray(forKey: key) else { return nil }
-        return listWrites[key]?.contains(saved) == true ? base : saved
+        let ownWrite = defaults.string(forKey: key + ".writer") == listWriterID
+            && listWrites[key]?.contains(saved) == true
+        return ownWrite ? base : saved
     }
 
     private func saveList(_ value: [String], forKey key: String) {
+        defaults.set(listWriterID, forKey: key + ".writer")
         defaults.set(value, forKey: key)
         listWrites[key] = Array(((listWrites[key] ?? []) + [value]).suffix(8))
     }
