@@ -1,24 +1,19 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
 final class OnboardingViewModelTests: XCTestCase {
     private var defaults: UserDefaults!
-    private var defaultsSuiteName = ""
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.OnboardingViewModelTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 
@@ -604,15 +599,6 @@ final class OnboardingViewModelTests: XCTestCase {
     }
 
     // MARK: - Terminal actions
-
-    func testFinish_completesAndCloses() {
-        let (model, settings, _, closeCount, _) = makeModel()
-
-        model.finish()
-
-        XCTAssertTrue(settings.onboardingCompleted)
-        XCTAssertEqual(closeCount(), 1)
-    }
 
     func testSkip_completesAndCloses() {
         let (model, settings, _, closeCount, _) = makeModel()

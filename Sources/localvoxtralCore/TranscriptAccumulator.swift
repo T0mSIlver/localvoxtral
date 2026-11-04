@@ -116,6 +116,20 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         package var startsMidWord = false
     }
 
+    /// What has settled of the deltas, for a backend that never revises one
+    /// and sends its only final at the stop (the bundled speech helper): the
+    /// deltas up to their last whitespace, trimmed. A word or a sentence end
+    /// is settled only once whitespace follows it, since the next delta can
+    /// still extend it ("3." then "5"). Nil once a final has landed in this
+    /// dictation event, whose own text then settles it.
+    package var settledStreamedText: String? {
+        guard currentDictationEventText.isEmpty,
+            let lastWhitespace = pendingSegmentText.lastIndex(where: \.isWhitespace)
+        else { return nil }
+        let settled = String(pendingSegmentText[..<lastWhitespace]).trimmed
+        return settled.isEmpty ? nil : settled
+    }
+
     /// Appends one preprocessed partial delta.
     package mutating func appendPartial(_ processedDelta: String) {
         pendingSegmentText.append(processedDelta)

@@ -61,7 +61,6 @@ struct LLMPolishingRequest: Sendable {
             userPrompts: userPrompts,
             maxTokens: maxTokens,
             timeout: LLMPolishingService.timeoutInterval(for: self),
-            purpose: .polish,
             effort: prefersDeepReasoning ? .deep : .standard
         )
     }

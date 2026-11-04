@@ -238,6 +238,8 @@ jobs:
             ./scripts/ci/test-build-gate-process-cleanup.sh \
             ./scripts/ci/test-build-gate-reap-command.sh \
             ./scripts/ci/test-build-gate-gc-command.sh \
+            ./scripts/ci/test-build-gate-session-watch.sh \
+            ./scripts/ci/test-build-gate-remove-command.sh \
             ./scripts/ci/test-speech-model-services.sh \
             ./scripts/ci/test-test-server-reaper.sh \
             ./scripts/ci/test-remote-build-reap.sh \
@@ -381,6 +383,7 @@ jobs:
           # One xctest process per core, each running whole test classes
           # (scripts/lib/unit-test-shards.sh, #442): the same shape as
           # `remote-build.sh test`, and one complete log.
+          touch "$RUNNER_TEMP/unit-suite-start"
           NSUnbufferedIO=YES ./scripts/ci/run-supervised-command.sh \
             900 "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
             ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
@@ -389,6 +392,14 @@ jobs:
             AgentDictationE2EEvalTests \
             HerdrIntegrationTests \
             PolishContextPreparationTests
+
+      - name: Unit suite left no preference suites
+        # A UserDefaults suite named like localvoxtral.SomeTests.<UUID> is a
+        # plist in ~/Library/Preferences that outlives the run; the owner's
+        # MacBook had 310k of them. TestDefaults.swift keeps tests' suites in
+        # a temp folder instead.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: ./scripts/ci/check-test-preferences.sh "$RUNNER_TEMP/unit-suite-start"
 
       - name: Upload complete unit-test log
         if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
@@ -644,8 +655,7 @@ jobs:
         run: ./scripts/ci/claude-mod-tests.sh
 
       # VibeRemoteShimTests run the real remote Vibe shim, which needs python3
-      # and ps, the usage tests run the shipped terms.sh and capture.sh, which
-      # need curl, and SSHConfigOverrideTests run `ssh -G`; the image ships
+      # and ps, the usage tests run the shipped terms.sh, which needs curl, and SSHConfigOverrideTests run `ssh -G`; the image ships
       # none of them.
       - name: Core tests (localvoxtralCore, hook publisher)
         timeout-minutes: 12

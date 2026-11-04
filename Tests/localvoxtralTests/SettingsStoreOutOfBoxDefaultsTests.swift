@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -8,7 +9,6 @@ import XCTest
 @MainActor
 final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
     private var defaults: UserDefaults!
-    private var defaultsSuiteName = ""
 
     private static let onboardingKey = "settings.onboarding_completed"
     private static let legacyBackendModeKey = "settings.backend_mode"
@@ -17,16 +17,11 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.SettingsStoreOutOfBoxDefaultsTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 

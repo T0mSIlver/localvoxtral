@@ -390,12 +390,12 @@ final class LLMPolishingServiceTests: XCTestCase {
             let count = Mutex(0)
         }
         let hits = Hits()
-        let elsewhere = try FakeOpencodePromptRelay(status: { _ in
+        let elsewhere = try FakeLoopbackHTTPServer(status: { _ in
             hits.count.withLock { $0 += 1 }
             return 200
         })
         let target = "http://127.0.0.1:\(elsewhere.port)/v1/chat/completions"
-        let configured = try FakeOpencodePromptRelay(status: { _ in 307 }, location: { _ in target })
+        let configured = try FakeLoopbackHTTPServer(status: { _ in 307 }, location: { _ in target })
         addTeardownBlock {
             configured.stop()
             elsewhere.stop()

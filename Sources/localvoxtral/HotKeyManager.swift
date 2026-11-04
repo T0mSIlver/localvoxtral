@@ -9,8 +9,6 @@ final class HotKeyManager {
         case livePasteShortcutUnavailable
         case modifierOnlyHotKeyUnavailable
         case copyLastDictationShortcutUnavailable
-        case answerAgentShortcutUnavailable
-        case quickCaptureShortcutUnavailable
     }
 
     enum RegistrationResult {
@@ -34,10 +32,6 @@ final class HotKeyManager {
         "The selected Live Auto-Paste shortcut is unavailable."
     static let copyLastDictationUnavailableErrorMessage =
         "The selected Copy last dictation shortcut is unavailable."
-    static let answerAgentUnavailableErrorMessage =
-        "The selected Answer the agent shortcut is unavailable."
-    static let quickCaptureUnavailableErrorMessage =
-        "The selected Quick capture shortcut is unavailable."
     static let modifierOnlyUnavailableErrorMessage =
         "Unable to install the single-modifier hotkey monitors. Grant Accessibility permission, then try again."
 
@@ -67,13 +61,6 @@ final class HotKeyManager {
     /// is swallowed: it must never read as the end of a push-to-talk hold.
     var onCopyLastDictation: (() -> Void)?
 
-    /// Fired when the answer shortcut is pressed (#717): go to the agent
-    /// that needs you. Its release is swallowed too.
-    var onAnswerAgent: (() -> Void)?
-    /// Fired when the quick capture shortcut is pressed (#725). A toggle
-    /// like Overlay Buffer: its release is swallowed too.
-    var onQuickCapture: (() -> Void)?
-
     private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var hotKeyHandlerRef: EventHandlerRef?
     private static let hotKeySignature = OSType(0x53565854) // SVXT
@@ -95,8 +82,6 @@ final class HotKeyManager {
     private static let overlayHotKeyID: UInt32 = 1
     private static let livePasteHotKeyID: UInt32 = 2
     private static let copyLastDictationHotKeyID = ActionHotKey.copyLastDictation.rawValue
-    private static let answerAgentHotKeyID = ActionHotKey.answerAgent.rawValue
-    private static let quickCaptureHotKeyID = ActionHotKey.quickCapture.rawValue
 
     /// A hotkey that fires one action on press. These live apart from the
     /// dictation triggers: re-registering or switching the triggers, the
@@ -104,16 +89,12 @@ final class HotKeyManager {
     /// The raw value is the Carbon hotkey ID.
     enum ActionHotKey: UInt32, CaseIterable, Sendable {
         case copyLastDictation = 3
-        case quickCapture = 4
-        case answerAgent = 5
 
         fileprivate var id: UInt32 { rawValue }
 
         fileprivate var failure: RegistrationFailure {
             switch self {
             case .copyLastDictation: .copyLastDictationShortcutUnavailable
-            case .answerAgent: .answerAgentShortcutUnavailable
-            case .quickCapture: .quickCaptureShortcutUnavailable
             }
         }
     }
@@ -378,18 +359,6 @@ final class HotKeyManager {
         registerAction(.copyLastDictation, shortcut)
     }
 
-    /// The answer hotkey (#717), under the same rules.
-    @discardableResult
-    func registerAnswerAgent(_ shortcut: DictationShortcut?) -> RegistrationResult {
-        registerAction(.answerAgent, shortcut)
-    }
-
-    /// The quick capture hotkey, under the same rules.
-    @discardableResult
-    func registerQuickCapture(_ shortcut: DictationShortcut?) -> RegistrationResult {
-        registerAction(.quickCapture, shortcut)
-    }
-
     private func registerAction(_ action: ActionHotKey, _ shortcut: DictationShortcut?) -> RegistrationResult {
         if let existing = actionHotKeyRefs.removeValue(forKey: action.id) {
             UnregisterEventHotKey(existing)
@@ -434,12 +403,6 @@ final class HotKeyManager {
 
     var isCopyLastDictationShortcutRegistered: Bool {
         registeredActionHotKeyIDs.contains(Self.copyLastDictationHotKeyID) || chordMonitor.chords[.copyLastDictation] != nil
-    }
-    var isAnswerAgentShortcutRegistered: Bool {
-        registeredActionHotKeyIDs.contains(Self.answerAgentHotKeyID) || chordMonitor.chords[.answerAgent] != nil
-    }
-    var isQuickCaptureShortcutRegistered: Bool {
-        registeredActionHotKeyIDs.contains(Self.quickCaptureHotKeyID) || chordMonitor.chords[.quickCapture] != nil
     }
 
     /// The Carbon handler serves every hotkey here, so it goes only with the
@@ -548,14 +511,6 @@ final class HotKeyManager {
             if kind == UInt32(kEventHotKeyPressed) { onCopyLastDictation?() }
             return
         }
-        if hotKeyID == Self.answerAgentHotKeyID {
-            if kind == UInt32(kEventHotKeyPressed) { onAnswerAgent?() }
-            return
-        }
-        if hotKeyID == Self.quickCaptureHotKeyID {
-            if kind == UInt32(kEventHotKeyPressed) { onQuickCapture?() }
-            return
-        }
         switch kind {
         case UInt32(kEventHotKeyPressed):
             if heldDictationHotKeyID == nil { heldDictationHotKeyID = hotKeyID }
@@ -598,10 +553,6 @@ extension HotKeyManager {
             debugForcedRegisterStatusesByID[livePasteHotKeyID] = status
         case .copyLastDictation:
             debugForcedRegisterStatusesByID[copyLastDictationHotKeyID] = status
-        case .answerAgent:
-            debugForcedRegisterStatusesByID[answerAgentHotKeyID] = status
-        case .quickCapture:
-            debugForcedRegisterStatusesByID[quickCaptureHotKeyID] = status
         }
     }
 
@@ -612,8 +563,6 @@ extension HotKeyManager {
         case .overlay: id = Self.overlayHotKeyID
         case .livePaste: id = Self.livePasteHotKeyID
         case .copyLastDictation: id = Self.copyLastDictationHotKeyID
-        case .answerAgent: id = Self.answerAgentHotKeyID
-        case .quickCapture: id = Self.quickCaptureHotKeyID
         }
         handleHotKeyEvent(
             kind: UInt32(pressed ? kEventHotKeyPressed : kEventHotKeyReleased), hotKeyID: id)
@@ -624,7 +573,5 @@ enum DebugRegistrationKindHotKeyID {
     case overlay
     case livePaste
     case copyLastDictation
-    case answerAgent
-    case quickCapture
 }
 #endif

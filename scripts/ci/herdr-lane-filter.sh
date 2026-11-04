@@ -35,8 +35,7 @@ PATTERNS=(
   '*HerdrPanelBindingProbe*'                         # the nonce stamp, settle loop, and mic indicator
   '*HerdrMachineFederation*'                         # the saved-machine catalog reader the federated arm trusts
   '*HerdrClientTTYProbe*'                            # which surface is bound to a herdr client at all
-  '*HerdrPanePromptRoute*'                           # the prompt text and Enter the app types into a herdr pane
-  '*HerdrSessionPaneFocuser*'                        # pane.focus, and the read-back that decides it worked
+  '*HerdrSessionPaneFocuser*'                        # the read-back of herdr's focused pane before a Return
   '*ClaudeRemoteHerdrForward*'                       # the ssh -L forward, its argv, leases and teardown
   '*ClaudeRemoteForwardSupervisor*'                  # the process supervision under that forward
   '*ClaudeRemoteForwardProcess*'                     # the process seam that supervision drives

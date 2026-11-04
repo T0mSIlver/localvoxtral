@@ -113,10 +113,23 @@ if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
   echo "Invalid code signature detected in packaged app bundle." >&2
   exit 1
 fi
-if [[ -d "$APPEX" ]] \
-  && ! codesign -d --entitlements - "$APPEX" 2>/dev/null | grep -q 'com.apple.security.app-sandbox'; then
-  echo "The widget extension lost its sandbox entitlement while signing." >&2
-  exit 1
+# The entitlements are read whole before they are searched. Piped into
+# `grep -q`, a codesign that wrote after grep's match died of SIGPIPE, or one
+# that printed them and then exited non-zero, failed the pipeline under
+# pipefail although the key was there (#1952).
+if [[ -d "$APPEX" ]]; then
+  codesign_err="$(mktemp "${TMPDIR:-/tmp}/lv-sign-bundle.XXXXXX")"
+  codesign_status=0
+  appex_entitlements="$(codesign -d --entitlements - "$APPEX" 2>"$codesign_err")" || codesign_status=$?
+  if ! grep -q 'com.apple.security.app-sandbox' <<<"$appex_entitlements"; then
+    echo "The widget extension lost its sandbox entitlement while signing." >&2
+    echo "codesign -d --entitlements - exited $codesign_status; it printed:" >&2
+    printf '%s\n' "$appex_entitlements" >&2
+    cat "$codesign_err" >&2
+    rm -f "$codesign_err"
+    exit 1
+  fi
+  rm -f "$codesign_err"
 fi
 
 # What notarization checks, per binary, so a CI log shows it before Apple does.

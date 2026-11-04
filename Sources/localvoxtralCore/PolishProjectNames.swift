@@ -5,7 +5,7 @@ import Foundation
 /// repositories more than anything else, and a name nobody told the model
 /// about comes back as the words it sounds like ("Vitek" for vidtheque).
 ///
-/// The list is quick capture's (`QuickCaptureProjects.projects`), so a
+/// The list is the Projects pane's (`ListedProjects.projects`), so a
 /// forgotten or ignored project leaves both at once. It rides the About-you
 /// block of the system prompt, which must stay the same from one dictation to
 /// the next to keep the helper's cached prefix: the names are sorted, not
@@ -17,9 +17,7 @@ package enum PolishProjectNames {
     package static let maxProjects = 30
 
     package static func names(from learned: LearnedTerms, now: Date) -> [String] {
-        let projects = QuickCaptureProjects.projects(
-            from: learned, userLines: [:], now: now, readme: { _ in nil }, checkoutExists: { _ in true }
-        ).prefix(maxProjects)
+        let projects = ListedProjects.projects(from: learned, now: now, checkoutExists: { _ in true }).prefix(maxProjects)
         var names: [String] = []
         for project in projects {
             let repositoryName = project.repository?.split(separator: "/").last.map(String.init)
@@ -42,9 +40,7 @@ package enum PolishProjectNames {
     /// The terms of the most recently used project, which its dictations'
     /// polish carries: confirmed terms and its agent's proposals (#1442).
     package static func currentProjectTerms(from learned: LearnedTerms, now: Date) -> [String] {
-        QuickCaptureProjects.projects(
-            from: learned, userLines: [:], now: now, readme: { _ in nil }, checkoutExists: { _ in true }
-        ).first?.terms ?? []
+        ListedProjects.projects(from: learned, now: now, checkoutExists: { _ in true }).first?.terms ?? []
     }
 
     /// Letters and digits only, case-folded: "working set", "working-set" and

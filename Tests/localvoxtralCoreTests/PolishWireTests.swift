@@ -8,7 +8,7 @@ import XCTest
 import localvoxtralTestSupport
 
 /// The polishing server's dialect (#1851): each shape reads only its own
-/// reply, and quick capture speaks the same dialect polish does.
+/// reply.
 final class PolishWireTests: XCTestCase {
     private static func configuration(_ shape: LLMPolishingRequestShape) -> LLMPolishingConfiguration {
         LLMPolishingConfiguration(
@@ -81,6 +81,34 @@ final class PolishWireTests: XCTestCase {
         XCTAssertFalse(refusal.stoppedAtOutputLimit)
     }
 
+    /// A filtered reply carries the text before the cut: it must read as a
+    /// refusal so the service falls back to the transcript, not commit a prefix.
+    func testContentFilteredReplyIsRefusedOnChatShapes() {
+        for shape in [LLMPolishingRequestShape.openAICompatible, .mistral] {
+            let reply = Self.configuration(shape).reply(toResponseObject: [
+                "choices": [["message": ["content": "The first sentence."], "finish_reason": "content_filter"]],
+            ])
+            XCTAssertTrue(reply.refused, "\(shape)")
+            XCTAssertFalse(reply.stoppedAtOutputLimit, "\(shape)")
+        }
+    }
+
+    /// The provider's error sentence can quote the request, and so the dictated
+    /// text. The summary the session logs `.public` carries the status only.
+    func testRejectionPublicSummaryOmitsProviderErrorText() throws {
+        let canary = "private dictation: Project RedPanda acquisition"
+        let body = String(
+            decoding: try JSONSerialization.data(withJSONObject: ["error": ["message": "Invalid input: \(canary)"]]),
+            as: UTF8.self)
+        let failure = try XCTUnwrap(
+            PolishOutcomeClassifier.failure(
+                for: LLMPolishingError.requestFailed(statusCode: 400, body: body),
+                endpointURL: URL(string: "http://127.0.0.1:8080")!))
+        XCTAssertTrue(failure.message.contains(canary), "the alert copy keeps the provider's reason")
+        XCTAssertTrue(failure.publicSummary.contains("HTTP 400"))
+        XCTAssertFalse(failure.publicSummary.contains(canary))
+    }
+
     /// Each shape reads its own server's keys only: no guessing the dialect
     /// from what a reply happens to contain.
     func testEachShapeReadsOnlyItsOwnReply() {
@@ -93,86 +121,5 @@ final class PolishWireTests: XCTestCase {
         let asAnthropic = Self.configuration(.anthropic).reply(toResponseObject: chatReply)
         XCTAssertNil(asAnthropic.text)
         XCTAssertFalse(asAnthropic.stoppedAtOutputLimit)
-    }
-
-    // MARK: - Quick capture on Anthropic
-
-    private func answering(_ body: String, _ send: () async throws -> Void) async rethrows {
-        let previous = StubHTTPProtocol.reply.withLock { $0 }
-        StubHTTPProtocol.reply.withLock { $0 = .http(200, body) }
-        defer { StubHTTPProtocol.reply.withLock { $0 = previous } }
-        try await send()
-    }
-
-    private static let options = [
-        QuickCaptureOption(id: "quill", projectKey: "/w/quill", description: "Project quill."),
-        QuickCaptureOption(id: QuickCaptureRouting.catchAllID, projectKey: nil, description: "Anything else."),
-    ]
-
-    /// The router reads Anthropic's text block, skips its thinking, and
-    /// bills the call with Anthropic's usage.
-    func testTheRouterReadsAnAnthropicReply() async throws {
-        let ledger = UsageLedger(fileURL: nil)
-        let classifier = QuickCaptureChatClassifier(
-            configuration: Self.configuration(.anthropic), session: StubHTTPProtocol.session(), usageRecorder: ledger)
-        try await answering(#"""
-            {"model":"m","stop_reason":"end_turn",
-             "content":[{"type":"thinking","thinking":"{\"project\":\"inbox\"}","signature":"x"},
-                        {"type":"text","text":"{\"project\":\"quill\",\"confidence\":0.9}"}],
-             "usage":{"input_tokens":10,"cache_read_input_tokens":900,"output_tokens":7}}
-            """#) {
-            let probabilities = try await classifier.classify(capture: "c", options: Self.options)
-            XCTAssertEqual(probabilities, ["quill": 0.9])
-        }
-        try await answering(#"""
-            {"stop_reason":"refusal","content":[{"type":"text","text":"{\"project\":\"quill\",\"confidence\":0.95}"}]}
-            """#) {
-            do {
-                _ = try await classifier.classify(capture: "c", options: Self.options)
-                XCTFail("a refusal was routed")
-            } catch {
-                XCTAssertEqual(error as? QuickCaptureChatRouting.Failure, .malformedResponse)
-            }
-        }
-        XCTAssertEqual(ledger.entries().map(\.feature), [.quickCaptureRouting, .quickCaptureRouting])
-        XCTAssertEqual(ledger.entries().first?.promptTokens, 910)
-        XCTAssertEqual(ledger.entries().first?.completionTokens, 7)
-    }
-
-    /// A first draft cut at Anthropic's `max_tokens` is too large, as a cut
-    /// chat/completions one is, and never a half-written draft.
-    func testAFirstDraftCutOnAnthropicIsTooLarge() async {
-        let drafter = QuickCaptureFirstDrafter(
-            configuration: Self.configuration(.anthropic), session: StubHTTPProtocol.session())
-        await answering(#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{\"kind\":\"issue\",\"ti"}]}"#) {
-            let outcome = await drafter.firstDraft(capture: "c", projectName: "quill", context: QuickCaptureContext())
-            XCTAssertEqual(outcome, .failed(.outputTooLarge))
-        }
-        await answering(#"""
-            {"stop_reason":"end_turn","content":[{"type":"text",
-             "text":"{\"kind\":\"note\",\"title\":\"T\",\"body\":\"B\",\"relation\":\"none\",\"issue\":null}"}]}
-            """#) {
-            let outcome = await drafter.firstDraft(capture: "c", projectName: "quill", context: QuickCaptureContext())
-            guard case .draft(let draft, _) = outcome else { return XCTFail("\(outcome)") }
-            XCTAssertEqual(draft.kind, .note)
-        }
-    }
-
-    // MARK: - Replay configuration
-
-    func testAReplayNamesOnlySettingsThatExist() throws {
-        let mistral = try LLMPolishingConfiguration.replay(
-            url: URL(string: "https://api.mistral.ai/v1/chat/completions")!, apiKey: "k", model: "m",
-            extra: #"{"reasoning_effort":"none"}"#)
-        XCTAssertEqual(mistral.requestShape, .mistral)
-        XCTAssertEqual(mistral.mistralReasoningEffort, .off)
-        XCTAssertEqual(
-            try LLMPolishingConfiguration.replay(url: URL(string: "https://api.anthropic.com")!, apiKey: "k", model: "m")
-                .requestShape,
-            .anthropic)
-        XCTAssertThrowsError(
-            try LLMPolishingConfiguration.replay(
-                url: URL(string: "http://127.0.0.1:8080")!, apiKey: "", model: "m", extra: #"{"top_k":20}"#)
-        ) { XCTAssertEqual($0 as? LLMPolishingConfiguration.ReplayError, .unknownField("top_k")) }
     }
 }

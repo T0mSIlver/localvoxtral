@@ -14,7 +14,6 @@ package enum SendTriggerPhrases {
         case commonWord(String)
         case tooLong(String)
         case tooMany
-        case stopPhrase(String)
 
         package var message: String {
             switch self {
@@ -26,8 +25,6 @@ package enum SendTriggerPhrases {
                 "\u{201C}\(phrase)\u{201D} is too long: use at most \(maximumWords) words."
             case .tooMany:
                 "Use at most \(maximumPhrases) phrases."
-            case .stopPhrase(let phrase):
-                "\u{201C}\(phrase)\u{201D} is already a stop phrase."
             }
         }
     }
@@ -41,9 +38,7 @@ package enum SendTriggerPhrases {
     /// punctuation) and without repeats, or why the list is refused. Any
     /// refused phrase refuses the whole list, so what is saved is always
     /// what the row shows.
-    /// `stopPhrases` are the user's stop phrases (#1696): said alone, one
-    /// word may not both send and stop.
-    package static func validate(_ phrases: [String], stopPhrases: [String] = []) -> Result<[String], Refusal> {
+    package static func validate(_ phrases: [String]) -> Result<[String], Refusal> {
         var kept: [String] = []
         for raw in phrases {
             let normalized = SendNowCommandParser.normalizedSegment(raw)
@@ -58,7 +53,6 @@ package enum SendTriggerPhrases {
             if words.count == 1, isCommonWord(normalized) {
                 return .failure(.commonWord(raw.trimmed))
             }
-            if stopPhrases.contains(normalized) { return .failure(.stopPhrase(raw.trimmed)) }
             if !kept.contains(normalized) { kept.append(normalized) }
         }
         guard !kept.isEmpty else { return .failure(.empty) }
@@ -84,8 +78,7 @@ package enum SendTriggerPhrases {
         word.count <= 2 || commonWords.contains(word)
     }
 
-    /// Frequent English words, plus the words the other voice commands
-    /// start with ("go to", "call this session", "send that to").
+    /// Frequent English words.
     private static let commonWords: Set<String> = [
         "about", "after", "again", "all", "also", "and", "any", "are", "back", "because",
         "been", "before", "but", "call", "can", "come", "could", "day", "did", "done",
@@ -141,8 +134,6 @@ package enum SpokenStopRule {
         case toggled
         /// Held (push to talk): the release is the stop.
         case held
-        /// A capture to the Inbox, toggled.
-        case quickCapture
     }
 
     /// Whether a trailing send phrase stops a dictation started this way.
@@ -151,7 +142,7 @@ package enum SpokenStopRule {
     /// with nothing to stop.
     package static func stopsByVoice(_ gesture: Gesture) -> Bool {
         switch gesture {
-        case .toggled, .quickCapture: true
+        case .toggled: true
         case .held: false
         }
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 /// The port is half of a two-sided configuration a human copies by hand: the
@@ -10,10 +11,7 @@ import XCTest
 /// stability is not a nicety here, it is the contract.
 final class ClaudeRemoteForwardPortTests: XCTestCase {
     private func defaults(_ name: String = #function) throws -> UserDefaults {
-        let suite = "ClaudeRemoteForwardPortTests.\(name).\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
-        return defaults
+        makeTestDefaultsSuite(label: name).defaults
     }
 
     // MARK: Derivation

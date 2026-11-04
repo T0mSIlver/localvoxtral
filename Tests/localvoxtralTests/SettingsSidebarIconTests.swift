@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -136,11 +137,9 @@ final class SettingsSidebarIconTests: XCTestCase {
         XCTAssertNil(SettingsBrandMarks.appIcon(bundleIDs: ["dev.gone.App"]))
         XCTAssertEqual(lookups, ["dev.gone.App"])
 
-        let suiteName = "localvoxtral.SettingsSidebarIconTests.\(UUID().uuidString)"
-        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
         let model = TerminalAppsSettingsModel(
             settings: SettingsStore(
-                defaults: UserDefaults(suiteName: suiteName)!, environment: [:],
+                defaults: makeTestDefaults(), environment: [:],
                 secretStore: InMemorySecretStore()),
             applicationURLForBundleID: { _ in nil }
         )

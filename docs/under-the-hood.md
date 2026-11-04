@@ -20,11 +20,6 @@ clipboard, the agent's screen) are opt-in, and by default send context only
 to a polisher on this Mac
 ([Polish context: what each toggle sends](coding-agents.md#polish-context-what-each-toggle-sends)).
 
-[Quick capture](coding-agents.md#quick-capture) is the exception you trigger
-yourself: a capture goes to your polishing model with its project's context
-(README and AGENTS.md openings, code search hits, issue and pull request
-titles), wherever polishing runs, to be routed and drafted.
-
 What the app keeps on this Mac (your dictations, optionally their audio, and
 diagnostic records of how each was polished) is described under
 [History](dictation.md#history), where each can be turned off and deleted.
@@ -130,12 +125,14 @@ Switch Dictation or Polishing to **Mistral API** in **Settings → Engines**,
 then paste one API key from
 [console.mistral.ai](https://console.mistral.ai/api-keys).
 
-- Dictation uses Voxtral Mini Transcribe Realtime
-  (voxtral-mini-transcribe-realtime-2602) over Mistral's hosted realtime
-  socket, at 0.006 USD per minute of audio. Its **Model** menu also offers
-  Voxtral Mini Transcribe Realtime 3 (voxtral-mini-transcribe-realtime-3-0),
-  in public preview at 0.008 USD per minute. It has no open weights, so it
-  runs only on Mistral's API.
+- Dictation uses Voxtral Mini Transcribe Realtime 3
+  (voxtral-mini-transcribe-realtime-3-0) over Mistral's hosted realtime
+  socket, at 0.008 USD per minute of audio. It is in public preview and has
+  no open weights, so it runs only on Mistral's API. Mistral retires the
+  previous model, Voxtral Mini Transcribe Realtime 2602
+  (voxtral-mini-transcribe-realtime-2602, 0.006 USD per minute), on
+  2027-04-30. A Mac that had chosen it moves to Realtime 3 once; until the
+  retirement the **Model** menu still offers it.
 - Polishing uses Mistral Medium 3.5 (mistral-medium-3-5) with reasoning off,
   at 1.5 USD per million input tokens and 7.5 USD per million output tokens.
   [Polish while you speak](coding-agents.md#polishing) is off by default
@@ -159,17 +156,20 @@ setting, low. Models without reasoning get no reasoning setting at all.
 ### Your terms with Voxtral Realtime 3
 
 Voxtral Realtime 3 takes a list of terms when the dictation starts, to spell
-names and jargon right as you speak. The app sends it up to 100 of your
-Global terms and your replacement dictionary's spellings, phrases included.
-Context from the screen or the joined session is not sent at the start.
-Voxtral Realtime 2602 takes no terms.
+names and jargon right as you speak. It takes none later, so the app sends
+up to 100 at the start, phrases included: your Global terms and your
+replacement dictionary's spellings first, then, only with **Send context to
+non-local polishing servers** on, the joined session's project terms. Those
+are the second pass's terms below, without the screen's. Voxtral Realtime
+2602 takes no terms.
 
 ### The second pass in the Overlay Buffer
 
 With the Overlay Buffer, Mistral API dictation transcribes each dictation a
-second time when you stop. Voxtral Realtime 2602 takes no vocabulary. The app
-therefore keeps the dictation's audio in memory and sends it whole to Voxtral
-Mini Transcribe 2 (voxtral-mini-latest) with up to 100 terms.
+second time when you stop, with the context the start could not send. The
+app keeps the dictation's audio in memory and sends it whole to Voxtral Mini
+Transcribe 3 (voxtral-mini-transcribe-3-0) with up to 100 terms, phrases
+included.
 
 The terms come from:
 
@@ -194,8 +194,8 @@ as margin, up to 30 seconds in all.
 
 The app writes the audio to disk only if History keeps audio.
 
-The second pass costs 0.003 USD per minute, so hosted dictation in the
-Overlay Buffer costs 1.5 times the realtime price on 2602, about 1.4 times on Realtime 3. Live Auto-Paste has
+The second pass costs 0.0035 USD per minute, so hosted dictation in the
+Overlay Buffer costs about 1.4 times the realtime price. Live Auto-Paste has
 already typed its text and gets no second pass.
 
 Mistral's realtime stream sometimes stalls for a few seconds and drops the
@@ -226,15 +226,13 @@ holds:
 
 - the time;
 - the feature that asked: dictation, polishing, the second pass, term
-  suggestions, project terms, quick-capture routing or drafting;
-- the backend that answered: Mistral, Jev, the bundled helper, your own
+  suggestions, project terms;
+- the backend that answered: Mistral, the bundled helper, your own
   server, or a coding agent;
 - the model;
 - the seconds of audio sent, or the tokens the backend reports;
-- the estimated cost: in EUR for Mistral, in USD at API prices for an agent
-  run that reports it, and in USD at Jev's list price ($0.042 per million
-  input tokens) for a Jev call whose answer reports its tokens. Vibe reports
-  tokens but no price.
+- the estimated cost: in EUR for Mistral, and in USD at API prices for an
+  agent run that reports it. Vibe reports tokens but no price.
 
 The Usage row sums only the Mistral lines. The log never holds what you said,
 and nothing in it leaves the Mac.
@@ -256,7 +254,7 @@ in **Settings → Engines**, pick a model (Claude Haiku 5.5 by default, the
 fastest; or Claude Sonnet 5.5) and paste an Anthropic API key. Anthropic
 serves no speech-to-text, so Dictation never offers this mode. The app speaks
 Anthropic's Messages API and asks for low effort, so the model thinks little
-before it answers. Your transcripts and quick captures reach Anthropic.
+before it answers. Your transcripts reach Anthropic.
 
 Claude models follow the polish rules more literally than GLM does, and left
 misheard words in place. Requests to Anthropic carry one extra rule: repair

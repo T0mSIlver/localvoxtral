@@ -34,9 +34,8 @@ extension DictationSessionController {
         settings.dictationHistoryRetention.savesDictations && sessionStore != nil
     }
 
-    /// Keeps `text`, which a stop saved as not inserted and typed nowhere: a
-    /// send to a name several panes share or to a session with no route, or
-    /// a picked destination that left the front (#1546).
+    /// Keeps `text`, which a stop saved as not inserted and typed nowhere:
+    /// words an agent's prompt did not take (#1546).
     ///
     /// - Returns: `status` while History keeps the text; the clipboard's
     ///   sentence when it was copied instead.

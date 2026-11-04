@@ -323,26 +323,11 @@ public enum ClaudeRemoteHTTPCodec {
     /// project terms, and its one value (`RemoteProjectTermRequests`).
     public static let termsHeaderName = "X-Lvx-Terms"
     public static let termsHeaderValue = "wanted"
-    /// The reply headers of quick capture's asks (#745,
-    /// `RemoteQuickCaptureRequests`): the host's README opening for the
-    /// session's project, and a draft whose id is the value.
-    public static let readmeHeaderName = "X-Lvx-Readme"
-    public static let readmeHeaderValue = "wanted"
-    public static let draftHeaderName = "X-Lvx-Draft"
     /// The reply header of `/v1/doctor` (`RemoteDoctorRoute`): how many of
     /// the Mac's checks failed, in decimal. The host's `localvoxtral doctor`
     /// takes its exit status from this number, not from the body's wording.
     public static let doctorFailedHeaderName = "X-Lvx-Doctor-Failed"
     public static let modProofHeaderName = "X-Lvx-Mod-Proof"
-
-    /// A draft id as the Mac mints it and the host shim accepts it: 32
-    /// lowercase hex digits.
-    public static func isDraftID(_ value: String) -> Bool {
-        value.utf8.count == 32 && value.utf8.allSatisfy { byte in
-            (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
-                || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
-        }
-    }
 
     /// Serialize a response. Always `Connection: close` — one request per
     /// connection means a peer can never keep a slot alive by going quiet
@@ -352,8 +337,6 @@ public enum ClaudeRemoteHTTPCodec {
         body: Data? = nil,
         sessionStatus: ClaudeRemoteSessionStatus? = nil,
         termsWanted: Bool = false,
-        readmeWanted: Bool = false,
-        draftID: String? = nil,
         doctorFailed: Int? = nil,
         modProof: String? = nil,
         contentType: String = "application/json"
@@ -371,12 +354,6 @@ public enum ClaudeRemoteHTTPCodec {
         // exactly, and they never reach its stdout.
         if status == 200, termsWanted {
             head += "\(termsHeaderName): \(termsHeaderValue)\r\n"
-        }
-        if status == 200, readmeWanted {
-            head += "\(readmeHeaderName): \(readmeHeaderValue)\r\n"
-        }
-        if status == 200, let draftID, isDraftID(draftID) {
-            head += "\(draftHeaderName): \(draftID)\r\n"
         }
         if status == 200, let doctorFailed, doctorFailed >= 0 {
             head += "\(doctorFailedHeaderName): \(doctorFailed)\r\n"
@@ -422,6 +399,7 @@ public enum ClaudeRemoteHTTPCodec {
         case 405: return "Method Not Allowed"
         case 411: return "Length Required"
         case 409: return "Conflict"
+        case 410: return "Gone"
         case 413: return "Payload Too Large"
         case 431: return "Request Header Fields Too Large"
         case 503: return "Service Unavailable"

@@ -908,12 +908,7 @@ final class RealtimeReconnectTests: XCTestCase {
         clock: ManualSessionClock? = nil,
         records: RecordedSessions? = nil
     ) -> (DictationViewModel, FakeRealtimeClient) {
-        let suiteName = "localvoxtral.RealtimeReconnectTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationBackendMode = .externalURL

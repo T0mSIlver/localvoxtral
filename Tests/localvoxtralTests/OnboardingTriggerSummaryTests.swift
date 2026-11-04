@@ -1,25 +1,20 @@
 import Carbon.HIToolbox
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
 final class OnboardingTriggerSummaryTests: XCTestCase {
     private var defaults: UserDefaults!
-    private var defaultsSuiteName = ""
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.OnboardingTriggerSummaryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 
@@ -38,40 +33,22 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
 
     // MARK: - DictationShortcutFormatter
 
-    func testFormatter_optionSpace() {
-        let shortcut = DictationShortcut(
-            keyCode: UInt32(kVK_Space), carbonModifierFlags: UInt32(optionKey))
-        XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), "⌥Space")
-    }
-
-    func testFormatter_commandShiftLetter_usesConventionalGlyphOrder() {
-        let shortcut = DictationShortcut(
-            keyCode: UInt32(kVK_ANSI_D), carbonModifierFlags: UInt32(cmdKey | shiftKey))
-        XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), "⇧⌘D")
-    }
-
-    func testFormatter_controlOptionLetter() {
-        let shortcut = DictationShortcut(
-            keyCode: UInt32(kVK_ANSI_A), carbonModifierFlags: UInt32(controlKey | optionKey))
-        XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), "⌃⌥A")
-    }
-
-    func testFormatter_bareFunctionKeys_labelledF1ThroughF20() {
-        let expected: [(UInt32, String)] = [
-            (UInt32(kVK_F1), "F1"), (UInt32(kVK_F12), "F12"),
-            (UInt32(kVK_F13), "F13"), (UInt32(kVK_F17), "F17"),
-            (UInt32(kVK_F20), "F20"),
+    func testFormatter_rendersGlyphsInConventionalOrder_functionKeysAndFallback() {
+        let cases: [(keyCode: Int, modifiers: Int, label: String)] = [
+            (kVK_Space, optionKey, "⌥Space"),
+            (kVK_ANSI_D, cmdKey | shiftKey, "⇧⌘D"),
+            (kVK_ANSI_A, controlKey | optionKey, "⌃⌥A"),
+            // Bare function keys are labelled F1 through F20.
+            (kVK_F1, 0, "F1"), (kVK_F12, 0, "F12"), (kVK_F13, 0, "F13"),
+            (kVK_F17, 0, "F17"), (kVK_F20, 0, "F20"),
+            (9999, cmdKey, "⌘Key 9999"),
         ]
 
-        for (keyCode, label) in expected {
-            let shortcut = DictationShortcut(keyCode: keyCode, carbonModifierFlags: 0)
-            XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), label)
+        for (keyCode, modifiers, label) in cases {
+            let shortcut = DictationShortcut(
+                keyCode: UInt32(keyCode), carbonModifierFlags: UInt32(modifiers))
+            XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), label, label)
         }
-    }
-
-    func testFormatter_unknownKeyCode_fallsBack() {
-        let shortcut = DictationShortcut(keyCode: 9999, carbonModifierFlags: UInt32(cmdKey))
-        XCTAssertEqual(DictationShortcutFormatter.string(for: shortcut), "⌘Key 9999")
     }
 
     // MARK: - DictationTriggerSummary

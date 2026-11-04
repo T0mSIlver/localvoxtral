@@ -58,7 +58,7 @@ package final class StoredFileLock: @unchecked Sendable {
 
     /// Takes the lock only when no one holds it, and keeps it until the
     /// returned value is released. For a job exactly one running copy does,
-    /// such as scanning the voice memo folder.
+    /// such as scanning a shared folder.
     package static func tryHolding(beside url: URL) -> StoredFileLock? {
         acquire(beside: url, blocking: false)
     }

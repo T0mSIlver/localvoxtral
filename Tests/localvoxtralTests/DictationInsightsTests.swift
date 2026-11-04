@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 final class DictationInsightsTests: XCTestCase {
@@ -211,9 +212,7 @@ final class DictationInsightsTests: XCTestCase {
     /// selects, and lists only the features that made a call in it.
     @MainActor
     func testUsageByFeatureFollowsThePeriod() async throws {
-        let suite = "insights-usage-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
+        let defaults = makeTestDefaults()
         let ledger = [
             UsageEntry(date: origin.addingTimeInterval(-3_600), feature: .polish, backend: .mistral,
                        model: "m", costEUR: 0.01),

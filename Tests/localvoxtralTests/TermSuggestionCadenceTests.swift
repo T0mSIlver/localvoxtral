@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -64,10 +65,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
     private var finishedWaiters: [CheckedContinuation<Void, Never>] = []
 
     private func makeFixture(hosted: Bool = true) -> Fixture {
-        let suiteName = "localvoxtral.TermSuggestionCadenceTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
         )
@@ -126,9 +124,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
     }
 
     func testTheDefaultIsEveryFiftyDictations() {
-        let suiteName = "localvoxtral.TermSuggestionCadenceTests.default.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
         )
@@ -346,7 +342,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
 
     /// The free chips count: the app refreshes them after each dictation that
     /// taught it something, not only when the pane opens.
-    func testLearnedChipsBadgeTheRow() {
+    func testLearnedChipsBadgeTheRow() async {
         let settings = makeFixture().settings
         let model = SpeakerTermSuggestionModel(
             settings: settings,
@@ -355,7 +351,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
             service: { Service() }
         )
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         XCTAssertEqual(model.badgeCount, 2)
     }

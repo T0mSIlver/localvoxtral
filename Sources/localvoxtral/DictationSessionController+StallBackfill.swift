@@ -68,7 +68,7 @@ extension DictationSessionController {
                     costEUR: MistralPricing.dictationCost(
                         model: MistralBatchTranscription.model, audioSeconds: audioSeconds)
                 ))
-                let text = try await transcriber.transcribe(
+                return try await transcriber.transcribe(
                     wav: wav,
                     language: nil,
                     contextBias: contextBias,
@@ -76,7 +76,6 @@ extension DictationSessionController {
                     endpoint: endpoint,
                     onUpload: { uploadRates.record($0, for: endpoint) }
                 ).text
-                return MistralBatchTranscription.restoringPhrases(in: text, candidates: candidates)
             }
             guard let self, !Task.isCancelled else { return }
             self.applyStallBackfill(outcome, at: mark)

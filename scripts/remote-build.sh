@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-capture-polish-latency|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc|remove] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; needs --filter, or
 #                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
@@ -76,13 +76,6 @@ set -euo pipefail
 #                  absolute path on the build host to a baseline helper binary
 #                  (e.g. another LV_BUILD_DIR's packaged one), added as a
 #                  fourth arm at temperature 0.3; requires a prior `package`
-#     eval-capture-polish-latency
-#                  time a quick capture's polish request (#970) on the
-#                  packaged polishing helper; prints model, n, median and
-#                  p90 (QuickCapturePolishLatencyTests). Optional args =
-#                  rounds (default 3) and an absolute path on the build host
-#                  to a JSON-lines file of {"text": ...} captures (default: a
-#                  synthetic set); requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
 #                  optional args = chat/completions endpoint and external
@@ -139,7 +132,11 @@ set -euo pipefail
 #                  du over the build trees can take a while)
 #     gc           delete remote work dirs unused > 14 days (gate v4 required;
 #                  also fired automatically, best-effort, after every run —
-#                  EvalRecordings inside a stale dir are always preserved)
+#                  EvalRecordings inside a stale dir are always preserved);
+#                  `gc --idle <hours>` reclaims dirs idle that many hours
+#     remove       delete this worktree's remote work dir now, or the
+#                  work/localvoxtral-<id> named; a dir in use is kept, and so
+#                  are its EvalRecordings
 #
 # The Mac is the owner's machine (#617), so two kinds of run refuse unless
 # LV_ALLOW_HEAVY_MAC_RUN=1 is set, before any sync: a `test` with neither
@@ -163,6 +160,11 @@ set -euo pipefail
 # lock. The full remote output of every run is also written to
 # .build/last-remote.log, so a crash mid-run can never eat the failing test's
 # name (don't pipe this script straight into grep — grep the log file).
+# Optional: a lock per build host, so runs on one Mac go one at a time:
+#   git config localvoxtral.<build host>.lock /path/to/<host>.lock
+# (LV_LOCK_DIR overrides it). A run that sends work to the host waits for
+# that directory, then holds it until it exits; scripts/lib/build-host-lock.sh
+# has the recipe for taking it by hand.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
@@ -175,6 +177,27 @@ DIR="${LV_BUILD_DIR:-work/localvoxtral-${TREE_SLUG}-${TREE_HASH}}"
 REMOTE_LOG="${LOCALVOXTRAL_REMOTE_LOG:-$ROOT_DIR/.build/last-remote.log}"
 REMOTE_PAYLOAD_ACTIVE=0
 REMOTE_REAP_ATTEMPTED=0
+
+# The build host's lock (scripts/lib/build-host-lock.sh): one heavy job at a
+# time per host, a directory named per host in git config like the host itself.
+LV_LOCK_DIR="${LV_LOCK_DIR:-$(git -C "$ROOT_DIR" config --get "localvoxtral.$HOST.lock" 2>/dev/null || true)}"
+# shellcheck source=lib/build-host-lock.sh
+. "$ROOT_DIR/scripts/lib/build-host-lock.sh"
+
+# Everything that must run when the script exits, in the order added: a verb's
+# transient marker cleanup, then the lock release. One EXIT trap runs them all,
+# so adding one never replaces another.
+EXIT_HOOKS=()
+run_exit_hooks() {
+  local hook
+  for hook in ${EXIT_HOOKS[@]+"${EXIT_HOOKS[@]}"}; do
+    eval "$hook" || true
+  done
+}
+on_exit() {
+  EXIT_HOOKS+=("$1")
+  trap run_exit_hooks EXIT
+}
 
 run_remote() {
   local remote_command="$1"
@@ -550,12 +573,41 @@ reject_gate_blocked_args() {
 }
 
 case "$CMD" in
-  diag|svc-status|disk|gc)
+  diag|svc-status|disk)
     if [[ $# -ne 0 ]]; then
       echo "$CMD does not accept extra arguments" >&2
       exit 1
     fi
     run_remote "$(quote_remote_command "$CMD")"
+    exit $?
+    ;;
+  gc)
+    # `gc --idle <hours>` reclaims dirs idle that long instead of the gate's
+    # configured days, for a host that needs the disk now.
+    if [[ $# -eq 0 ]]; then
+      run_remote "gc"
+    elif [[ $# -eq 2 && "$1" == --idle && "$2" =~ ^[1-9][0-9]{0,2}$ ]]; then
+      run_remote "$(quote_remote_command gc --idle "$2")"
+    else
+      echo "gc accepts no arguments, or --idle <hours>" >&2
+      exit 1
+    fi
+    exit $?
+    ;;
+  remove)
+    # Deletes a work dir on the host now: this worktree's own by default, or
+    # one named work/localvoxtral-<id>. The gate keeps a dir in use and its
+    # EvalRecordings.
+    if [[ $# -gt 1 ]]; then
+      echo "remove accepts at most one work dir (work/localvoxtral-<id>)" >&2
+      exit 1
+    fi
+    target="${1:-$DIR}"
+    if [[ ! "$target" =~ ^work/localvoxtral-[A-Za-z0-9._-]+/?$ ]]; then
+      echo "remove: $target is not a work dir (work/localvoxtral-<id>)" >&2
+      exit 1
+    fi
+    run_remote "$(quote_remote_command remove "$target")"
     exit $?
     ;;
   applog|voxlog)
@@ -639,7 +691,7 @@ case "$CMD" in
       exit 1
     fi
     KEYCHAIN_MARKER="$ROOT_DIR/.keychain-integration-enable.json"
-    trap 'cleanup_transient_marker "$KEYCHAIN_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$KEYCHAIN_MARKER"'
     (umask 077; : >"$KEYCHAIN_MARKER")
     printf '{"enabled": true}\n' >"$KEYCHAIN_MARKER"
     REMOTE_CMD=(swift test --build-system native --filter KeychainSecretStoreIntegrationTests)
@@ -664,7 +716,7 @@ case "$CMD" in
     MISTRAL_MARKER="$ROOT_DIR/.mistral-integration-enable.json"
     # Trap registered before the marker exists, so no kill window can strand a
     # key-bearing file (locally or in the remote work dir).
-    trap 'cleanup_transient_marker "$MISTRAL_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$MISTRAL_MARKER"'
     (umask 077; : >"$MISTRAL_MARKER")
     printf '{"apiKey": "%s"}\n' "$MISTRAL_API_KEY" >"$MISTRAL_MARKER"
     REMOTE_CMD=(swift test --build-system native --filter MistralRealtimeIntegrationTests)
@@ -684,7 +736,7 @@ case "$CMD" in
     fi
     POLISHD_MODEL="${1:-}"
     POLISHD_MARKER="$ROOT_DIR/.polishd-integration-enable.json"
-    trap 'cleanup_transient_marker "$POLISHD_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$POLISHD_MARKER"'
     if [[ -n "$POLISHD_MODEL" ]]; then
       printf '{"helperPath": "%s", "model": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
@@ -707,7 +759,7 @@ case "$CMD" in
     fi
     SPEECHD_MODEL="${1:-}"
     SPEECHD_MARKER="$ROOT_DIR/.speechd-integration-enable.json"
-    trap 'cleanup_transient_marker "$SPEECHD_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$SPEECHD_MARKER"'
     if [[ -n "$SPEECHD_MODEL" ]]; then
       printf '{"helperPath": "%s", "model": "%s"}\n' \
         "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
@@ -748,42 +800,13 @@ case "$CMD" in
     HERDR_MARKER="$ROOT_DIR/.herdr-integration-enable.json"
     # Registered before the marker exists, so no kill window leaves a stale
     # marker behind — locally or in the remote work dir.
-    trap 'cleanup_transient_marker "$HERDR_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$HERDR_MARKER"'
     if [[ -n "$HERDR_DESTINATION" ]]; then
       printf '{"destination": "%s"}\n' "$HERDR_DESTINATION" >"$HERDR_MARKER"
     else
       printf '{}\n' >"$HERDR_MARKER"
     fi
     REMOTE_CMD=(swift test --build-system native --filter HerdrIntegrationTests)
-    ;;
-  eval-capture-polish-latency)
-    # Marker-gated XCTest, like polishd-bench: the gate cannot run the
-    # packaged helper directly or pass env vars.
-    if [[ $# -gt 2 ]]; then
-      echo "eval-capture-polish-latency accepts optional rounds and captures-path arguments" >&2
-      exit 1
-    fi
-    CAPTURE_LATENCY_ROUNDS="${1:-3}"
-    CAPTURE_LATENCY_CAPTURES="${2:-}"
-    if [[ ! "$CAPTURE_LATENCY_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
-      echo "eval-capture-polish-latency rounds must be a positive integer" >&2
-      exit 1
-    fi
-    if [[ -n "$CAPTURE_LATENCY_CAPTURES" && ! "$CAPTURE_LATENCY_CAPTURES" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
-      echo "eval-capture-polish-latency captures-path must be an absolute path on the build host" >&2
-      exit 1
-    fi
-    CAPTURE_LATENCY_MARKER="$ROOT_DIR/.quick-capture-polish-latency-enable.json"
-    trap 'cleanup_transient_marker "$CAPTURE_LATENCY_MARKER"' EXIT
-    CAPTURE_LATENCY_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
-    if [[ -n "$CAPTURE_LATENCY_CAPTURES" ]]; then
-      printf '{"helperPath": "%s", "rounds": %s, "capturesPath": "%s"}\n' \
-        "$CAPTURE_LATENCY_HELPER" "$CAPTURE_LATENCY_ROUNDS" "$CAPTURE_LATENCY_CAPTURES" >"$CAPTURE_LATENCY_MARKER"
-    else
-      printf '{"helperPath": "%s", "rounds": %s}\n' \
-        "$CAPTURE_LATENCY_HELPER" "$CAPTURE_LATENCY_ROUNDS" >"$CAPTURE_LATENCY_MARKER"
-    fi
-    REMOTE_CMD=(swift test --build-system native --filter QuickCapturePolishLatencyTests)
     ;;
   polishd-bench)
     # Marker-gated XCTest, like speechd-bench: the gate cannot run the
@@ -803,7 +826,7 @@ case "$CMD" in
       exit 1
     fi
     POLISHD_BENCH_MARKER="$ROOT_DIR/.polishd-bench-enable.json"
-    trap 'cleanup_transient_marker "$POLISHD_BENCH_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$POLISHD_BENCH_MARKER"'
     POLISHD_BENCH_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
     # The greedy arm comes first: the report compares every arm's outputs
     # with the first, and MTP must reproduce greedy decoding exactly.
@@ -867,7 +890,7 @@ case "$CMD" in
       exit 1
     fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
-    trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"'
     # The optional fields are omitted rather than nulled, so the test's decoder
     # falls back to its own defaults exactly as it did before they existed.
     SPEECHD_BENCH_OPTIONAL=""
@@ -970,7 +993,7 @@ case "$CMD" in
       exit 1
     fi
     TR_MARKER="$ROOT_DIR/.term-recall-eval-enable.json"
-    trap 'cleanup_transient_marker "$TR_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$TR_MARKER"'
     if [[ ${#TR_COMPARE[@]} -eq 2 ]]; then
       for label in "${TR_COMPARE[@]}"; do
         if [[ ! -f "$ROOT_DIR/$TR_DIR/runs/$label.jsonl" ]]; then
@@ -1166,7 +1189,7 @@ case "$CMD" in
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir) — and in the
     # Mistral arm that marker carries a real API key.
-    trap 'cleanup_transient_marker "$E2E_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$E2E_MARKER"'
     if [[ "$E2E_PROVIDER" == "mistral" ]]; then
       # 0600 before a single byte of the key is written. No helperPath/asrModel:
       # the harness resolves Mistral's own pins from the provider.
@@ -1222,7 +1245,7 @@ case "$CMD" in
     EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
-    trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$EVAL_MARKER"'
     if [[ "$EVAL_MODEL" == mistral/* ]]; then
       # The key below comes from this shell, not from the caller's endpoint,
       # so it goes nowhere but Mistral's API (#1622).
@@ -1283,7 +1306,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc|remove] [extra args...]" >&2
     exit 1
     ;;
 esac
@@ -1291,6 +1314,11 @@ esac
 # Checked on the assembled payload, so every command that forwards arguments
 # is covered, and before the first ssh of the run.
 reject_gate_blocked_args "${REMOTE_CMD[@]}"
+
+# From here the run loads the host (a warm test server, the sync, the payload):
+# wait for the build host's lock first, and hold it until the script exits.
+on_exit lv_lock_release
+lv_lock_acquire "$CMD"
 
 if [[ -n "$ENSURE_SERVER" ]]; then
   ensure_remote_server "$ENSURE_SERVER"

@@ -265,8 +265,8 @@ altogether, since the token goes through SSH stdin (see above).
 
 ## Checking the setup
 
-Press **Check Setup** in the enrollment sheet. It runs two read-only checks
-and explains the results. The checks below run them by hand.
+The last step of the setup run, **Check Setup**, runs two read-only checks and
+explains the results. The checks below run them by hand.
 
 Or run `localvoxtral doctor` in a Claude Code session on the host, or ask
 the agent why a dictation did not join: plugin 1.36.0 ships a skill that
@@ -512,12 +512,9 @@ mods from 1.42.0 on, so a host on 1.41.0 needs **Update host…** too.
 When the tunnel or the app is down, the mod waits five minutes between tries,
 as the hook script does, and tries again sooner once a hook gets through.
 
-From 1.42.0 `/inbox` works in a session on the host too. The pane lists the
-captures of the project that session is in, with each one's title, kind,
-state and age, the way it does on your Mac. The app sends the host those
-fields and nothing else: a capture's words and its note stay on your Mac, and
-a capture not drafted yet shows as "Untitled capture". **Open in localvoxtral**
-brings the Inbox forward on your Mac.
+A mod from 1.42.0 to 1.45.0 also offered `/inbox`. The app no longer
+answers it: it replies 410, and the pane says "localvoxtral could not list the
+Inbox." Update the host to remove the command.
 
 ### Mistral Vibe on an enrolled host
 
@@ -628,8 +625,8 @@ label for it, never a path it could hand to ssh. The run goes like this:
 
    It files the terms under the project it recorded in step 1, never one the
    host names, through the same filters as a local answer, and keeps the
-   sentence on the project for quick capture's classifier. Anything else is
-   refused with a status and a log line that names the reason, never the body.
+   sentence on the project. Anything else is refused with a status and a log
+   line that names the reason, never the body.
 
 Only the answer crosses the tunnel, as a JSON list of terms and one sentence:
 a few hundred bytes. With Claude Code's result object around it, about 3.4 KiB
@@ -640,85 +637,14 @@ The run bills the host's Claude Code login or Mistral key, under the same caps
 as the local run. A process that squats the forward port could send the header
 too; the host's stamp bounds that to one run per project per 24 hours.
 
-### Quick capture on a host
+### Routes older hosts still call
 
-A quick capture ([Quick capture](coding-agents.md#quick-capture)) routed to a
-remote project is drafted on its host, for the same reason. The repository is
-there. The host also reports the project's README, which the router reads to
-tell projects apart.
-
-Both need localvoxtral-remote 1.17.0 or Vibe hooks 1.3.0 on the host.
-
-**Projects.** Which remote repositories the router offers is in
-[Which projects a capture can go to](coding-agents.md#which-projects-a-capture-can-go-to).
-
-**README.** The reply to a hook from a session in a remote project the Mac
-holds, with no README summary or one a week old, asks for the README. The hook
-script then starts the
-[capture script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/capture.sh)
-detached, at most once per project per 24 hours.
-
-The capture script posts the first 16 KiB of the project's README.md to the
-listener. The Mac keeps the first two prose paragraphs, 400 characters at
-most, on the project. From localvoxtral-remote 1.35.0 and Vibe hooks 1.17.0,
-the script skips a README, AGENTS.md or CLAUDE.md that is a symlink, so a
-committed link cannot send a file from elsewhere on the host.
-
-**Draft.** The capture waits up to 10 minutes for a hook from a live session in
-its project. The reply to that hook asks for a draft. With no such session, or
-only sessions on older hooks, the capture waits in the Inbox with your words
-and a note.
-
-The hook script starts the capture script's draft run detached, one at a time
-and at most 20 a day. With localvoxtral-remote 1.24.0 or Vibe hooks 1.9.0, the
-run drafts in two stages:
-
-1. It asks the listener for the capture's search words, then posts the
-   project's context: the openings of its README and AGENTS.md (or
-   CLAUDE.md), `git grep` hits for those words, and, when gh works there, the
-   open issues, the last 40 closed issues and the last 20 merged pull
-   requests, 96 KiB at most.
-2. The Mac writes the first draft from it. The run polls the listener every 3
-   seconds, for 3 minutes at most, until it answers: no check due (a
-   question, a task or a note), or the prompt to check the issue's draft
-   against the code.
-
-An older hook script lists the open issues only, and gets back the prompt to
-draft from your words alone.
-
-It then runs the Mac's drafting command in the project:
-
-- Claude Code with Read, Glob and Grep confined to the checkout, capped at
-  $0.50;
-- or Vibe with its read-only tools, hooks and MCP off, capped at $0.30.
-
-Both get 20 turns and a 6-minute watchdog (4 minutes before 1.24.0 and 1.9.0).
-From localvoxtral-remote 1.37.0 and Vibe hooks 1.18.0, the prompt goes to the
-agent on stdin, since other users on the host can read a command line from `ps`.
-From localvoxtral-remote 1.39.0 and Vibe hooks 1.19.0, the shim names the
-repository it listed open issues in (origin's). The Mac quotes and links those
-issues only when that is the repository the capture files in: a fork's #7 is not
-upstream's #7, and an older shim's issues link nothing.
-From localvoxtral-remote 1.40.0 and Vibe hooks 1.20.0, a project directory whose
-name holds a newline sends nothing: the shell would have named its sibling.
-The run posts the output, at most 60 KiB, to the listener with how the run
-ended. A Vibe run (hooks 1.4.0) adds its token counts in a header; Claude
-Code's output already carries its usage.
-
-**What crosses and what can't.** Each route takes one answer, only from the
-host, session and agent the Mac asked, and files it under the project the Mac
-recorded. Your words cross the tunnel only in the prompt reply and, as search
-words, in the words reply, to the session of the project the router chose.
-
-Nothing is filed on the host. gh only lists issues and pull requests, git only
-greps, and the agent has no shell. The context and the draft are untrusted
-text: the context is only quoted into the first draft's request, and the
-draft is read as a local draft is.
-
-Whatever answers on the forward port can send both asks. It never sees a
-capture, since those go only to the Mac's listener, but it can hand the host a
-prompt of its own. That is why the agent cannot read outside the checkout, and
-why the hook script runs one draft at a time and 20 a day.
+Before this release the host's hook reply could ask for a project's README or
+a drafted capture, and the host then posted to `/v1/readme` and `/v1/draft*`.
+The app asks for neither now, and answers 410 on those routes and on
+`/v1/mod/inbox*`. The shims treat 410 like any failed post: they print
+nothing and exit 0, so a host on localvoxtral-remote 1.45.0 or earlier needs
+no update to keep working.
 
 ### Federated herdr machines
 
@@ -922,7 +848,7 @@ four times, each with its own script on stdin:
    `~/.local/bin` added), the installed hooks version, and
    `~/.vibe/hooks.toml` (base64, at most 256 KiB) with its cksum.
 2. Write `~/.vibe/localvoxtral/remote/` at mode 0700 with post.sh, terms.sh,
-   capture.sh, compact.py and port (0600). Put a marked block of two hooks
+   repository.sh, compact.py and port (0600). Put a marked block of two hooks
    tables into `~/.vibe/hooks.toml`.
 
    This Mac computes the new hooks.toml text by the same rules as the local

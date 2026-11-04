@@ -126,12 +126,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         lifecycleCenter: NotificationCenter? = nil,
         workspaceCenter: NotificationCenter? = nil
     ) -> (DictationViewModel, FakeOutputVolumeControl) {
-        let suiteName = "localvoxtral.DictationViewModelAudioDuckingTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = .overlayBuffer

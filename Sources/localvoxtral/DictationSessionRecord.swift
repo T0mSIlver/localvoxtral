@@ -41,7 +41,8 @@ final class DictationSessionRecord {
     var projectName: String?
     /// `claude`, `vibe`, `opencode`: the agent whose session it joined.
     var joinedAgent: String?
-    /// Where a quick capture went (#725): "Inbox" when saved, then the
+    /// Where a quick capture went (#725), on a record saved before quick
+    /// capture was removed: "Inbox" when saved, then the
     /// project it was routed to, then "Filed in owner/name". Nil for every
     /// other dictation. Additive optional field, like those above.
     var quickCaptureDestination: String?

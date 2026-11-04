@@ -2,6 +2,7 @@
 
 import ClaudeContextWire
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -648,10 +649,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     }
 
     private func makeViewModel() -> DictationViewModel {
-        let suiteName = "localvoxtral.DogfoodControlServiceTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(
