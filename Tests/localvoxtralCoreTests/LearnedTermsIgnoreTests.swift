@@ -3,6 +3,7 @@ import Synchronization
 import XCTest
 
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// Forget Project and Ignore Project in Settings → Projects (#1006): what
 /// goes, what stays, and what an ignored repo can no longer add.
@@ -259,7 +260,7 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             beforeTermsUpdate: {
                 guard armed.withLock({ armed in defer { armed = false }; return armed }) else { return }
                 // The other copy can write only while this one leaves the list free.
-                guard StoredFileLock.tryHolding(beside: ignoredURL) != nil else { return }
+                guard OtherCopyLock.tryHolding(beside: ignoredURL) != nil else { return }
                 otherWrites()
                 ranMidWrite.withLock { $0 = true }
             })
