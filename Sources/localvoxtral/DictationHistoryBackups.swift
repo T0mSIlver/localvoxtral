@@ -7,7 +7,8 @@ import os
 /// included, so it opens on its own (#985).
 ///
 /// Rotation keeps the newest snapshot of each of the last seven days, the
-/// ten newest event snapshots, and always the newest snapshot that holds a
+/// ten newest event snapshots, every one of the last day that holds a
+/// dictation, and always the newest snapshot that holds a
 /// dictation: a store that lost its rows must never rotate away the copy
 /// that still has them. Files it cannot parse are left alone. Delete All and
 /// Don't keep delete every snapshot when the user ticks "Also delete the
@@ -113,6 +114,12 @@ struct DictationHistoryBackups: Sendable {
         let all = snapshots()
         var kept = Set<URL>()
         if let lastGood = all.first(where: { $0.dictations > 0 }) { kept.insert(lastGood.url) }
+        // Within the day's grace a snapshot may be the one copy of what a
+        // trim deleted: the older ones lost it (`expireDictations`).
+        let graceStart = now().addingTimeInterval(-Self.expiryGrace)
+        for snapshot in all where snapshot.dictations > 0 && snapshot.takenAt >= graceStart {
+            kept.insert(snapshot.url)
+        }
         var days = Set<String>()
         for snapshot in all where snapshot.reason == .daily {
             let day = String(Self.stamp(snapshot.takenAt).prefix(8))
@@ -145,9 +152,8 @@ struct DictationHistoryBackups: Sendable {
     /// snapshot older than `expiryGrace`, as the retention trim did from the
     /// store: retention is a privacy setting, and a copy must not outlive it
     /// by more than a day (#1916). A snapshot left holding none is deleted.
-    /// One that cannot be edited is deleted only when it was taken before
-    /// the cutoff, so every row it holds has expired; otherwise it is kept,
-    /// and the failure logged.
+    /// One that cannot be edited is kept, and the failure logged: its
+    /// date does not bound its rows' when the clock was off.
     func expireDictations(startedBefore cutoff: Date) {
         var expired = 0
         var removed = 0
@@ -173,10 +179,6 @@ struct DictationHistoryBackups: Sendable {
                 Log.persistence.error(
                     "History: could not expire dictations in \(snapshot.url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
-                if snapshot.takenAt < cutoff {
-                    Self.removeFiles(at: snapshot.url)
-                    removed += 1
-                }
             }
         }
         if expired > 0 || removed > 0 {

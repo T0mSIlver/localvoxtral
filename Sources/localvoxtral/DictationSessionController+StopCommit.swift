@@ -980,7 +980,7 @@ extension DictationSessionController {
         // it off since has deleted the folder this would write into.
         sessionStore?.save(record, audio: settings.dictationAudioEnabled ? audio : nil)
         if let cutoff = retention.cutoff(now: record.finishedAt) {
-            sessionStore?.trim(olderThan: cutoff)
+            sessionStore?.trim(olderThan: cutoff, expiringBackups: retention.days != nil)
         }
         termSuggestionCadence?.dictationSaved()
         return record.id
@@ -1031,7 +1031,7 @@ extension DictationSessionController {
             return
         }
         guard let cutoff = retention.cutoff(now: now) else { return }
-        sessionStore?.trim(olderThan: cutoff)
+        sessionStore?.trim(olderThan: cutoff, expiringBackups: retention.days != nil)
     }
 
     func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {

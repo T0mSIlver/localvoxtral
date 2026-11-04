@@ -120,7 +120,7 @@ final class DictationHistoryBackupsTests: XCTestCase {
         clock.advance(86_400 * 2)
 
         // A 5-day retention, six days in: "old" expires, "recent" stays.
-        await store.trim(olderThan: clock.now().addingTimeInterval(-86_400 * 5)).value
+        await store.trim(olderThan: clock.now().addingTimeInterval(-86_400 * 5), expiringBackups: true).value
 
         var days: [Double] = []
         var texts: [[String]] = []
@@ -136,6 +136,41 @@ final class DictationHistoryBackupsTests: XCTestCase {
         XCTAssertEqual(texts, [["old", "recent"], ["recent"], ["recent"]])
         let entries = await store.entries()
         XCTAssertEqual(entries.map(\.rawText), ["recent"])
+    }
+
+    /// Don't keep empties History but leaves the backups unless the user
+    /// asked for them to go too (#1574): its trim expires nothing in them.
+    func testDontKeepsTrimLeavesTheBackups() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        let url = try XCTUnwrap(store.storeURL)
+        let backups = backups(in: directory)
+        await store.save(record("kept in the copy", startedAt: clock.now())).value
+        backups.snapshot(of: url, reason: .delete)
+        clock.advance(86_400 * 2)
+
+        await store.trim(olderThan: .distantFuture).value
+
+        XCTAssertTrue(backups.snapshots().contains { $0.dictations == 1 && $0.takenAt < clock.now().addingTimeInterval(-86_400) })
+    }
+
+    /// Rotation keeps a day's snapshots that hold dictations, however many
+    /// event snapshots follow: one may be the only copy of a trim's rows.
+    func testRotationKeepsTheDaysSnapshotsThatHoldDictations() throws {
+        let directory = makeDirectory()
+        let backups = backups(in: directory)
+        try FileManager.default.createDirectory(at: backups.directoryURL, withIntermediateDirectories: true)
+        let start = clock.now()
+        for hour in 0...(DictationHistoryBackups.eventsKept + 3) {
+            let name = DictationHistoryBackups.fileName(
+                takenAt: start.addingTimeInterval(Double(hour) * 3_600), reason: .delete, dictations: 5)
+            FileManager.default.createFile(atPath: backups.directoryURL.appendingPathComponent(name).path, contents: Data())
+        }
+        clock.advance(Double(DictationHistoryBackups.eventsKept + 3) * 3_600)
+
+        backups.rotate()
+
+        XCTAssertEqual(backups.snapshots().count, DictationHistoryBackups.eventsKept + 4)
     }
 
     /// An app left running for days still gets its daily copy: the check
