@@ -136,4 +136,19 @@ final class NemotronUnifiedLayoutTests: XCTestCase {
         XCTAssertEqual(NemotronUnifiedLayout.frames(forLatencyMilliseconds: 320), [70, 2, 2])
         XCTAssertEqual(NemotronUnifiedLayout.frames(forLatencyMilliseconds: 1120), [70, 7, 7])
     }
+
+    func testRecognizesABufferedCheckpointFromItsConfig() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "unified-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func write(_ style: String) throws {
+            let json = #"{"model_type":"nemotron_asr","encoder":{"att_context_style":"\#(style)"}}"#
+            try Data(json.utf8).write(to: root.appending(path: "config.json"))
+        }
+        try write("chunked_limited_with_rc")
+        XCTAssertTrue(NemotronUnifiedLayout.isBufferedCheckpoint(directory: root))
+        try write("chunked_limited")
+        XCTAssertFalse(NemotronUnifiedLayout.isBufferedCheckpoint(directory: root))
+        XCTAssertFalse(NemotronUnifiedLayout.isBufferedCheckpoint(directory: root.appending(path: "missing")))
+    }
 }

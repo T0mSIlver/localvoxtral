@@ -407,7 +407,13 @@ enum SpeechModelLoader {
                 modelID: modelID,
                 modelRevision: modelRevision,
                 modelDirectory: modelDirectory,
-                fromDirectory: { try NemotronASRModel.fromDirectory($0) },
+                fromDirectory: { directory in
+                    try NemotronASRModel.fromDirectory(
+                        directory,
+                        computeDType: NemotronUnifiedLayout.isBufferedCheckpoint(directory: directory)
+                            ? .float16 : .bfloat16
+                    )
+                },
                 fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
             ))
         }
