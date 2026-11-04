@@ -52,8 +52,6 @@ final class SettingsStore {
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let managedSpeechModel = "settings.managed_speech_model"
         static let polishingBackendMode = "settings.polishing_backend_mode"
-        // Legacy global backend mode. Read only for one-time migration.
-        static let backendMode = "settings.backend_mode"
         static let onboardingCompleted = "settings.onboarding_completed"
         static let onboardingPolishingBeforeMistralChoice = "settings.onboarding_polishing_before_mistral_choice"
         static let opensWindowAtLaunch = "settings.opens_window_at_launch"
@@ -75,10 +73,6 @@ final class SettingsStore {
             "settings.audio_ducking_pending_restore_device_uid"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let selectedInputChannel = "settings.selected_input_channel"
-        static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
-        static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
-        static let dictationShortcutCarbonModifierFlags =
-            "settings.dictation_shortcut_carbon_modifiers"
         static let llmPolishingEnabled = "settings.llm_polishing_enabled"
         static let llmPolishingEndpointURL = "settings.llm_polishing_endpoint_url"
         /// LEGACY, see `apiKey`.
@@ -411,22 +405,6 @@ final class SettingsStore {
     /// stale index for another device is clamped away at capture start.
     var selectedInputChannel: Int {
         didSet { defaults.set(selectedInputChannel, forKey: Keys.selectedInputChannel) }
-    }
-
-    var dictationShortcutEnabled: Bool {
-        didSet { defaults.set(dictationShortcutEnabled, forKey: Keys.dictationShortcutEnabled) }
-    }
-
-    var dictationShortcutKeyCode: UInt32 {
-        didSet { defaults.set(dictationShortcutKeyCode, forKey: Keys.dictationShortcutKeyCode) }
-    }
-
-    var dictationShortcutCarbonModifierFlags: UInt32 {
-        didSet {
-            defaults.set(
-                dictationShortcutCarbonModifierFlags,
-                forKey: Keys.dictationShortcutCarbonModifierFlags)
-        }
     }
 
     var llmPolishingEnabled: Bool {
@@ -1214,31 +1192,6 @@ final class SettingsStore {
             dictationShortcutMode = .toggle
         }
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
-        dictationShortcutEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)
-
-        let storedKeyCode = (defaults.object(forKey: Keys.dictationShortcutKeyCode) as? NSNumber)?
-            .uint32Value
-        let storedModifierFlags =
-            (defaults.object(forKey: Keys.dictationShortcutCarbonModifierFlags) as? NSNumber)?
-            .uint32Value
-
-        let resolvedShortcut: DictationShortcut
-        if let storedKeyCode, let storedModifierFlags {
-            let candidate = DictationShortcut(
-                keyCode: storedKeyCode,
-                carbonModifierFlags: storedModifierFlags
-            ).normalized
-            resolvedShortcut =
-                DictationShortcutValidation.persistenceErrorMessage(for: candidate) == nil
-                ? candidate : Self.defaultDictationShortcut
-        } else {
-            resolvedShortcut = Self.defaultDictationShortcut
-        }
-
-        dictationShortcutKeyCode = resolvedShortcut.keyCode
-        dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
-
         llmPolishingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.llmPolishingEnabled, fallback: false)
         llmPolishingEndpointURL = Self.loadString(
@@ -1354,8 +1307,6 @@ final class SettingsStore {
 
         // --- Dual shortcut keys ---
         let hasExistingOverlayKeys = defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) != nil
-        var needsOverlayMigrationPersist = false
-
         if hasExistingOverlayKeys {
             let obKeyCode = (defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) as? NSNumber)?
                 .uint32Value ?? 0
@@ -1371,12 +1322,6 @@ final class SettingsStore {
             }
             overlayBufferShortcutEnabled = Self.loadBool(
                 defaults: defaults, key: Keys.overlayBufferShortcutEnabled, fallback: true)
-        } else if storedKeyCode != nil, storedModifierFlags != nil {
-            overlayBufferShortcutKeyCode = resolvedShortcut.keyCode
-            overlayBufferShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
-            overlayBufferShortcutEnabled = Self.loadBool(
-                defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)
-            needsOverlayMigrationPersist = true
         } else {
             overlayBufferShortcutKeyCode = Self.defaultDictationShortcut.keyCode
             overlayBufferShortcutCarbonModifierFlags = Self.defaultDictationShortcut.carbonModifierFlags
@@ -1422,14 +1367,6 @@ final class SettingsStore {
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         copyLastDictationShortcutChord = defaults.string(forKey: Keys.copyLastDictationShortcutChord) ?? ""
-
-        if needsOverlayMigrationPersist {
-            defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)
-            defaults.set(
-                overlayBufferShortcutCarbonModifierFlags,
-                forKey: Keys.overlayBufferShortcutModifiers)
-            defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled)
-        }
 
         // The sweep above already holds these values; reading them back would
         // be a second keychain operation for nothing.
@@ -1492,10 +1429,9 @@ final class SettingsStore {
     ///
     /// - If the flag was already persisted, honor it verbatim.
     /// - Otherwise treat the install as "not fresh" (skip the wizard) when any
-    ///   signal of a prior configured install is present: the legacy global
-    ///   backend-mode key, a persisted realtime endpoint, the REALTIME_ENDPOINT
-    ///   env override, or either per-backend mode key. These mirror the exact
-    ///   signals the backend-mode migration keys off, plus the newer mode keys.
+    ///   signal of a prior configured install is present: a persisted realtime
+    ///   endpoint, the REALTIME_ENDPOINT env override, or either per-backend
+    ///   mode key.
     /// - A genuinely fresh install has none of these → show the wizard.
     private static func resolveOnboardingCompleted(
         defaults: UserDefaults,
@@ -1506,8 +1442,7 @@ final class SettingsStore {
         }
 
         let isExistingInstall =
-            defaults.string(forKey: Keys.backendMode) != nil
-            || defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
+            defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
             || environment["REALTIME_ENDPOINT"] != nil
             || defaults.string(forKey: Keys.dictationBackendMode) != nil
             || defaults.string(forKey: Keys.polishingBackendMode) != nil
@@ -1532,12 +1467,7 @@ final class SettingsStore {
         }
 
         let migratedMode: BackendMode
-        if let storedBackendMode = defaults.string(forKey: Keys.backendMode),
-            let parsedBackendMode = BackendMode(rawValue: storedBackendMode),
-            BackendMode.dictationModes.contains(parsedBackendMode)
-        {
-            migratedMode = parsedBackendMode
-        } else if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
+        if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
             || environment["REALTIME_ENDPOINT"] != nil
         {
             migratedMode = .externalURL
