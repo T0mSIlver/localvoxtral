@@ -20,10 +20,13 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+    url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+    revision: "11e8ca2f5f601b4fe64e52090b5e10965d8080f3"
 )
 ```
+
+This fork commit is upstream's `902920c` plus the Nemotron Unified port, which the catalog's
+Unified entry needs. It must become an upstream SHA before merge.
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
