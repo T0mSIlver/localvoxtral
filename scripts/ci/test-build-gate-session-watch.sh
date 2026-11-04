@@ -70,7 +70,13 @@ gate=$!
 spawned+=("$gate")
 wait_for_file "$TMP_DIR/payload.pid" "the payload never started"
 payload="$(cat "$TMP_DIR/payload.pid")"
-[[ -n "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null)" ]] || fail "the payload group was not recorded"
+# The gate records the group just after it starts the payload.
+recorded=0
+for _ in $(seq 1 100); do
+  [[ -n "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null)" ]] && { recorded=1; break; }
+  /bin/sleep 0.1
+done
+(( recorded )) || fail "the payload group was not recorded"
 kill -KILL "$session"
 ends_soon "$payload" || fail "the payload outlived its session"
 status=0
@@ -91,6 +97,10 @@ for shard in 1 2; do
   spawned+=("$!")
   wait_for_file "$TMP_DIR/payload.pid" "shard $shard never started"
   payloads+=("$(cat "$TMP_DIR/payload.pid")")
+done
+for _ in $(seq 1 100); do
+  [[ "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null | wc -l | tr -d ' ')" == 2 ]] && break
+  /bin/sleep 0.1
 done
 reap_out="$(env "${gate_env[@]}" SSH_ORIGINAL_COMMAND='reap work/localvoxtral-session-1' bash "$GATE" 2>&1 || true)"
 [[ "$(grep -c 'reap: ending the abandoned payload group' <<<"$reap_out")" == 2 ]] \
