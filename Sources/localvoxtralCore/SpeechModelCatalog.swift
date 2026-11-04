@@ -40,10 +40,11 @@ package enum SpeechModelCatalog {
             sizeOnDiskGB: 2.6,
             capabilities: .audioOnly
         ),
-        // NVIDIA's Nemotron Unified, a cache-aware streaming RNN-T, 8-bit. A quarter of
-        // Voxtral's weights, which is what matters on an 8 or 16 GB Mac where the speech
-        // model and the polish model compete for memory. It is less accurate than Voxtral;
-        // NVIDIA's card reports 6.27 English WER at 320 ms, against 7.97 for Nemotron 3.5.
+        // NVIDIA's Nemotron Unified, a streaming RNN-T, 8-bit. It streams buffered: each
+        // step re-encodes 5.6 s of left context, not cached state. A quarter of Voxtral's
+        // weights, which is what matters on an 8 or 16 GB Mac where the speech model and
+        // the polish model compete for memory. NVIDIA's card reports 6.27 English WER at
+        // 320 ms, against 7.97 for Nemotron 3.5.
         //
         // LICENCE: OpenMDW 1.1. The app downloads the weights at runtime and never
         // bundles them.
