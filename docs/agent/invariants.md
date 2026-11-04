@@ -881,14 +881,20 @@ there is not.
     #1601): one opencode TUI hosts several sessions in a pane, and the pane
     alone cannot pick the one it shows.
     *The window, never by title:* herdr has no client introspection, so
-    `HerdrWindowLocator` takes the join's process-table evidence and wants
-    exactly one tty. For a local pane: the one live local herdr socket is the
-    pane's, the machine selection shows Local (a lone client once machines
-    are saved), and one tty runs a herdr client. For a remote pane: a tty
-    whose foreground ssh goes to exactly that enrolled host with a plain herdr
-    client of that socket's session and no competing herdr view, or the lone
-    herdr client whose selection names that host and session. Several
-    candidates read back none, even though clients of one server mirror it.
+    `HerdrWindowLocator` takes the join's process-table evidence and asks
+    whether the FOCUSED tty shows that herdr. For a local pane: the one live
+    local herdr socket is the pane's, the focused tty runs a whole-view herdr
+    client in its foreground (the join's `HerdrClientTTYProbe` test: an
+    attach or `--remote` client shows something else), and the machine
+    selection shows Local (a lone client once machines are saved). Several
+    windows on one local herdr with no machines saved all pass (LVX-99):
+    herdr keeps one focus per server, not per client (a client holds size,
+    theme and keys, no workspace, tab or pane; herdr `server/clients.rs`), so
+    each whole-view client shows the same focused pane. For a remote pane the
+    focused tty must be the ONE candidate: a tty whose foreground ssh goes to
+    exactly that enrolled host with a plain herdr client of that socket's
+    session and no competing herdr view, or the lone herdr client whose
+    selection names that host and session.
     Not reached: `ssh host` then a typed `herdr` (only the panel nonce could
     prove that window), argv an ssh wrapper hides, and a client showing
     another machine.
