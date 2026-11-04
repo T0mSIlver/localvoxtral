@@ -752,10 +752,10 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
             focusedDesktopSessionURL: { _ in
-                guard await reads.next() == 1 else { return "https://claude.ai/epitaxy/\(nextDesktopID)" }
+                guard await reads.next() == 1 else { return .address("https://claude.ai/epitaxy/\(nextDesktopID)") }
                 firstReadStarted.resolve()
                 _ = await releaseFirstRead.value(failAfter: 30)
-                return "https://claude.ai/epitaxy/\(cancelledDesktopID)"
+                return .address("https://claude.ai/epitaxy/\(cancelledDesktopID)")
             }
         )
 
@@ -1364,7 +1364,7 @@ final class DictationPipelineTests: XCTestCase {
             registry: registry,
             focusedTerminalTTY: { _ in nil },
             focusedBrowserTabURL: { _ in nil },
-            focusedDesktopSessionURL: { _ in "https://claude.ai/epitaxy/\(desktopID)" },
+            focusedDesktopSessionURL: { _ in .address("https://claude.ai/epitaxy/\(desktopID)") },
             focusedWindowID: { _ in nil }
         )
         let resolved = await resolver.resolve(
