@@ -12,8 +12,11 @@ final class RecordingConnectionFailurePresenter: ConnectionFailurePresenting {
     }
 
     private(set) var presented: [Failure] = []
+    /// Runs inside `present`, where a modal alert would block.
+    var onPresent: (@MainActor () -> Void)?
 
     func present(title: String, message: String, technicalDetails: String?, log: ConnectionFailureLog) {
         presented.append(Failure(title: title, message: message, technicalDetails: technicalDetails, log: log))
+        onPresent?()
     }
 }
