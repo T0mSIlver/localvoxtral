@@ -313,9 +313,12 @@ final class SpeakerTermSuggestionModel {
     }
 
     /// The button's action. The model owns the task so a dictation can stop it.
+    /// It hands the cadence its starting count like a background run: the
+    /// dictations saved while the model answers were not read (LVX-93).
     func start() {
         guard phase != .loading else { return }
-        task = Task { await suggest() }
+        let countAtStart = settings.termSuggestionDictationsSinceRun
+        task = Task { await suggest(countAtStart: countAtStart) }
     }
 
     /// A run nobody asked for (`TermSuggestionCadence`). Same request, same
@@ -448,14 +451,24 @@ final class SpeakerTermSuggestionModel {
 
     /// False when the list's cap swallowed any of them: the chips stay and
     /// the row says why, instead of vanishing as if they had been added.
+    /// Checked after the assignment too, whose merge with the saved list
+    /// drops this copy's addition when another copy filled the list
+    /// (LVX-93).
     private func add(_ terms: [String]) -> Bool {
         let updated = SpeakerTerms.sanitized(settings.polishSpeakerTerms + terms)
         let wanted = Set(terms.map(SpeakerTermSuggestions.key))
-        guard wanted.isSubset(of: Set(updated.map(SpeakerTermSuggestions.key))) else {
+        func allKept(_ list: [String]) -> Bool {
+            wanted.isSubset(of: Set(list.map(SpeakerTermSuggestions.key)))
+        }
+        guard allKept(updated) else {
             phase = .failed("Terms list is full.")
             return false
         }
         settings.polishSpeakerTerms = updated
+        guard allKept(settings.polishSpeakerTerms) else {
+            phase = .failed("Terms list is full.")
+            return false
+        }
         if case .failed = phase { phase = .idle }
         return true
     }

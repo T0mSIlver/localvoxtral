@@ -224,6 +224,21 @@ final class TermSuggestionCadenceTests: XCTestCase {
         XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
     }
 
+    /// LVX-93: the button's run did not read what was saved while the model
+    /// answered either.
+    func testDictationsSavedDuringAButtonRunStayCounted() async {
+        let fixture = makeFixture()
+        save(20, fixture)
+
+        fixture.model.start()
+        await fixture.service.requestArrived(count: 1)
+        save(5, fixture)
+        fixture.service.answer(.success("[]"))
+        await runFinished(count: 1)
+
+        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 5)
+    }
+
     /// A stopped run whose request fails late must not put the row of the
     /// run that replaced it back to idle: the next dictation would start a
     /// third request beside it.
@@ -242,12 +257,13 @@ final class TermSuggestionCadenceTests: XCTestCase {
         XCTAssertEqual(finished, [.stopped, .notRun])
         XCTAssertEqual(fixture.model.phase, .loading)
 
-        // The replacement read everything (it came from the button), and the
-        // late return of the stopped run took nothing from its bookkeeping.
+        // The replacement counts from its own start: the 3 saved while it
+        // ran stay counted (LVX-93), and the late return of the stopped run
+        // took nothing from its bookkeeping.
         save(3, fixture)
         fixture.service.answer(.success("[]"))
         await runFinished(count: 3)
-        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
+        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 3)
     }
 
     /// Stop means stop: the next saved dictation must not restart the run
