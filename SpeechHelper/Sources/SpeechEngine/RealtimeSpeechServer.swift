@@ -298,19 +298,23 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
                 guard !ctx.feed.isClosed else { return }  // nobody to answer
                 let session = self.ensureSession(ctx)
-                for batch in ctx.feed.flushRemainder() {
-                    let textBefore = session.text
-                    let stepTime = ContinuousClock().measure { session.step(batch) }
-                    Self.recordStep(ctx, stepTime, batch, producedText: session.text != textBefore)
-                }
-                self.reportGrownSteps(ctx)
-                // The remainder can be what crosses the limit (Nemotron then drops it).
-                // Check before finish(), which ends every Voxtral stream and would
-                // read as the model stopping early.
-                self.reportEarlyStopIfNeeded(session, connection, ctx)
-                session.finish()
-                let tail = ctx.deltas.emit(fullText: session.text)
-                if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }
+                let finished = FinalFlush.run(
+                    session: session,
+                    feed: ctx.feed,
+                    deltas: &ctx.deltas,
+                    send: { self.sendServer(connection, .transcriptDelta($0)) },
+                    didStep: { Self.recordStep(ctx, $1, $0, producedText: $2) },
+                    beforeFinish: {
+                        self.reportGrownSteps(ctx)
+                        // The remainder can be what crosses the limit (Nemotron then drops
+                        // it). Check before finish(), which ends every Voxtral stream and
+                        // would read as the model stopping early.
+                        self.reportEarlyStopIfNeeded(session, connection, ctx)
+                    }
+                )
+                // The client left mid-flush: `close` queued the session drop and cache
+                // clear behind this work, and nobody is left to answer.
+                guard finished else { return }
                 // Use the append-only emitted text (== sum of every delta), so the final
                 // payload can never contradict what was streamed on the wire.
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))

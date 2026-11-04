@@ -113,4 +113,18 @@ final class StreamingDeltaTests: XCTestCase {
         XCTAssertEqual(String(StreamingDelta.stablePrefix(of: "abc\u{FFFD}\u{FFFD}")), "abc")
         XCTAssertEqual(String(StreamingDelta.stablePrefix(of: "abc")), "abc")
     }
+
+    // A grapheme that grows (base + combining mark) is not a Character-wise prefix
+    // extension, but it is a scalar-wise one. It must not read as a rewrite (LVX-58).
+    func testGrowingIndicGraphemeStillEmitsTheRest() {
+        let r = replay(["क", "कि", "किता", "किताब"])
+        XCTAssertEqual(r.concatenated, "किताब")
+        XCTAssertEqual(r.rewrites, 0)
+    }
+
+    func testGrowingDecomposedAccentStillEmitsTheRest() {
+        let r = replay(["cafe", "cafe\u{301} et", "cafe\u{301} et la suite"])
+        XCTAssertEqual(r.concatenated, "cafe\u{301} et la suite")
+        XCTAssertEqual(r.rewrites, 0)
+    }
 }
