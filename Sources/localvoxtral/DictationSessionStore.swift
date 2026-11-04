@@ -404,6 +404,9 @@ final class DictationSessionStore {
                 attachments.diagnostics?.remove(deleted)
             }
             try attachments.sweepOrphans(context: context)
+            // The backups keep no dictation past the setting either, after a
+            // day's grace that spares the snapshot just taken (#1916).
+            attachments.backups?.expireDictations(startedBefore: cutoff)
             return deleted.count
         }
     }

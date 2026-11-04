@@ -224,6 +224,23 @@ final class SQLiteFile {
         try strings("PRAGMA table_info(\(table))", column: 1)
     }
 
+    /// Deletes the rows of `table` whose `column` is below `value`, with
+    /// `secure_delete` on so their text is overwritten, not left in free
+    /// pages. Returns how many rows it deleted.
+    @discardableResult
+    func deleteRows(of table: String, where column: String, isBelow value: Double) throws -> Int {
+        guard sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK else {
+            throw error(db, "secure_delete")
+        }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = "DELETE FROM \(table) WHERE \(column) < ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw error(db, sql) }
+        sqlite3_bind_double(statement, 1, value)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw error(db, sql) }
+        return Int(sqlite3_changes(db))
+    }
+
     func backup(to url: URL) throws {
         var destination: OpaquePointer?
         defer { sqlite3_close(destination) }

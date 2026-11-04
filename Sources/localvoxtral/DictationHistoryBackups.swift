@@ -11,7 +11,8 @@ import os
 /// dictation: a store that lost its rows must never rotate away the copy
 /// that still has them. Files it cannot parse are left alone. Delete All and
 /// Don't keep delete every snapshot when the user ticks "Also delete the
-/// backups" (#1574).
+/// backups" (#1574). A retention trim deletes the expired dictations from
+/// every snapshot too, so a backup never keeps one past the setting (#1916).
 struct DictationHistoryBackups: Sendable {
     enum Reason: String, Sendable {
         case daily
@@ -128,6 +129,60 @@ struct DictationHistoryBackups: Sendable {
                     "History: could not rotate \(snapshot.url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
             }
+        }
+    }
+
+    /// The column of `DictationSessionRecord.startedAt`; Core Data stores a
+    /// date as seconds since 2001.
+    static let startedAtColumn = "ZSTARTEDAT"
+
+    /// How long a snapshot keeps the dictations a retention trim deleted:
+    /// a day to undo a trim that went wrong (a clock off, a shorter
+    /// retention chosen by mistake), then they go from the copies too.
+    static let expiryGrace: TimeInterval = 86_400
+
+    /// Deletes the dictations that started before `cutoff` from every
+    /// snapshot older than `expiryGrace`, as the retention trim did from the
+    /// store: retention is a privacy setting, and a copy must not outlive it
+    /// by more than a day (#1916). A snapshot left holding none is deleted.
+    /// One that cannot be edited is deleted only when it was taken before
+    /// the cutoff, so every row it holds has expired; otherwise it is kept,
+    /// and the failure logged.
+    func expireDictations(startedBefore cutoff: Date) {
+        var expired = 0
+        var removed = 0
+        let graceStart = now().addingTimeInterval(-Self.expiryGrace)
+        for snapshot in snapshots() where snapshot.dictations > 0 && snapshot.takenAt < graceStart {
+            do {
+                let file = try SQLiteFile(readWrite: snapshot.url)
+                let deleted = try file.deleteRows(
+                    of: DictationHistoryStoreFile.entityTable, where: Self.startedAtColumn,
+                    isBelow: cutoff.timeIntervalSinceReferenceDate)
+                guard deleted > 0 else { continue }
+                expired += deleted
+                let left = try file.rowCount(of: DictationHistoryStoreFile.entityTable)
+                if left == 0 {
+                    Self.removeFiles(at: snapshot.url)
+                    removed += 1
+                } else {
+                    let renamed = directoryURL.appendingPathComponent(
+                        Self.fileName(takenAt: snapshot.takenAt, reason: snapshot.reason, dictations: left))
+                    try FileManager.default.moveItem(at: snapshot.url, to: renamed)
+                }
+            } catch {
+                Log.persistence.error(
+                    "History: could not expire dictations in \(snapshot.url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                if snapshot.takenAt < cutoff {
+                    Self.removeFiles(at: snapshot.url)
+                    removed += 1
+                }
+            }
+        }
+        if expired > 0 || removed > 0 {
+            Log.persistence.info(
+                "History: expired \(expired, privacy: .public) dictation(s) from the snapshots; deleted \(removed, privacy: .public) snapshot(s)"
+            )
         }
     }
 
