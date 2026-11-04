@@ -1117,6 +1117,53 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted on the way out")
     }
 
+    /// The same quit while one of the app's own Cmd+V pastes awaits its
+    /// restore: no restore runs after the quit, so the copy is written at
+    /// once, not held behind it (LVX-54).
+    func testWithHistoryOffAQuitDuringAPendingPasteCopiesTheTextAtOnce() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
+
+        // A fenced text pasted into Claude Desktop by Cmd+V; its restore
+        // sleeps on a clock nobody advances.
+        let insertion = pipeline.viewModel.textInsertion
+        insertion.pasteRestoreSleep = ManualSessionClock().sleep
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+        }
+        insertion.debugSetAccessibilityTrusted(true)
+        var pastes = 0
+        insertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: { true },
+            commandVPaster: { _ in pastes += 1; return true }
+        )
+        XCTAssertTrue(insertion.insertTextPrioritizingKeyboard("see:\n```\nline\n```").isSuccess)
+        XCTAssertEqual(pastes, 1, "precondition: a paste awaits its restore")
+
+        // What `applicationWillTerminate` runs before it drains History.
+        pipeline.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(
+            copied.values.map { $0.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece],
+            "the copy waited for a restore that never runs after a quit")
+    }
+
     /// Quit after the stop, before the final transcript arrives: the text
     /// received so far reaches the History write queue, with its audio, as
     /// not inserted (#1296).

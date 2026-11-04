@@ -38,6 +38,33 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(copiedTexts, ["next sentence"])
     }
 
+    /// A failed commit's copy also waits for a paste still pending from an
+    /// earlier commit, or that paste would read this commit's text (LVX-97).
+    func testAFailedCommitsCopyWaitsForAnEarlierPendingPaste() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        var copiedTexts: [String] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: MockOverlayAnchorResolver(),
+            copyToPasteboard: { copiedTexts.append($0); return true }
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.pasteIsPending = true  // commit A's Cmd+V awaits its restore
+        committer.insertResult = .failed
+        committer.pasteResult = false
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "second commit", commitBufferText: "second commit")
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: true)
+
+        guard case .failed = outcome else { return XCTFail("expected a failed commit, got \(outcome)") }
+        XCTAssertEqual(copiedTexts, [], "the clipboard still holds the earlier paste's text")
+
+        committer.settlePastes()
+        XCTAssertEqual(copiedTexts, ["second commit"])
+    }
+
     // MARK: - Secure Keyboard Entry at commit time (#89)
 
     func testCommitUnderSecureInputSkipsInsertionAndCopiesToClipboard() {
