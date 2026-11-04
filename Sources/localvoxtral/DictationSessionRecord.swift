@@ -1,12 +1,6 @@
 import Foundation
 import SwiftData
 
-enum DictationSessionStatus: String, Codable, Sendable {
-    case sttCompleted = "stt_completed"
-    case completed = "completed"
-    case llmFailed = "llm_failed"
-}
-
 @Model
 final class DictationSessionRecord {
     var id: UUID
@@ -48,7 +42,7 @@ final class DictationSessionRecord {
     var quickCaptureDestination: String?
 
     /// `outputMode` of a quick capture, which is never inserted anywhere.
-    static let quickCaptureOutputMode = "quickCapture"
+    static let quickCaptureOutputMode = DictationHistoryEntry.quickCaptureOutputMode
 
     /// Whether the user erased the insertion within seconds of it
     /// (`EditSignalOutcome`: `edited`, `clean`, `superseded`), copied from the

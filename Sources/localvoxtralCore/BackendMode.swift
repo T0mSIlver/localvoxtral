@@ -1,6 +1,6 @@
 import Foundation
 
-enum BackendMode: String, CaseIterable, Identifiable {
+package enum BackendMode: String, CaseIterable, Identifiable {
     case managedLocal = "managed_local"
     case externalURL = "external_url"
     /// Mistral's hosted API: the realtime transcription socket for dictation
@@ -11,9 +11,9 @@ enum BackendMode: String, CaseIterable, Identifiable {
     /// speech-to-text, so the dictation picker never offers it.
     case anthropicAPI = "anthropic_api"
 
-    var id: String { rawValue }
+    package var id: String { rawValue }
 
-    var displayName: String {
+    package var displayName: String {
         switch self {
         case .managedLocal:
             return "Managed local"
@@ -27,11 +27,11 @@ enum BackendMode: String, CaseIterable, Identifiable {
     }
 
     /// The modes each picker offers, in picker order.
-    static let dictationModes: [BackendMode] = [.managedLocal, .externalURL, .mistralAPI]
-    static let polishingModes: [BackendMode] = allCases
+    package static let dictationModes: [BackendMode] = [.managedLocal, .externalURL, .mistralAPI]
+    package static let polishingModes: [BackendMode] = allCases
 
     /// Whether this mode runs on a bundled helper this app supervises. The
     /// engine lifecycle (warmup, shutdown, readiness) keys off this rather
     /// than off `.externalURL`, so every hosted mode behaves the same way.
-    var isManaged: Bool { self == .managedLocal }
+    package var isManaged: Bool { self == .managedLocal }
 }
