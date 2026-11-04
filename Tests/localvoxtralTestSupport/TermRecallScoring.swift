@@ -1,4 +1,5 @@
 import Foundation
+import localvoxtralCore
 
 /// The term-recall set's case file (`EvalRecordings/term-recall/cases.json`,
 /// written by `scripts/harvest-term-recall-cases.py`). Private: the cases come
@@ -55,6 +56,13 @@ package struct TermRecallCaseScore: Codable, Equatable, Sendable {
         /// What the hypothesis has where a missed term was, when the words
         /// around it line up. A diagnostic, not a metric.
         package var heard: String?
+
+        package init(term: String, expected: Int, recalled: Int, heard: String? = nil) {
+            self.term = term
+            self.expected = expected
+            self.recalled = recalled
+            self.heard = heard
+        }
     }
 
     package enum ListKind: String, Codable, Sendable {
@@ -66,6 +74,12 @@ package struct TermRecallCaseScore: Codable, Equatable, Sendable {
         package var term: String
         package var list: ListKind
         package var count: Int
+
+        package init(term: String, list: ListKind, count: Int) {
+            self.term = term
+            self.list = list
+            self.count = count
+        }
     }
 
     package var id: String

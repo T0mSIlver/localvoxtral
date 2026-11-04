@@ -509,7 +509,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// work, with no dictation in it (#1027).
     package static let agentActivityListedDays = 30
 
-    /// The checkouts, most recent first (#891; `listedProjects` groups them
+    /// The checkouts, most recent first (#891; `ListedProjects.projects` groups them
     /// by repository, #971). A local main
     /// checkout; a remote project a hook named as a repository, or whose
     /// host sent its README in the last 90 days (only a 1.17.0 shim does,

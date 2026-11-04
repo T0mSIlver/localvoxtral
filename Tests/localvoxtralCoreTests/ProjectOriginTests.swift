@@ -52,7 +52,7 @@ final class ProjectOriginTests: XCTestCase {
         XCTAssertEqual(projects.map(\.key), ["/w/quill", "remote:ink"])
         XCTAssertEqual(projects[0].keys, ["/w/quill", "remote:quill"])
         XCTAssertEqual(projects[0].terms, ["Kern", "Glyph"], "one spelling once")
-        XCTAssertEqual(learned.listedProjects(now: now).count, 3)
+        XCTAssertEqual(learned.listedCheckouts(now: now).count, 3)
 
         // The Mac's checkout is gone: the host's leads.
         let moved = ListedProjects.projects(from: learned, now: now, checkoutExists: { _ in false })
