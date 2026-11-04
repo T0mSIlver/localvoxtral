@@ -41,8 +41,8 @@ let package = Package(
         // (quantized-tied-embedding loader, required by the catalog's -qhead model,
         // SpeechModelCatalog) and the Nemotron streaming session the second entry loads.
         .package(
-            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+            url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+            revision: "f3485bbcacd6b10dc7e9eb313c6d126ca906e40f"
         ),
     ],
     targets: [

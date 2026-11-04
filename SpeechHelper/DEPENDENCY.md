@@ -1,3 +1,5 @@
+> **Measurement pin, DO NOT MERGE.** `mlx-audio-swift` is pinned to the owner's fork (`T0mSIlver/mlx-audio-swift`, branch `bench/nemotron-term-boost-on-902920c`: upstream 902920c plus Nemotron term boost). It relands on an upstream pin once the boost merges upstream (LVX-2).
+
 # Dependency: mlx-audio-swift streaming ASR
 
 `SpeechEngine` drives [`Blaizzy/mlx-audio-swift`](https://github.com/Blaizzy/mlx-audio-swift)'s
