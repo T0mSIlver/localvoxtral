@@ -619,9 +619,11 @@ final class DictationSessionController {
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// The opt-in raw-delta log (`SettingsStore.debugLogRealtimeDeltas`).
     @ObservationIgnored
     var realtimeDeltaLog = RealtimeDeltaLog()
+    #endif
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
@@ -1161,7 +1163,9 @@ final class DictationSessionController {
     /// enabled per session by the presence of the `insertion_scalar_trace`
     /// marker file in the shared config folder (same gate pattern as the
     /// eval-llm marker). Called at each dictation session start.
+    /// Debug and harness builds only: the trace is dictated text (LVX-80).
     func refreshInsertionScalarTracingForSession() {
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         let markerURL = appConfigStore.configDirectoryURL()
             .appendingPathComponent("insertion_scalar_trace", isDirectory: false)
         let enabled = FileManager.default.fileExists(atPath: markerURL.path)
@@ -1169,6 +1173,7 @@ final class DictationSessionController {
             Log.insertion.notice("scalar-trace enabled for this session (marker file present)")
         }
         textInsertion.isScalarTracingEnabled = enabled
+        #endif
     }
 
     func captureSessionTargetVerdict() {

@@ -112,13 +112,17 @@ final class SettingsStore {
         /// as a JSON array of `UserTerminalApp`. Seeded from the legacy
         /// `terminal_apps.toml` once at startup (`UserTerminalAppsMigrator`).
         static let userTerminalApps = "settings.user_terminal_apps"
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
         /// diagnosing issue #13 (mid-word punctuation in Live Auto-Paste).
         /// Note the `debug.` prefix (not `settings.`): this is not a
         /// user-facing preference and must never surface in the settings UI.
+        /// Debug and harness builds only: it logs dictated text in cleartext,
+        /// so a release build has neither the key nor the log (LVX-80).
         static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
+        #endif
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         /// The runtime half of the control-socket gate, kept SEPARATE from the
         /// capture one: writing records and opening a socket that can start
@@ -835,9 +839,12 @@ final class SettingsStore {
     /// enable it for a capture you intend to share; leave it off otherwise.
     /// There is no UI for this setting — it is toggled via `defaults`:
     ///   `defaults write com.localvoxtral.app debug.log_realtime_deltas -bool true`
+    /// A release build compiles none of it, and ignores the key if set.
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     var debugLogRealtimeDeltas: Bool {
         didSet { defaults.set(debugLogRealtimeDeltas, forKey: Keys.debugLogRealtimeDeltas) }
     }
+    #endif
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// Whether this instrumented build opens its local control socket
@@ -1262,8 +1269,10 @@ final class SettingsStore {
         userTerminalApps = Self.loadUserTerminalApps(from: defaults)
         polishContextTrustedEndpointEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
+        #endif
         diagnosticRecordsEnabled = Self.loadBool(
             defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
