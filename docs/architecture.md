@@ -95,8 +95,7 @@ AppKit:
 - the Projects pane's data (`Projects/`, #939): the listed projects
   (`ListedProjects`), the pane's rows (`ProjectsPane`), the read of a
   checkout's `origin` (`ProjectOriginLinker`) and what a host's hooks report
-  about its projects (`RemoteProjectReports`); and `RealtimeFileTranscriber`,
-  which streams a recorded file through a realtime client
+  about its projects (`RemoteProjectReports`)
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through

@@ -606,6 +606,69 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(homeEntries, [".claude", "work"], "nothing was written into the home")
     }
 
+    /// An upgrade over what quick capture, voice memos and Jev left behind: its
+    /// settings keys, `quick-captures.json`, `voice-memos.json`, a learned-term
+    /// file with Inbox fields and ledger lines of the removed features. Startup
+    /// opens every store, none of the old files is read, rewritten or deleted,
+    /// and what the Projects pane lists is still there.
+    func testRuntimeServicesOverQuickCaptureLeftoversLaunchAndLeaveThemAlone() async throws {
+        let dependencies = makeRuntimeDependencies()
+        let dataDirectory = try XCTUnwrap(dependencies.dataDirectory)
+        let quickCaptures = Data(
+            #"{"version":3,"items":[{"id":"6D6A2B1E-0000-4000-8000-000000000001","capturedAt":"2026-10-18T09:00:00Z","text":"file an issue about the ledger","state":"ready","title":"Ledger","body":"","relation":"new"}]}"#
+                .utf8)
+        let voiceMemos = Data(#"{"version":1,"memos":[{"name":"Memo 1.m4a","state":"done"}]}"#.utf8)
+        let ledgerLines = Data(
+            """
+            {"backend":"jev","date":"2026-10-18T09:00:00Z","feature":"quickCaptureRouting","model":"jev-latest"}
+            {"backend":"claudeCode","date":"2026-10-18T09:01:00Z","feature":"quickCaptureDrafting","model":"sonnet"}
+
+            """.utf8)
+        let learned = Data(
+            #"{"version":1,"projects":[{"key":"repo:github.com/acme/ledger","name":"ledger","lastSeen":"2026-10-21T09:00:00Z","terms":[{"term":"Ledgerd","sources":["screen"],"dictations":4,"firstSeen":"2026-10-01T09:00:00Z","lastSeen":"2026-10-20T09:00:00Z","pinned":true}],"repository":"acme/ledger","addedFromInbox":true,"filesUpstream":true,"github":{"description":null,"topics":[],"parent":null}}]}"#
+                .utf8)
+        let quickCapturesURL = dataDirectory.appendingPathComponent("quick-captures.json")
+        let voiceMemosURL = dataDirectory.appendingPathComponent("voice-memos.json")
+        try quickCaptures.write(to: quickCapturesURL)
+        try voiceMemos.write(to: voiceMemosURL)
+        try ledgerLines.write(to: UsageLedger.defaultFileURL(in: dataDirectory))
+        try learned.write(to: LearnedTermStore.defaultFileURL(in: dataDirectory))
+
+        let defaults = makeSettingsDefaults()
+        for (key, value) in RemovedFeatureUpgradeTests.quickCaptureKeys { defaults.set(value, forKey: key) }
+        let settings = makeSettings(defaults: defaults)
+        settings.dictationBackendMode = .externalURL
+        settings.polishingBackendMode = .externalURL
+        settings.dictationOutputMode = .overlayBuffer
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            backendManager: FakeManagedBackendManager(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: true,
+            suppressStartupPermissionPrompts: true,
+            dependencies: dependencies
+        )
+        retainForTestProcessLifetime(viewModel)
+        addTeardownBlock { @MainActor in viewModel.shortcuts.unregister() }
+
+        XCTAssertNotNil(viewModel.sessionStore, "History opened")
+        XCTAssertNil(viewModel.historyOpenFailure)
+        XCTAssertFalse((viewModel.lastError ?? "").contains("Quick capture"), "no removed shortcut asked for a key")
+        let store = try XCTUnwrap(viewModel.learnedTermStore)
+        let snapshot = await store.loadedSnapshot()
+        XCTAssertNil(store.problem, "the Inbox fields decode")
+        let project = try XCTUnwrap(snapshot.projects.first { $0.key == "repo:github.com/acme/ledger" })
+        XCTAssertEqual(project.addedFromInbox, true)
+        XCTAssertEqual(project.terms.map(\.term), ["Ledgerd"])
+        XCTAssertEqual(try Data(contentsOf: quickCapturesURL), quickCaptures, "quick-captures.json is untouched")
+        XCTAssertEqual(try Data(contentsOf: voiceMemosURL), voiceMemos, "voice-memos.json is untouched")
+        XCTAssertEqual(
+            UsageLedger.entries(fromFileContents: try Data(contentsOf: UsageLedger.defaultFileURL(in: dataDirectory)))
+                .map(\.backend),
+            [.jev, .claudeCode], "the removed features' ledger lines still decode")
+    }
+
     // MARK: - Prompt-cache warmup hook (#489)
 
     /// The prompt-cache warmup checks the cached start on every dictation

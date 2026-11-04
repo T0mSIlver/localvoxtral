@@ -1,12 +1,14 @@
 import Foundation
 import Synchronization
+import localvoxtralCore
 
 /// Recorded audio through a streaming realtime socket, as fast as the backend
-/// takes it (#925). Every chunk is queued at once and then one final commit,
+/// takes it (#925). Only tests and the live lanes' warm-up use it: voice memos,
+/// its one app caller, are gone. Every chunk is queued at once and then one final commit,
 /// so the bundled helper batches the backlog into larger steps and finishes
 /// well ahead of real time. No batch model is involved.
 ///
-/// A memo longer than a vLLM server's context goes through one fresh session
+/// A recording longer than a vLLM server's context goes through one fresh session
 /// per segment, cut at the quietest stretch before the limit (#1148). The
 /// client's own rollover is no use here: it reads pauses off live text, and a
 /// memo's queued backlog would outlast its wait for the retiring `done`.
@@ -48,7 +50,7 @@ package struct RealtimeFileTranscriber: Sendable {
         let segments = Self.segments(ofPCM16: pcm16, budget: contextBudget)
         if segments.count > 1 {
             Log.backends.notice(
-                "voice memo: \(pcm16.count / AudioChunkBuffer.bytesPerSecond, privacy: .public)s of audio in \(segments.count, privacy: .public) sessions under max_model_len \(contextBudget?.maxModelLen ?? 0, privacy: .public)"
+                "recorded file: \(pcm16.count / AudioChunkBuffer.bytesPerSecond, privacy: .public)s of audio in \(segments.count, privacy: .public) sessions under max_model_len \(contextBudget?.maxModelLen ?? 0, privacy: .public)"
             )
         }
         var texts: [String] = []

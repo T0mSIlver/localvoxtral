@@ -848,7 +848,7 @@ four times, each with its own script on stdin:
    `~/.local/bin` added), the installed hooks version, and
    `~/.vibe/hooks.toml` (base64, at most 256 KiB) with its cksum.
 2. Write `~/.vibe/localvoxtral/remote/` at mode 0700 with post.sh, terms.sh,
-   capture.sh, compact.py and port (0600). Put a marked block of two hooks
+   repository.sh, compact.py and port (0600). Put a marked block of two hooks
    tables into `~/.vibe/hooks.toml`.
 
    This Mac computes the new hooks.toml text by the same rules as the local
