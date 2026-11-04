@@ -187,5 +187,14 @@ if grep -q 'runs live inference' "$TMP_DIR/stderr"; then
   fail "an opted-in integration was refused"
 fi
 
+# LVX-36: the Apple engine's options are refused for a speech service, and
+# a bad value is refused, both before any sync.
+new_transport_log
+run_remote_build 'bias without apple' 1 eval-term-recall --asr nemotron --bias session
+assert_stderr_has 'need --asr apple'
+run_remote_build 'unknown pace' 1 eval-term-recall --asr apple --pace slow
+assert_stderr_has '--pace realtime|fast'
+assert_no_transport 'a refused apple option'
+
 printf 'PASS: remote-build refuses gate-blocked arguments before the tree sync\n'
 printf 'PASS: the full suite and the live lanes need LV_ALLOW_HEAVY_MAC_RUN=1\n'
