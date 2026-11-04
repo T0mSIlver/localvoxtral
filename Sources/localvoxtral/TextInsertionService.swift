@@ -258,6 +258,17 @@ final class TextInsertionService {
         clipboardWriteAfterPastes = write
     }
 
+    /// Quit: the process exits before any paste's restore runs, so a write
+    /// held for one would never happen. A held write runs, then `write`,
+    /// both now; the pastes stay pending (LVX-54).
+    func writeClipboardNowForQuit(_ write: @escaping @MainActor () -> Void) {
+        if let held = clipboardWriteAfterPastes {
+            clipboardWriteAfterPastes = nil
+            held()
+        }
+        write()
+    }
+
     /// True while text is pending behind a paste whose clipboard the
     /// target may still read: the restore will flush it.
     var pendingTextWaitsOnPaste: Bool {

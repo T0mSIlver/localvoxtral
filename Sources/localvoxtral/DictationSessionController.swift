@@ -1136,8 +1136,10 @@ final class DictationSessionController {
     /// record holds words already typed, so only the words its stop had
     /// not typed yet are copied (#1882).
     ///
+    /// `atQuit` copies now, not after a pending paste's restore (LVX-54).
+    ///
     /// - Returns: whether the text went on the clipboard.
-    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+    func keepUntypedDictation(atQuit: Bool = false, savedBy save: () -> Void) -> Bool {
         let generation = lastDictationGeneration
         save()
         guard lastDictationGeneration != generation, !lastDictationIsInHistory else { return false }
@@ -1146,7 +1148,7 @@ final class DictationSessionController {
             : lastDictation?.textToCopy ?? ""
         guard !text.isEmpty else { return false }
         Log.dictation.notice("text not inserted and History is off; text copied")
-        _ = copyUntypedText(text)
+        _ = copyUntypedText(text, atQuit: atQuit)
         return true
     }
 
