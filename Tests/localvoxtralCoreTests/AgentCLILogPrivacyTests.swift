@@ -79,7 +79,7 @@ final class AgentCLILogPrivacyTests: XCTestCase {
             #if os(macOS)
             <B>
             #endif
-            #else
+            #else // release
             <C>
             #endif
             <D>
@@ -291,7 +291,7 @@ final class AgentCLILogPrivacyTests: XCTestCase {
             let directive = line.trimmingCharacters(in: .whitespaces)
             if directive.hasPrefix("#if ") {
                 stack.append(debugOnly.contains(String(directive.dropFirst(4)).trimmingCharacters(in: .whitespaces)))
-            } else if directive.hasPrefix("#elseif") || directive == "#else" {
+            } else if directive.hasPrefix("#else") {  // `#elseif` too, and a trailing comment
                 if !stack.isEmpty { stack[stack.count - 1] = false }
             } else if directive.hasPrefix("#endif") {
                 _ = stack.popLast()
