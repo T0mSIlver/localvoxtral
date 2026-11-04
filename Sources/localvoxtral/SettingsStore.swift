@@ -504,7 +504,7 @@ final class SettingsStore {
     var polishSpeakerTerms: [String] {
         didSet {
             var terms = polishSpeakerTerms
-            if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
+            if let saved = savedList(Keys.polishSpeakerTerms, base: oldValue) {
                 // Capped and deduplicated as a launch reads it, or the next
                 // launch's shorter base takes the overflow for another copy's.
                 // At the cap, this copy's addition goes, not a saved term.
@@ -514,7 +514,7 @@ final class SettingsStore {
             }
             // Saved first: the assignment below re-enters this observer
             // (`@Observable`), which must find the merge already saved.
-            defaults.set(terms, forKey: Keys.polishSpeakerTerms)
+            saveList(terms, forKey: Keys.polishSpeakerTerms)
             if terms != polishSpeakerTerms { polishSpeakerTerms = terms }
             // A term the user adds by hand is no longer a refusal.
             let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
@@ -534,12 +534,12 @@ final class SettingsStore {
     var polishDismissedTermSuggestions: [String] {
         didSet {
             var dismissed = polishDismissedTermSuggestions
-            if let saved = defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) {
+            if let saved = savedList(Keys.polishDismissedTermSuggestions, base: oldValue) {
                 dismissed = Array(
                     ListSettingMerge.merge(base: oldValue, ours: dismissed, saved: saved)
                         .suffix(SpeakerTermSuggestions.maxDismissed))
             }
-            defaults.set(dismissed, forKey: Keys.polishDismissedTermSuggestions)
+            saveList(dismissed, forKey: Keys.polishDismissedTermSuggestions)
             if dismissed != polishDismissedTermSuggestions { polishDismissedTermSuggestions = dismissed }
         }
     }
@@ -615,6 +615,26 @@ final class SettingsStore {
     /// History is "Don't keep", whatever this says.
     var diagnosticRecordsEnabled: Bool {
         didSet { defaults.set(diagnosticRecordsEnabled, forKey: Keys.diagnosticRecordsEnabled) }
+    }
+
+    /// The values this copy saved for each merged list setting, newest last.
+    /// A read can lag this copy's own last write when the preferences daemon
+    /// is slow: a hosted run lost half of 401 refusals that way (LVX-102),
+    /// because the merge took each missing newest item for another copy's
+    /// removal. A saved value this copy wrote is not another copy's change.
+    @ObservationIgnored
+    private var listWrites: [String: [[String]]] = [:]
+
+    /// The saved list to merge with, nil when nothing is saved. A saved value
+    /// this copy wrote stands for `base`: no other copy changed anything.
+    private func savedList(_ key: String, base: [String]) -> [String]? {
+        guard let saved = defaults.stringArray(forKey: key) else { return nil }
+        return listWrites[key]?.contains(saved) == true ? base : saved
+    }
+
+    private func saveList(_ value: [String], forKey key: String) {
+        defaults.set(value, forKey: key)
+        listWrites[key] = Array(((listWrites[key] ?? []) + [value]).suffix(8))
     }
 
     func dismissTermSuggestion(_ term: String) {
