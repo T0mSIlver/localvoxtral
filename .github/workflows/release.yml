@@ -327,6 +327,13 @@ jobs:
               exit 0
             fi
             echo "::warning::swift package resolve failed or stalled (attempt $attempt of 3)"
+            # The supervisor appends its process dumps to the same log and
+            # echoes only the tail, which a timeout fills with sample's image
+            # list (run 41815723413). SwiftPM's own lines come first.
+            echo "SwiftPM's output, attempt $attempt:"
+            sed -n '/^=== supervisor/q;p' "$RUNNER_TEMP/localvoxtral-resolve-$attempt.log" \
+              | grep -v -E '^\[[0-9]+/[0-9]+\] Downloading' | tail -n 40
+            grep -E '^\[[0-9]+/[0-9]+\] Downloading' "$RUNNER_TEMP/localvoxtral-resolve-$attempt.log" | tail -n 1 || true
           done
           echo "::error::could not resolve packages in 3 attempts of 5 min; see the logs above"
           exit 1
