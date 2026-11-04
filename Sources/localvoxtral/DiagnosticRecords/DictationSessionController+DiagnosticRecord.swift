@@ -47,7 +47,6 @@ extension DictationSessionController {
         let inputs: DiagnosticRecordInputs
         let historyID: UUID
         let store: DiagnosticRecordStore
-        let started: ContinuousClock.Instant
         let watchToken: EditSignalWatcher.WatchToken?
     }
 
@@ -72,7 +71,6 @@ extension DictationSessionController {
         var inputs = inputs
         inputs.joinAbstentions = abstentions
         inputs.repoVocabularyHarvest = repoVocabularyHarvest
-        let started = ContinuousClock.now
 
         // BEFORE assembly, not after the write: the watch window measures from
         // the commit, and assembly re-derives every harvest off-actor. A user
@@ -100,7 +98,7 @@ extension DictationSessionController {
             watchToken = nil
         }
         return PendingDiagnosticRecord(
-            inputs: inputs, historyID: historyID, store: store, started: started, watchToken: watchToken)
+            inputs: inputs, historyID: historyID, store: store, watchToken: watchToken)
     }
 
     /// The awaited half: assembles and writes the record.
@@ -108,7 +106,7 @@ extension DictationSessionController {
         let inputs = pending.inputs
         let historyID = pending.historyID
         let store = pending.store
-        let started = pending.started
+        let started = ContinuousClock.now
         let watchToken = pending.watchToken
 
         // Assembly walks complete retained buffers (harvest re-derivation);
