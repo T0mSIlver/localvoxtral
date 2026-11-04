@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXAudioSTT
 import Network
+import os
 import SpeechEngineText
 import Synchronization
 
@@ -421,9 +422,15 @@ enum SpeechModelLoader {
         }
     }
 
+    /// On stderr and in the unified log beside the app's own Backends lines, so a field
+    /// report shows whether the lock held: an `mlock` refused by the sandbox or past
+    /// `vm.user_wire_limit` must not pass for "locking does nothing".
     private static func logWeightLock(_ report: WeightPageLock.Report) {
         FileHandle.standardError.write(Data((report.logLine + "\n").utf8))
+        backendsLog.notice("\(report.logLine, privacy: .public)")
     }
+
+    private static let backendsLog = Logger(subsystem: "com.localvoxtral", category: "Backends")
 
     /// The same three-way resolution for every engine: an explicit directory, the
     /// app-pinned revision already in the shared Hugging Face cache, or — development
