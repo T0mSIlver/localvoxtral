@@ -2133,6 +2133,50 @@ there is not.
     plugin predates 1.14.0) keeps the view ambiguous for up to 7 days rather
     than 4 h. Ambiguity abstains; it never joins the wrong
     session.
+  - A Claude Code session run by **T3 Code** (on this Mac, or on a machine T3
+    Code connects to) joins from T3 Code's FOCUSED THREAD COMPOSER
+    (`T3CodeAllowlist`, exactly `com.t3tools.t3code`, a fourth list disjoint
+    from the others; LVX-55). READ from T3 Code's source and bundle
+    (0.1.7-nightly.20261104), not yet measured over Accessibility on a Mac:
+    the desktop window loads `t3code://app/` (`ElectronProtocol.ts`,
+    `getDesktopUrl`) and routes in the fragment (TanStack hash history under
+    Electron), so a thread is `t3code://app/#/<environmentId>/<threadId>`;
+    the composer is the contenteditable classed `composer-tiptap`; and every
+    Claude Code session T3 Code runs carries the same `<threadId>` as
+    `T3CODE_THREAD_ID` (MEASURED on the dev box: a UUID, or
+    `mcp:launch:<64 hex>` for an agent-launched thread). Local publisher field
+    `t3_thread_id`, remote header `X-Lvx-Env-T3-Thread-Id` (remote plugin ≥
+    1.48.0). `AXT3CodeThreadURLReader` is the Desktop reader's walk with one
+    rule: the address of the NEAREST `AXWebArea` counts only when the walk
+    passed the composer class. Focus in T3's integrated terminal or the
+    sidebar refuses (`T3CodeFocusRefusal.outsideComposer`); its integrated
+    browser is a web area of its own whose http(s) address never parses.
+    `T3CodeThreadURL` takes only origin `t3code://app` (no port, no
+    userinfo, path empty or `/`), a fragment of exactly two route segments
+    (one trailing slash and a `?` search tolerated), each percent-decoded
+    once and charset-checked (`[A-Za-z0-9_:-]`, bounded), and refuses T3's
+    static first segments (`#/draft/<id>` is a draft, never a thread). The
+    environment id is not matched: the hooks do not know it, and thread ids
+    are allocated globally unique. Everything else is the Desktop arm's:
+    both origins join, exact equality with one fresh reporter
+    (`resolve(t3ThreadID:)`), no screen read and no window identity,
+    commit-time liveness re-resolves the bound id, the read happens only
+    under `claudeRepoContextEnabled` (gate `t3WithoutSessionContext`), and a
+    record reporting a thread id is an app-view record for the 7-day TTL and
+    the per-origin app-view quota (`ClaudeSessionSnapshot.reportsAppViewID`,
+    shared with Desktop ids). A joined thread gets the agent polish profile.
+    Children: every process in a thread inherits `T3CODE_THREAD_ID`, so the
+    remote shim sends it only when the hook's Claude is a direct child of
+    T3's server, `~/.t3/runtime/versions/<v>/t3` (MEASURED on Linux,
+    2026-11-04; Desktop's three-shell walk, shared as
+    `lvx_claude_parent_exe`); a T3 server run another way (npx under node)
+    sends no id and gets no join. The local publisher has no such check, as
+    for Desktop. The route, the class and the origin are UNDOCUMENTED: a T3
+    update that renames one stops the arm joining and the refusal says so.
+    Unmeasured: whether T3 shows a second thread's composer inside a panel of
+    the window whose address names another thread, which would make a focus
+    there join the address's thread; `localvoxtral --probe-surface --t3`
+    reads it on a Mac.
   - The overlay's join badge (`OverlayClaudeJoinBadge`) DESCRIBES the resolved
     join; it never resolves one. It reads `claudeSessionJoin` after the single
     start-time resolution and nothing else — a badge that asked again could name

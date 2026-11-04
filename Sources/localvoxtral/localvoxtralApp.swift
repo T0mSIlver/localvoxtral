@@ -777,6 +777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
             let desktopSessionReader = AXClaudeDesktopSessionURLReader()
+            let t3ThreadReader = AXT3CodeThreadURLReader()
             let herdrClient = HerdrSocketClient()
             // The cmux password is read from the Keychain lazily, per query, so
             // a user who never enables the arm is never prompted for keychain
@@ -790,6 +791,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 focusedDesktopSessionURL: {
                     await desktopSessionReader.focusedSessionURL(applicationPID: $0)
                 },
+                focusedT3ThreadURL: { await t3ThreadReader.focusedThreadURL(applicationPID: $0) },
                 focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)

@@ -217,6 +217,30 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         }
     }
 
+    /// The T3 Code thread id (`T3CODE_THREAD_ID`) this session last reported,
+    /// from whichever side reported it (LVX-55).
+    ///
+    /// Spans local and remote for the reason `desktopSessionID` does: T3 Code
+    /// allocates the id (a UUID, or `mcp:launch:<hex>`), and it names the
+    /// thread T3 Code's window shows, whichever machine runs the thread. The
+    /// origin still decides which field is read.
+    public var t3ThreadID: String? {
+        switch origin {
+        case .localAuthenticated:
+            return process?.t3ThreadID
+        case .remote:
+            return remoteSessionEnvironment?.t3ThreadID
+        }
+    }
+
+    /// Whether this session reports the id of an app view that shows it: a
+    /// Claude Desktop Code-tab view or a T3 Code thread. Such a view stays open
+    /// while the session sits idle between prompts, so the registry keeps
+    /// these records longer and counts them in their own quota (#657, #672).
+    public var reportsAppViewID: Bool {
+        desktopSessionID != nil || t3ThreadID != nil
+    }
+
     package init(
         sessionID: String,
         origin: ClaudeTransportOrigin,
