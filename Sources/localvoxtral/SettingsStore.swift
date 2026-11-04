@@ -548,7 +548,9 @@ final class SettingsStore {
     /// of the app or another. Reads only `defaults`, so a project-term run
     /// can call it off the main actor when its answer lands (LVX-90).
     var savedTermExclusions: @Sendable () -> [String] {
-        let defaults = defaults
+        // UserDefaults is thread-safe, but the hosted runner's SDK does not
+        // mark it Sendable (`AppDefaults`).
+        nonisolated(unsafe) let defaults = defaults
         return {
             (defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
                 + (defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? [])
