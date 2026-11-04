@@ -704,7 +704,8 @@ run_reap_command() {
 LV_GATE_PAYLOAD_PID=""
 LV_GATE_PAYLOAD_PGID=""
 LV_GATE_WATCHER_PID=""
-# Set by run_cd_command: where this payload's group is recorded for `reap`.
+# Set by run_cd_command: the work dir's record directory, where this
+# payload's group is recorded for `reap`.
 LV_GATE_PAYLOAD_RECORD=""
 
 # The ssh session this gate serves: the nearest sshd ancestor within three
@@ -765,37 +766,43 @@ process_start_time() {
   ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' || true
 }
 
+# One record per payload, `<records dir>/<pgid>`: unit-test shards run several
+# payloads in one work dir at once.
 record_payload_group() {
   [[ -n "$LV_GATE_PAYLOAD_RECORD" ]] || return 0
-  mkdir -p "$(dirname "$LV_GATE_PAYLOAD_RECORD")" 2>/dev/null || return 0
-  printf '%s %s\n' "$LV_GATE_PAYLOAD_PGID" "$(process_start_time "$LV_GATE_PAYLOAD_PGID")" \
-    >"$LV_GATE_PAYLOAD_RECORD" 2>/dev/null || true
+  mkdir -p "$LV_GATE_PAYLOAD_RECORD" 2>/dev/null || return 0
+  process_start_time "$LV_GATE_PAYLOAD_PGID" \
+    >"$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID" 2>/dev/null || true
 }
 
 forget_payload_group() {
-  [[ -n "$LV_GATE_PAYLOAD_RECORD" ]] || return 0
-  rm -f "$LV_GATE_PAYLOAD_RECORD"
+  [[ -n "$LV_GATE_PAYLOAD_RECORD" && -n "$LV_GATE_PAYLOAD_PGID" ]] || return 0
+  rm -f "$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID"
 }
 
 payload_record_path() {
   printf '%s/.lv-gate-payloads/%s\n' "$HOME" "$(basename "${1%/}")"
 }
 
-# For `reap`: ends the payload group recorded for this work dir if its leader
+# For `reap`: ends every payload group recorded for this work dir whose leader
 # is still the process that started it, as a gate whose client vanished
 # without the session ending would leave it.
 terminate_recorded_payload() {
-  local record pgid started
-  record="$(payload_record_path "$1")"
-  [[ -f "$record" ]] || return 0
-  read -r pgid started <"$record" || true
-  rm -f "$record"
-  [[ "$pgid" =~ ^[0-9]+$ ]] || return 0
-  [[ -n "$started" && "$(process_start_time "$pgid")" == "$started" ]] || return 0
-  printf 'reap: ending the abandoned payload group %s\n' "$pgid"
-  LV_GATE_PAYLOAD_PGID="$pgid"
-  LV_GATE_PAYLOAD_PID=""
-  terminate_payload_group
+  local records record pgid started
+  records="$(payload_record_path "$1")"
+  [[ -d "$records" ]] || return 0
+  for record in "$records"/*; do
+    [[ -f "$record" ]] || continue
+    pgid="${record##*/}"
+    IFS= read -r started <"$record" 2>/dev/null || started=""
+    rm -f "$record"
+    [[ "$pgid" =~ ^[0-9]+$ ]] || continue
+    [[ -n "$started" && "$(process_start_time "$pgid")" == "$started" ]] || continue
+    printf 'reap: ending the abandoned payload group %s\n' "$pgid"
+    LV_GATE_PAYLOAD_PGID="$pgid"
+    LV_GATE_PAYLOAD_PID=""
+    terminate_payload_group
+  done
 }
 
 payload_group_is_alive() {
@@ -856,7 +863,7 @@ run_payload_with_cleanup() {
 
   # Signal handlers exit with conventional shell statuses; EXIT owns the one
   # cleanup path. PIPE matters because stdout is `ssh | tee` on the client.
-  trap 'status=$?; trap - EXIT HUP INT TERM PIPE; stop_session_watcher; terminate_payload_group; forget_payload_group; exit "$status"' EXIT
+  trap 'status=$?; trap - EXIT HUP INT TERM PIPE; stop_session_watcher; forget_payload_group; terminate_payload_group; exit "$status"' EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -873,8 +880,8 @@ run_payload_with_cleanup() {
   # The leader can exit on SIGPIPE while an xctest grandchild remains in the
   # group. Always drain the group, even when the leader reported success.
   stop_session_watcher
-  terminate_payload_group
   forget_payload_group
+  terminate_payload_group
   trap - EXIT HUP INT TERM PIPE
   return "$status"
 }

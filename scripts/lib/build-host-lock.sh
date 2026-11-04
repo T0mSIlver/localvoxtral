@@ -36,22 +36,28 @@ lv_lock_holder() {
 
 # Removes the lock left by $1, a dead holder, under a short reclaim mutex: two
 # waiters that both found it dead recheck the line one at a time, so the second
-# sees the lock the first then took and leaves it.
+# sees the lock the first then took and leaves it. Succeeds only when it removed
+# the lock. A mutex whose holder is gone, or that never got a pid and is over a
+# minute old, is cleared for the next try.
 lv_lock_reclaim() {
-  local holder="$1" mutex="$LV_LOCK_DIR.reclaim" mutex_pid
+  local holder="$1" mutex="$LV_LOCK_DIR.reclaim" mutex_pid="" removed=1
   if ! mkdir "$mutex" 2>/dev/null; then
     IFS= read -r mutex_pid <"$mutex/pid" 2>/dev/null || mutex_pid=""
-    if [[ "$mutex_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$mutex_pid" 2>/dev/null; then
+    if [[ "$mutex_pid" =~ ^[0-9]+$ ]]; then
+      kill -0 "$mutex_pid" 2>/dev/null || rm -rf "$mutex"
+    elif [[ -n "$(find "$mutex" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; then
       rm -rf "$mutex"
     fi
-    return 0
+    return 1
   fi
   printf '%s\n' "$$" >"$mutex/pid"
   if [[ "$(lv_lock_holder)" == "$holder" ]]; then
     echo "==> Clearing the build host lock left by a remote-build.sh that is gone: $holder" >&2
     rm -rf "$LV_LOCK_DIR"
+    removed=0
   fi
   rm -rf "$mutex"
+  return "$removed"
 }
 
 # Whether the holder is a remote-build.sh on this machine whose process is gone.
@@ -96,8 +102,7 @@ lv_lock_acquire() {
       return 0
     fi
     holder="$(lv_lock_holder)"
-    if lv_lock_holder_is_dead "$holder"; then
-      lv_lock_reclaim "$holder"
+    if lv_lock_holder_is_dead "$holder" && lv_lock_reclaim "$holder"; then
       continue
     fi
     if [[ "$holder" != "$said_holder" ]] || (( said_at < 0 || SECONDS - said_at >= 300 )); then

@@ -124,11 +124,29 @@ echo "live-thread $(date -u +%Y-%m-%dT%H:%M:%SZ) package" >"$LOCK/owner"
   LV_LOCK_DIR="$LOCK"
   # shellcheck source=../lib/build-host-lock.sh
   . "$ROOT_DIR/scripts/lib/build-host-lock.sh"
-  lv_lock_reclaim "dead-thread 2026-01-01T00:00:00Z remote-build.sh test host=$(hostname) pid=1"
+  ! lv_lock_reclaim "dead-thread 2026-01-01T00:00:00Z remote-build.sh test host=$(hostname) pid=1"
 )
 [[ "$(cat "$LOCK/owner")" == live-thread* ]] || fail "a late reclaim removed the lock another run had just taken"
 [[ ! -e "$LOCK.reclaim" ]] || fail "the reclaim left its mutex behind"
 rm -r "$LOCK"
+
+# --- a reclaim mutex left without a pid does not make waiters spin -----------
+
+mkdir -p "$LOCK" "$LOCK.reclaim"
+dead_owner_line() {
+  sh -c 'exit 0' &
+  local dead=$!
+  wait "$dead"
+  echo "crashed $(date -u +%Y-%m-%dT%H:%M:%SZ) remote-build.sh test host=$(hostname) pid=$dead"
+}
+dead_owner_line >"$LOCK/owner"
+status=0
+env "${common_env[@]}" LV_LOCK_WAIT_SECONDS=2 "$REMOTE_BUILD" build >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" == 75 ]] || fail "a fresh ownerless reclaim mutex did not leave the run waiting (exit $status)"
+touch -t 202001010000 "$LOCK.reclaim"
+env "${common_env[@]}" "$REMOTE_BUILD" build >"$TMP_DIR/out" 2>&1 \
+  || fail "an old ownerless reclaim mutex was not cleared: $(cat "$TMP_DIR/out")"
+[[ ! -e "$LOCK" && ! -e "$LOCK.reclaim" ]] || fail "the cleared lock or its mutex is still there"
 
 # --- a lock left by a remote-build.sh that died is cleared -------------------
 

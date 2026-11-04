@@ -70,37 +70,42 @@ gate=$!
 spawned+=("$gate")
 wait_for_file "$TMP_DIR/payload.pid" "the payload never started"
 payload="$(cat "$TMP_DIR/payload.pid")"
-[[ -f "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" ]] || fail "the payload group was not recorded"
+[[ -n "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null)" ]] || fail "the payload group was not recorded"
 kill -KILL "$session"
 ends_soon "$payload" || fail "the payload outlived its session"
 status=0
 wait "$gate" || status=$?
 [[ "$status" == 129 ]] || fail "the gate exited $status when its session ended, not 129"
-[[ ! -e "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" ]] || fail "the gate left its payload record behind"
+[[ -z "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null)" ]] || fail "the gate left its payload record behind"
 rm -f "$TMP_DIR/payload.pid"
 
-# --- a session that never ended: reap ends the recorded group -----------------
+# --- sessions that never ended: reap ends every recorded group ---------------
 
-env "${gate_env[@]}" LOCALVOXTRAL_GATE_SESSION_PID="$$" \
-  SSH_ORIGINAL_COMMAND='cd work/localvoxtral-session-1 && swift build --build-system native' \
-  bash "$GATE" >/dev/null 2>&1 &
-gate=$!
-spawned+=("$gate")
-wait_for_file "$TMP_DIR/payload.pid" "the second payload never started"
-payload="$(cat "$TMP_DIR/payload.pid")"
+# Two payloads in one work dir at once, as the unit-test shards run.
+payloads=()
+for shard in 1 2; do
+  rm -f "$TMP_DIR/payload.pid"
+  env "${gate_env[@]}" LOCALVOXTRAL_GATE_SESSION_PID="$$" \
+    SSH_ORIGINAL_COMMAND='cd work/localvoxtral-session-1 && swift build --build-system native' \
+    bash "$GATE" >/dev/null 2>&1 &
+  spawned+=("$!")
+  wait_for_file "$TMP_DIR/payload.pid" "shard $shard never started"
+  payloads+=("$(cat "$TMP_DIR/payload.pid")")
+done
 reap_out="$(env "${gate_env[@]}" SSH_ORIGINAL_COMMAND='reap work/localvoxtral-session-1' bash "$GATE" 2>&1 || true)"
-grep -q 'reap: ending the abandoned payload group' <<<"$reap_out" \
-  || fail "reap did not end the recorded group: $reap_out"
-ends_soon "$payload" || fail "the payload outlived reap"
-wait "$gate" 2>/dev/null || true
+[[ "$(grep -c 'reap: ending the abandoned payload group' <<<"$reap_out")" == 2 ]] \
+  || fail "reap did not end both recorded groups: $reap_out"
+for payload in "${payloads[@]}"; do
+  ends_soon "$payload" || fail "a payload outlived reap"
+done
 rm -f "$TMP_DIR/payload.pid"
 
 # A stale record (its leader long gone) ends nothing and is dropped.
-mkdir -p "$FAKE_HOME/.lv-gate-payloads"
-echo "999999 Thu Jan  1 00:00:00 1970" >"$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1"
+mkdir -p "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1"
+echo "Thu Jan  1 00:00:00 1970" >"$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1/999999"
 reap_out="$(env "${gate_env[@]}" SSH_ORIGINAL_COMMAND='reap work/localvoxtral-session-1' bash "$GATE" 2>&1 || true)"
 ! grep -q 'ending the abandoned payload group' <<<"$reap_out" || fail "reap acted on a stale record"
-[[ ! -e "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" ]] || fail "reap kept a stale record"
+[[ ! -e "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1/999999" ]] || fail "reap kept a stale record"
 
 # --- remote-build.sh whose ssh client is killed mid-run -----------------------
 
