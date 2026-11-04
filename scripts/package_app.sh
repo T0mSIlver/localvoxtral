@@ -194,6 +194,11 @@ mkdir -p "$APP_DIR/Contents/Frameworks"
 ditto "$SPARKLE_FRAMEWORK" "$APP_DIR/Contents/Frameworks/Sparkle.framework"
 rm -rf "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
   "$APP_DIR/Contents/Frameworks/Sparkle.framework/XPCServices"
+# Sparkle's update window puts an em dash in "is now available, you have …";
+# the app's copy uses none. Rewritten here, on the embedded copy, before
+# signing.
+python3 "$ROOT_DIR/scripts/packaging/sparkle-strings-without-em-dash.py" \
+  "$APP_DIR/Contents/Frameworks/Sparkle.framework"
 
 HARNESS_EXPECT=absent
 [[ -n "$HARNESS_PLIST_ENTRY" ]] && HARNESS_EXPECT=present
