@@ -5,7 +5,7 @@ struct DictationShortcut: Equatable, Sendable {
     var carbonModifierFlags: UInt32
     /// Set for a modifier-only chord such as left Shift + right Shift (#831),
     /// which no Carbon hotkey can express; `keyCode` and the flags are then 0
-    /// and unused. Only the action slots (quick capture, answer, copy last
+    /// and unused. Only the action slots (answer, copy last
     /// dictation) take one.
     var modifierChord: ModifierChord? = nil
 

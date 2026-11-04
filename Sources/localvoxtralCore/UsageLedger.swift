@@ -27,6 +27,8 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         case termSuggestions
         /// A joined agent's run listing a new project's terms (#609, #641).
         case projectTerms
+        // The three below were recorded by quick capture, which was removed.
+        // They stay so a ledger written before decodes and still adds up.
         /// Picking a quick capture's project: Jev, or the chat fallback.
         case quickCaptureRouting
         /// An agent's run drafting a quick capture as an issue (#731, #745).
@@ -290,27 +292,6 @@ extension UsageEntry {
     }
 }
 
-extension QuickCaptureDraft {
-    /// Counts a drafting run that started, local or on a host, with the
-    /// usage it reported.
-    package static func recordUsage(
-        of outcome: Outcome,
-        agent: ProjectTermProposal.Agent,
-        date: Date,
-        to recorder: (any UsageRecording)?
-    ) {
-        guard let recorder else { return }
-        switch outcome {
-        case .draft(_, let usage):
-            recorder.record(.agentRun(date: date, feature: .quickCaptureDrafting, agent: agent, usage: usage))
-        case .failed(let failure) where failure.agentRan:
-            recorder.record(.agentRun(date: date, feature: .quickCaptureDrafting, agent: agent, usage: nil))
-        case .failed, .notRun:
-            break
-        }
-    }
-}
-
 extension ProjectTermProposal.Failure {
     /// The agent started, so the run may have spent: every failure but a
     /// binary that is missing or would not launch.
@@ -546,8 +527,8 @@ package struct MistralUsageSummary: Equatable, Sendable {
     package var audioSeconds: Double = 0
     package var polishCount = 0
     package var retranscriptionCount = 0
-    /// Mistral requests of the other features: term suggestions, the
-    /// quick-capture chat fallback.
+    /// Mistral requests of the other features: term suggestions and, in a
+    /// ledger written before quick capture was removed, its chat fallback.
     package var otherCount = 0
     /// Requests counted above whose cost is not in `costEUR`: a model with no
     /// price here, or a polish that timed out before Mistral said what it used.

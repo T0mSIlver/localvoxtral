@@ -5,38 +5,23 @@ import Synchronization
 import XCTest
 @testable import localvoxtralCore
 
-/// Bringing a herdr pane forward (#1012): herdr's one write, `pane.focus`,
-/// sent over a real `HerdrSocketClient` to a fake herdr, and the window found
-/// by the join's process-table evidence. `.focused`, the only outcome that
-/// lets a dictation start, needs both read-backs.
+/// Reading a herdr pane back (#1012): herdr's focused pane over a real
+/// `HerdrSocketClient` to a fake herdr, and the window found by the join's
+/// process-table evidence. The read-back, which lets a Return into the
+/// pane go, needs both.
 @MainActor
 final class HerdrSessionPaneFocuserTests: XCTestCase {
     private nonisolated static let epoch = Date(timeIntervalSince1970: 3_000_000)
     private let client = HerdrSocketClient(timeout: 2)
     private let ghostty = TerminalScreenAllowlist.ghosttyBundleID
 
-    /// A herdr that focuses what `pane.focus` names, as herdr 0.9 does,
-    /// unless `focusAnswer` overrides the answer.
+    /// A herdr whose focused pane is `focused`, running `foreground` (pid,
+    /// name) in its foreground. `localSession`'s agent is pid 2.
     private func herdr(
-        focused initial: String = "w1:p1",
-        focusAnswer: (@Sendable (String) -> FakeHerdrSocket.Answer)? = nil,
-        focusTakes: Bool = true
+        focused: String = "w1:p2",
+        foreground: @escaping @Sendable () -> [(pid: Int32, name: String)] = { [(2, "claude")] }
     ) throws -> FakeHerdrSocket {
-        let focused = Box(initial)
-        return try FakeHerdrSocket { request in
-            switch request.method {
-            case "pane.focus":
-                let pane = request.paneID ?? ""
-                if let focusAnswer { return focusAnswer(pane) }
-                if focusTakes { focused.set(pane) }
-                return .result(#"{"type":"pane_info","pane":{"pane_id":"\#(pane)","focused":true}}"#)
-            case "pane.current":
-                let pane = focused.get()
-                return .result(#"{"type":"pane_current","pane":{"pane_id":"\#(pane)","focused":true}}"#)
-            default:
-                return .error("unexpected")
-            }
-        }
+        try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane(focused, foreground: foreground))
     }
 
     private func localSession(paneID: String = "w1:p2", socket: String) -> ClaudeSessionSnapshot {
@@ -45,18 +30,6 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         )
         session.process = ClaudeHookProcessInfo(
             hookPID: 1, claudePID: 2, tty: "/dev/ttys-inner", herdrPaneID: paneID, herdrSocketPath: socket
-        )
-        return session
-    }
-
-    private func remoteSession(hostID: String = "h1") -> ClaudeSessionSnapshot {
-        var session = ClaudeSessionSnapshot(
-            sessionID: "remote:\(hostID):s1",
-            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: hostID)),
-            firstSeen: Self.epoch
-        )
-        session.remoteEnvironment = ClaudeRemoteSessionEnvironment(
-            herdrPaneID: "w2:p5", herdrSocketPath: "/home/tom/.config/herdr/herdr.sock"
         )
         return session
     }
@@ -76,242 +49,96 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         func set(_ newValue: Value) { value.withLock { $0 = newValue } }
     }
 
-    /// What the focuser did outside herdr.
-    private final class Raises: Sendable {
-        let ttys = Mutex<[String]>([])
-        let releases = Mutex(0)
-        let opened = Mutex<[HerdrPaneFocusTarget]>([])
-    }
-
     private func focuser(
         herdr: FakeHerdrSocket,
         window: String? = "/dev/ttys007",
-        raised: SessionPaneFocusOutcome? = nil,
-        raises: Raises = Raises(),
-        windowReadBack: String?? = .none,
+        windowReadBack: String? = "/dev/ttys007",
         paneSessionID: @escaping (HerdrPaneFocusTarget) -> String? = askedSessionID
     ) -> HerdrSessionPaneFocuser {
-        let bundleID = ghostty
-        return HerdrSessionPaneFocuser(
+        HerdrSessionPaneFocuser(
             windowTTY: { _ in window },
-            openSocket: { target in
-                raises.opened.withLock { $0.append(target) }
-                return HerdrFocusSocket(path: herdr.socketPath, release: { raises.releases.withLock { $0 += 1 } })
-            },
-            focuser: client,
+            openSocket: { _ in HerdrFocusSocket(path: herdr.socketPath) },
             panes: client,
-            raiseTTY: { tty, _ in
-                raises.ttys.withLock { $0.append(tty) }
-                return raised ?? .focused(bundleID: bundleID)
-            },
-            focusedTTY: { _ in windowReadBack ?? window },
+            focusedTTY: { _ in windowReadBack },
             paneSessionID: paneSessionID
         )
     }
 
-    func testAConfirmedFocusIsFocusedAndSendsOnlyTheFocusAndItsReadBack() async throws {
+    func testThePaneShowsTheSessionWhenHerdrTheWindowAndTheRegistryAgree() async throws {
         let herdr = try herdr()
         defer { herdr.stop() }
-        let raises = Raises()
         let session = localSession(socket: herdr.socketPath)
-        let focuser = focuser(herdr: herdr, raises: raises)
-
-        let outcome = await focuser.focusPane(of: session)
-
-        XCTAssertEqual(outcome, .focused(bundleID: ghostty))
-        XCTAssertEqual(herdr.requests.map(\.method), ["pane.focus", "pane.current"])
-        XCTAssertEqual(herdr.requests.first?.paneID, "w1:p2")
-        XCTAssertEqual(raises.ttys.withLock { $0 }, ["/dev/ttys007"], "the window the locator found")
-        let shows = await focuser.focusedPaneShows(session, bundleID: ghostty)
+        let shows = await focuser(herdr: herdr).focusedPaneShows(session, bundleID: ghostty)
         XCTAssertTrue(shows)
+        XCTAssertEqual(
+            herdr.requests.map(\.method), ["pane.current", "pane.process_info"],
+            "the read-back asks and writes nothing")
+    }
+
+    /// A suspended agent (Ctrl-Z) keeps its pane, tty and registry entry
+    /// while its shell owns the pane: a Return would run the dictated text
+    /// as a command (#1249).
+    func testAnAgentThatIsNotInThePanesForegroundIsNotShown() async throws {
+        let herdr = try herdr(foreground: { [(777, "zsh")] })
+        defer { herdr.stop() }
+        let shows = await focuser(herdr: herdr).focusedPaneShows(localSession(socket: herdr.socketPath), bundleID: ghostty)
+        XCTAssertFalse(shows)
+    }
+
+    /// A remote pid means nothing on this Mac, so a remote pane's agent is
+    /// found by its hook parent or its name. The registry keeps a remote
+    /// session live by TTL, so a suspended remote agent still reads back as
+    /// the pane's session otherwise.
+    func testARemoteAgentIsShownOnlyWhileItIsInThePanesForeground() async throws {
+        let foreground = Box<[(pid: Int32, name: String)]>([(4711, "claude")])
+        let herdr = try herdr(focused: "w2:p5", foreground: { foreground.get() })
+        defer { herdr.stop() }
+        let epoch = Self.epoch
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        let session = try XCTUnwrap(registry.ingest(
+            ClaudeHookRecord(event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/srv/app"),
+            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: "h1")),
+            environment: ClaudeRemoteSessionEnvironment(
+                herdrPaneID: "w2:p5", herdrSocketPath: remoteSocket, hookParentPID: "4711"
+            )
+        ))
+        let subject = focuser(herdr: herdr, paneSessionID: { _ in session.sessionID })
+        let inForeground = await subject.focusedPaneShows(session, bundleID: ghostty)
+        XCTAssertTrue(inForeground)
+        foreground.set([(900, "zsh")])
+        let atShell = await subject.focusedPaneShows(session, bundleID: ghostty)
+        XCTAssertFalse(atShell, "the pane is back at its shell")
+    }
+
+    func testAnotherPaneFocusedInHerdrIsNotShown() async throws {
+        let herdr = try herdr(focused: "w1:p9")
+        defer { herdr.stop() }
+        let shows = await focuser(herdr: herdr).focusedPaneShows(localSession(socket: herdr.socketPath), bundleID: ghostty)
+        XCTAssertFalse(shows)
     }
 
     /// One opencode TUI hosts sessions A and B in one herdr pane and shows B
-    /// (#1601). Focusing the pane for A reads back the pane and the window,
-    /// but dictation would join B.
-    func testAnotherOpencodeSessionShownInThePaneIsNotFocused() async throws {
+    /// (#1601): the pane and the window read back, but a dictation would
+    /// join B.
+    func testAnotherOpencodeSessionShownInThePaneIsNotShown() async throws {
         let herdr = try herdr()
         defer { herdr.stop() }
-        let registry = ClaudeSessionRegistry(now: { Self.epoch }, isProcessAlive: { _ in true })
-        let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
-        for id in ["ses_a", "ses_b"] {
-            registry.ingest(
-                ClaudeHookRecord(
-                    event: .sessionStart, agent: .opencode, sessionID: id, timestamp: 0, rawCwd: "/repo",
-                    process: ClaudeHookProcessInfo(
-                        hookPID: 4242, claudePID: 4242, herdrPaneID: "w1:p2", herdrSocketPath: herdr.socketPath
-                    )
-                ),
-                origin: local
-            )
-        }
-        registry.ingest(
-            ClaudeHookRecord(
-                event: .focusChanged, agent: .opencode, sessionID: "ses_b", timestamp: 0,
-                process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: 4242, tty: "/dev/ttys-inner")
-            ),
-            origin: local
-        )
-        let focuser = focuser(herdr: herdr, paneSessionID: { registry.sessionID(shownIn: $0) })
-        let queued = try XCTUnwrap(registry.snapshot(sessionID: "opencode:ses_a"))
-        let shown = try XCTUnwrap(registry.snapshot(sessionID: "opencode:ses_b"))
-
-        let queuedOutcome = await focuser.focusPane(of: queued)
-        let queuedShows = await focuser.focusedPaneShows(queued, bundleID: ghostty)
-        let shownOutcome = await focuser.focusPane(of: shown)
-
-        XCTAssertEqual(queuedOutcome, .unverified(bundleID: ghostty))
-        XCTAssertFalse(queuedShows)
-        XCTAssertEqual(shownOutcome, .focused(bundleID: ghostty))
+        let shows = await focuser(herdr: herdr, paneSessionID: { _ in "s2" })
+            .focusedPaneShows(localSession(socket: herdr.socketPath), bundleID: ghostty)
+        XCTAssertFalse(shows)
     }
 
-    /// herdr answered the focus, but its focused pane is still another one:
-    /// no dictation may start there.
-    func testAFocusHerdrDoesNotReadBackIsUnverified() async throws {
-        let herdr = try herdr(focusTakes: false)
-        defer { herdr.stop() }
-
-        let outcome = await focuser(herdr: herdr).focusPane(of: localSession(socket: herdr.socketPath))
-
-        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
-    }
-
-    /// The user switched the terminal to another tab while herdr was asked:
-    /// herdr still reports its pane, but keys would go to the other tab.
-    func testATabSwitchDuringTheHerdrReadBackIsUnverified() async throws {
-        let herdr = try herdr()
-        defer { herdr.stop() }
-
-        let outcome = await focuser(herdr: herdr, windowReadBack: "/dev/ttys008")
-            .focusPane(of: localSession(socket: herdr.socketPath))
-
-        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
-    }
-
-    /// A focuser whose window lookup and terminal read-back answer `first`
-    /// on their first call and `later` on every call after it: the client
-    /// switched machine, or the terminal switched tab, while herdr was asked.
-    private func focuser(
-        herdr: FakeHerdrSocket,
-        windowLater: String?,
-        readBackLater: String?
-    ) -> HerdrSessionPaneFocuser {
-        let bundleID = ghostty
-        let windowCalls = Box(0)
-        let readBackCalls = Box(0)
-        func answer(_ calls: Box<Int>, later: String?) -> String? {
-            let call = calls.get()
-            calls.set(call + 1)
-            return call == 0 ? "/dev/ttys007" : later
-        }
-        return HerdrSessionPaneFocuser(
-            windowTTY: { _ in answer(windowCalls, later: windowLater) },
-            openSocket: { _ in HerdrFocusSocket(path: herdr.socketPath, release: {}) },
-            focuser: client,
-            panes: client,
-            raiseTTY: { _, _ in .focused(bundleID: bundleID) },
-            focusedTTY: { _ in answer(readBackCalls, later: readBackLater) },
-            paneSessionID: Self.askedSessionID
-        )
-    }
-
-    /// The lone federated client switched to another machine while the
-    /// forward opened and herdr was asked: herdr still reports the pane on
-    /// the machine asked for, on a terminal tty that did not change, but the
-    /// window no longer shows that machine.
-    func testAMachineSwitchWhileHerdrIsAskedIsUnverified() async throws {
+    func testATabSwitchOrAWindowWithNoReadBackIsNotShown() async throws {
         let herdr = try herdr()
         defer { herdr.stop() }
         let session = localSession(socket: herdr.socketPath)
-
-        let outcome = await focuser(herdr: herdr, windowLater: nil, readBackLater: "/dev/ttys007")
-            .focusPane(of: session)
-        let shows = await focuser(herdr: herdr, windowLater: nil, readBackLater: "/dev/ttys007")
+        let switched = await focuser(herdr: herdr, windowReadBack: "/dev/ttys008")
             .focusedPaneShows(session, bundleID: ghostty)
-
-        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
-        XCTAssertFalse(shows)
-    }
-
-    /// The terminal switched tab while `pane.current` was pending: the
-    /// insertion check must not approve keys for the tab now in front.
-    func testATabSwitchDuringTheInsertionCheckDoesNotShowThePane() async throws {
-        let herdr = try herdr(focused: "w1:p2")
-        defer { herdr.stop() }
-
-        let shows = await focuser(herdr: herdr, windowLater: "/dev/ttys007", readBackLater: "/dev/ttys008")
-            .focusedPaneShows(localSession(socket: herdr.socketPath), bundleID: ghostty)
-
-        XCTAssertFalse(shows)
-    }
-
-    func testAWindowTheTerminalDoesNotReadBackIsUnverified() async throws {
-        let herdr = try herdr()
-        defer { herdr.stop() }
-
-        let outcome = await focuser(herdr: herdr, raised: .unverified(bundleID: ghostty))
-            .focusPane(of: localSession(socket: herdr.socketPath))
-
-        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
-    }
-
-    /// The window came forward but herdr refused: the window is in front
-    /// showing another pane, so callers must treat it as moved and not
-    /// confirmed.
-    func testARefusedFocusAfterTheRaiseIsUnverified() async throws {
-        let herdr = try herdr(focusAnswer: { _ in .error("pane_not_found") })
-        defer { herdr.stop() }
-        let raises = Raises()
-
-        let outcome = await focuser(herdr: herdr, raises: raises).focusPane(of: localSession(socket: herdr.socketPath))
-
-        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
-        XCTAssertEqual(raises.ttys.withLock { $0 }, ["/dev/ttys007"])
-        XCTAssertEqual(raises.releases.withLock { $0 }, 1, "the socket lease is released")
-    }
-
-    /// A window the terminal cannot raise (#1033): herdr must not have moved,
-    /// or the stop types into the pane it switched to while the caller
-    /// believes nothing changed.
-    func testAWindowThatDoesNotComeUpLeavesHerdrsPaneAlone() async throws {
-        for failed: SessionPaneFocusOutcome in [.paneNotFound, .unsupported(.herdr)] {
-            let herdr = try herdr(focused: "w1:p1")
-            defer { herdr.stop() }
-
-            let outcome = await focuser(herdr: herdr, raised: failed).focusPane(of: localSession(socket: herdr.socketPath))
-
-            XCTAssertEqual(outcome, failed)
-            XCTAssertEqual(herdr.requests.map(\.method), [], "herdr gets no pane.focus")
-        }
-    }
-
-    /// No single window shows that herdr: herdr is not asked at all, and the
-    /// user keeps today's sentence.
-    func testWithNoWindowHerdrIsNotAsked() async throws {
-        let herdr = try herdr()
-        defer { herdr.stop() }
-
-        let outcome = await focuser(herdr: herdr, window: nil).focusPane(of: localSession(socket: herdr.socketPath))
-
-        XCTAssertEqual(outcome, .unsupported(.herdr))
-        XCTAssertEqual(herdr.requests, [])
-    }
-
-    func testARemotePaneIsFocusedOverTheForwardForItsOwnHost() async throws {
-        let herdr = try herdr()
-        defer { herdr.stop() }
-        let raises = Raises()
-
-        let outcome = await focuser(herdr: herdr, raises: raises).focusPane(of: remoteSession())
-
-        XCTAssertEqual(outcome, .focused(bundleID: ghostty))
-        XCTAssertEqual(
-            raises.opened.withLock { $0 },
-            [.remote(hostID: "h1", paneID: "w2:p5", remoteSocketPath: "/home/tom/.config/herdr/herdr.sock")]
-        )
-        XCTAssertEqual(herdr.requests.first?.paneID, "w2:p5")
-        XCTAssertEqual(raises.ttys.withLock { $0 }, ["/dev/ttys007"])
-        XCTAssertEqual(raises.releases.withLock { $0 }, 1)
+        XCTAssertFalse(switched, "the terminal's front tab is another tty")
+        let unread = await focuser(herdr: herdr, windowReadBack: nil).focusedPaneShows(session, bundleID: ghostty)
+        XCTAssertFalse(unread)
+        let noWindow = await focuser(herdr: herdr, window: nil).focusedPaneShows(session, bundleID: ghostty)
+        XCTAssertFalse(noWindow, "no single terminal window shows that herdr")
     }
 
     // MARK: - Finding the window

@@ -65,6 +65,7 @@ let package = Package(
                 "SpeechEngineText",
                 .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
             ]
         ),
         .executableTarget(

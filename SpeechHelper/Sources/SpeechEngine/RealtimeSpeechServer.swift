@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXAudioSTT
 import Network
+import os
 import SpeechEngineText
 import Synchronization
 
@@ -46,7 +47,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             modelID: modelID,
             modelRevision: modelRevision,
             modelDirectory: modelDirectory,
-            engine: engine
+            engine: engine,
+            lockWeights: true
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -432,25 +434,30 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
 /// the app's catalog names with `--engine`, else inferred from the model
 /// (`SpeechASREngineKind.resolve`).
 enum SpeechModelLoader {
+    /// `lockWeights`: keep the weights in RAM for the life of the process
+    /// (`WeightPageLock`). The server does; a benchmark measures without it.
     static func load(
         modelID: String?,
         modelRevision: String?,
         modelDirectory: String?,
-        engine: SpeechASREngineKind?
+        engine: SpeechASREngineKind?,
+        lockWeights: Bool = false
     ) async throws -> SpeechASREngine {
         switch SpeechASREngineKind.resolve(
             named: engine, modelID: modelID, modelDirectory: modelDirectory
         ) {
         case .voxtral:
-            return VoxtralASREngine(model: try await loadModel(
+            let model = try await loadModel(
                 modelID: modelID,
                 modelRevision: modelRevision,
                 modelDirectory: modelDirectory,
                 fromDirectory: { try VoxtralRealtimeModel.fromDirectory($0) },
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
-            ))
+            )
+            if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
+            return VoxtralASREngine(model: model)
         case .nemotron:
-            return NemotronASREngine(model: try await loadModel(
+            let model = try await loadModel(
                 modelID: modelID,
                 modelRevision: modelRevision,
                 modelDirectory: modelDirectory,
@@ -468,9 +475,21 @@ enum SpeechModelLoader {
                     guard model.isBuffered else { return model }
                     return try await NemotronASRModel.fromPretrained(id, computeDType: .float16)
                 }
-            ))
+            )
+            if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
+            return NemotronASREngine(model: model)
         }
     }
+
+    /// On stderr and in the unified log beside the app's own Backends lines, so a field
+    /// report shows whether the lock held: an `mlock` refused by the sandbox or past
+    /// `vm.user_wire_limit` must not pass for "locking does nothing".
+    private static func logWeightLock(_ report: WeightPageLock.Report) {
+        FileHandle.standardError.write(Data((report.logLine + "\n").utf8))
+        backendsLog.notice("\(report.logLine, privacy: .public)")
+    }
+
+    private static let backendsLog = Logger(subsystem: "com.localvoxtral", category: "Backends")
 
     /// The same three-way resolution for every engine: an explicit directory, the
     /// app-pinned revision already in the shared Hugging Face cache, or — development

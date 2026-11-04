@@ -38,13 +38,21 @@ package struct ProjectRemote: Equatable, Hashable, Sendable {
     /// `owner/name` when the remote is on github.com, what `gh` takes.
     package var githubRepository: String? {
         guard value.lowercased().hasPrefix("github.com/") else { return nil }
-        return QuickCaptureInbox.isRepository(path) ? path : nil
+        return Self.isGitHubRepository(path) ? path : nil
     }
 
     /// A GitHub repository's remote.
     package init?(githubRepository repository: String) {
-        guard QuickCaptureInbox.isRepository(repository) else { return nil }
+        guard Self.isGitHubRepository(repository) else { return nil }
         self.init("github.com/" + repository)
+    }
+
+    /// `owner/name`, GitHub's charset. Neither part is `.` or `..`.
+    package static func isGitHubRepository(_ value: String?) -> Bool {
+        guard let value,
+              value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        else { return false }
+        return !value.split(separator: "/").contains { $0.allSatisfy { $0 == "." } }
     }
 
     /// What a host's shim sent as `X-Lvx-Env-Repository`: `owner/name` for
@@ -193,8 +201,8 @@ extension LearnedTerms {
     }
 
     /// The projects, most recent first: each repository once, as its own
-    /// record, and each checkout with no remote. What the learned-terms sheet
-    /// and quick capture list (#891, #971). A repository is listed while one
+    /// record, and each checkout with no remote. What the Projects pane
+    /// lists (#891, #971). A repository is listed while one
     /// of its checkouts is (`listedCheckouts`).
     package func listedProjects(now: Date) -> [LearnedTermProject] {
         var seen = Set<String>()

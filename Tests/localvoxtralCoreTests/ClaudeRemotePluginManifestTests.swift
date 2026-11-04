@@ -133,23 +133,23 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // The premise, updated for the command-hook shape: nothing to install
         // on the remote but the manifests and SEVEN POSIX-sh scripts — the curl
         // shim every hook runs, the status-line renderer the user may point
-        // their own `statusLine` setting at, the project-terms (#641) and
-        // quick capture (#745) runners the shim starts when the Mac asks, the
-        // agent projects scan (#1027) it starts on SessionStart, and
+        // their own `statusLine` setting at, the project-terms runner (#641)
+        // the shim starts when the Mac asks, the repository reader (#926),
+        // the agent projects scan (#1027) it starts on SessionStart, and
         // `localvoxtral doctor` (#910) with the `bin/` entry Claude Code puts
         // on the agent's PATH. No
         // Python, no jq, no nc,
         // no Node, no publisher binary. If any other runnable file ever
         // appears here, the premise is gone.
         let shellScripts: Set<String> = [
-            "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
+            "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/repository.sh", "hooks/doctor.sh",
             "hooks/agent-projects.sh", "bin/localvoxtral",
         ]
         // The mod's hooks module (#1412): TypeScript Claude Code's own engine
         // loads, a copy of localvoxtral-mod's (scripts/sync-remote-mod.sh).
         // Nothing here runs as a process.
         let modFiles: Set<String> = [
-            "hooks/register.tsx", "hooks/channel.ts", "hooks/inbox.ts", "hooks/hmac.ts", "hooks/remote.ts",
+            "hooks/register.tsx", "hooks/channel.ts", "hooks/hmac.ts", "hooks/remote.ts",
             "types/index.d.ts", "tests/remote.test.ts", ".gitignore",
         ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)

@@ -5,18 +5,18 @@ import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// A left-and-right-Shift chord in an action slot (#831): Settings stores it,
-/// the hotkey manager fires the slot's action from it, and the slots still
-/// refuse each other's shortcut.
+/// the hotkey manager fires the slot's action from it, and the slot still
+/// refuses the dictation key's shortcut.
 @MainActor
 final class ModifierChordShortcutTests: XCTestCase {
     private let bothShifts = DictationShortcut(chord: .bothShifts)
     private let optionF13 = DictationShortcut(keyCode: UInt32(kVK_F13), carbonModifierFlags: UInt32(optionKey))
 
-    func testBothShiftsAsQuickCaptureTogglesQuickCaptureAndAShiftHeldWhileTypingDoesNot() {
+    func testBothShiftsAsCopyLastDictationCopiesAndAShiftHeldWhileTypingDoesNot() {
         let (shortcuts, session) = makeShortcuts()
-        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(bothShifts))
-        XCTAssertEqual(shortcuts.settings.quickCaptureShortcut, bothShifts)
-        XCTAssertTrue(shortcuts.hotKeyManager.isQuickCaptureShortcutRegistered)
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts))
+        XCTAssertEqual(shortcuts.settings.copyLastDictationShortcut, bothShifts)
+        XCTAssertTrue(shortcuts.hotKeyManager.isCopyLastDictationShortcutRegistered)
         let chords = shortcuts.hotKeyManager.chordMonitor
 
         // Typing "Hi" with left Shift, then a stray right Shift before letting go.
@@ -24,54 +24,34 @@ final class ModifierChordShortcutTests: XCTestCase {
         chords.debugHandleKeyDownForTesting()
         chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 100.03125)
         chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 100.25)
-        XCTAssertEqual(session.toggleQuickCaptureCalls, 0)
+        XCTAssertEqual(session.copyLastDictationCalls, 0)
 
         // Both Shifts pressed together, then released.
         chords.debugHandleFlagsChangedForTesting(held: [.rightShift], timestamp: 200.0)
         chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 200.03125)
         chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 200.125)
-        XCTAssertEqual(session.toggleQuickCaptureCalls, 1)
-        XCTAssertEqual(session.answerAgentCalls, 0)
-        XCTAssertEqual(session.copyLastDictationCalls, 0)
+        XCTAssertEqual(session.copyLastDictationCalls, 1)
     }
 
     func testTheChordReadsBackAfterARelaunchAndAKeyReplacesIt() {
         let (shortcuts, _) = makeShortcuts()
-        XCTAssertNil(shortcuts.requestAnswerAgentShortcut(bothShifts))
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts))
 
         let relaunched = SettingsStore(
             defaults: shortcuts.settings.defaults, environment: [:], secretStore: InMemorySecretStore())
-        XCTAssertEqual(relaunched.answerAgentShortcut, bothShifts)
+        XCTAssertEqual(relaunched.copyLastDictationShortcut, bothShifts)
 
         forceActionRegistrationSuccess()
-        XCTAssertNil(shortcuts.requestAnswerAgentShortcut(optionF13))
-        XCTAssertEqual(shortcuts.settings.answerAgentShortcut, optionF13)
-        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.chords[.answerAgent], "the chord is gone")
-    }
-
-    func testTheSlotsRefuseAChordAnotherSlotHolds() {
-        let (shortcuts, _) = makeShortcuts()
-        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(bothShifts))
-
-        XCTAssertEqual(
-            shortcuts.requestAnswerAgentShortcut(bothShifts), ShortcutController.quickCaptureConflictMessage)
-        XCTAssertEqual(
-            shortcuts.requestCopyLastDictationShortcut(bothShifts),
-            ShortcutController.quickCaptureConflictMessage)
-        XCTAssertNil(shortcuts.settings.answerAgentShortcut)
-        XCTAssertNil(shortcuts.settings.copyLastDictationShortcut)
-
-        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(nil))
-        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts), "free once cleared")
-        XCTAssertEqual(
-            shortcuts.requestQuickCaptureShortcut(bothShifts), ShortcutController.copyLastDictationConflictMessage)
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(optionF13))
+        XCTAssertEqual(shortcuts.settings.copyLastDictationShortcut, optionF13)
+        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.chords[.copyLastDictation], "the chord is gone")
     }
 
     /// A cold launch can report no Accessibility trust with a grant on disk;
     /// the chord registers once trust lands, and the error goes.
     func testAChordThatFailedAtLaunchRegistersOnceTrustLands() {
         let (shortcuts, session) = makeShortcuts()
-        shortcuts.settings.setQuickCaptureShortcut(bothShifts)
+        shortcuts.settings.setCopyLastDictationShortcut(bothShifts)
         HotKeyManager.debugResetOverridesForTesting()
         HotKeyManager.debugForceHandlerInstallResultForTesting(true)
         HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: noErr)
@@ -81,14 +61,14 @@ final class ModifierChordShortcutTests: XCTestCase {
         addTeardownBlock { @MainActor in ModifierChordHotKeyMonitor.debugForceInstallFailure = false }
 
         shortcuts.registerAtLaunch()
-        XCTAssertFalse(shortcuts.hotKeyManager.isQuickCaptureShortcutRegistered)
-        XCTAssertEqual(session.lastError, HotKeyManager.quickCaptureUnavailableErrorMessage)
+        XCTAssertFalse(shortcuts.hotKeyManager.isCopyLastDictationShortcutRegistered)
+        XCTAssertEqual(session.lastError, HotKeyManager.copyLastDictationUnavailableErrorMessage)
 
         ModifierChordHotKeyMonitor.debugForceInstallFailure = false
         shortcuts.retryChordShortcutRegistrationIfNeeded()
-        XCTAssertTrue(shortcuts.hotKeyManager.isQuickCaptureShortcutRegistered)
+        XCTAssertTrue(shortcuts.hotKeyManager.isCopyLastDictationShortcutRegistered)
         XCTAssertNil(session.lastError)
-        XCTAssertEqual(shortcuts.settings.quickCaptureShortcut, bothShifts, "the stored chord never changed")
+        XCTAssertEqual(shortcuts.settings.copyLastDictationShortcut, bothShifts, "the stored chord never changed")
     }
 
     func testTheDictationSlotsNeverStoreAChord() {
@@ -152,20 +132,16 @@ final class ModifierChordShortcutTests: XCTestCase {
     func testTheDictationChordAndTheActionSlotsRefuseEachOther() {
         let (shortcuts, _, _) = makeDictationChord()
         XCTAssertEqual(
-            shortcuts.requestQuickCaptureShortcut(bothShifts), ShortcutController.dictationChordConflictMessage)
-        XCTAssertEqual(
-            shortcuts.requestAnswerAgentShortcut(bothShifts), ShortcutController.dictationChordConflictMessage)
-        XCTAssertEqual(
             shortcuts.requestCopyLastDictationShortcut(bothShifts),
             ShortcutController.dictationChordConflictMessage)
-        XCTAssertNil(shortcuts.settings.quickCaptureShortcut)
+        XCTAssertNil(shortcuts.settings.copyLastDictationShortcut)
 
         let bothCommands = ModifierChord(keys: [.leftCommand, .rightCommand])!
         XCTAssertNil(shortcuts.requestDictationChord(bothCommands))
         XCTAssertEqual(shortcuts.hotKeyManager.chordMonitor.dictationChord, bothCommands)
-        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(bothShifts), "free once the dictation key moved")
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts), "free once the dictation key moved")
         XCTAssertEqual(
-            shortcuts.requestDictationChord(.bothShifts), ShortcutController.quickCaptureConflictMessage)
+            shortcuts.requestDictationChord(.bothShifts), ShortcutController.copyLastDictationConflictMessage)
         XCTAssertEqual(shortcuts.settings.dictationChord, bothCommands, "the refused chord changed nothing")
     }
 
@@ -175,12 +151,12 @@ final class ModifierChordShortcutTests: XCTestCase {
         let (shortcuts, session, _) = makeDictationChord()
         shortcuts.selectModifierKey(.fn)
         XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.dictationChord)
-        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(bothShifts))
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts))
 
         shortcuts.selectModifierKey(.chord)
         XCTAssertNil(shortcuts.settings.dictationChord)
         XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.dictationChord)
-        XCTAssertEqual(shortcuts.hotKeyManager.chordMonitor.chords[.quickCapture], .bothShifts)
+        XCTAssertEqual(shortcuts.hotKeyManager.chordMonitor.chords[.copyLastDictation], .bothShifts)
         XCTAssertNil(session.lastError)
 
         let relaunched = SettingsStore(
@@ -223,7 +199,7 @@ final class ModifierChordShortcutTests: XCTestCase {
     private func forceActionRegistrationSuccess() {
         HotKeyManager.debugResetOverridesForTesting()
         HotKeyManager.debugForceHandlerInstallResultForTesting(true)
-        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .answerAgent, status: noErr)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .copyLastDictation, status: noErr)
         addTeardownBlock { @MainActor in
             HotKeyManager.debugResetOverridesForTesting()
         }

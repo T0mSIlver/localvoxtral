@@ -97,10 +97,9 @@ nothing and always exits 0.
   on the Mac (see [What it sends](#what-it-sends)).
 - **It posts at most two small requests** to the tunnel, marked as coming
   from Vibe, one second each. The Mac's reply says whether it wants project
-  terms, a README or a quick-capture draft; the header names are in
-  [post.sh](remote/post.sh). After a failed dial it skips file hooks for
-  five minutes, so a Mac that is asleep does not make ssh print errors over
-  your terminal.
+  terms; the header name is in [post.sh](remote/post.sh). After a failed dial
+  it skips file hooks for five minutes, so a Mac that is asleep does not make
+  ssh print errors over your terminal.
 - **It watches for the session's end.** The first time a session's hook
   reaches the Mac, it leaves one background shell that waits for that Vibe
   process to exit and then tells the Mac the session ended. Vibe has no hook
@@ -113,11 +112,6 @@ nothing and always exits 0.
 - **The terms run stays out of your Vibe.** The helper runs under a Vibe home
   of its own, under `~/.vibe/localvoxtral/remote/vibe-home/`, so none of your
   hooks fire and the run stays out of your Vibe history.
-- **It helps with quick capture when the Mac asks.** It starts a detached
-  helper that posts the first 16 KiB of the project's README, or drafts a
-  quick capture with a read-only, non-interactive Vibe in the project and
-  posts the draft
-  ([Quick capture on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#quick-capture-on-a-host)).
 
 To turn off the background shell, set `LOCALVOXTRAL_VIBE_WATCHER=off` in
 Vibe's environment. Sessions then expire after four idle hours.

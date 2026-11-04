@@ -141,10 +141,11 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// next joined dictation asks again once `ProjectTermProposal.retryAfter`
     /// has passed.
     package var proposalAttemptedAt: Date? = nil
-    /// A remote project's README summary, as its host reported it (#745),
-    /// for quick capture's router. A local checkout's is read from disk.
+    /// A remote project's README summary, as its host reported it (#745).
+    /// Kept so an older store decodes whole; nothing writes it any more.
     package var summary: String? = nil
-    /// When the host last reported it, a README with no prose included.
+    /// When the host last reported it, a README with no prose included. A
+    /// project it stamps stays listed for `staleAfterDays`.
     package var summaryAt: Date? = nil
     /// When a hook from a remote session last named this project (#819).
     /// Nil for a project no hook has named since, like a pre-#652 worktree
@@ -154,8 +155,8 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// repository, not of the directory a session happened to run in.
     package var reportedAsRepository: Bool? = nil
     /// The project's agent's one sentence about it (#891), asked with its
-    /// terms: what the project is and what it has. Quick capture's router
-    /// reads it when the user wrote no line.
+    /// terms: what the project is and what it has. Kept; nothing reads it
+    /// since quick capture was removed.
     package var agentLine: String? = nil
     /// When an answer to the prompt that asks for that sentence landed,
     /// with or without one. Nil on a project answered before #891, which
@@ -167,19 +168,18 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// The project's GitHub repository, `owner/name` (#926): its `origin`,
     /// read on the Mac for a local checkout and sent by the host's shim as
     /// `X-Lvx-Env-Repository` for a remote one, else the user's answer when
-    /// the Inbox asked (`repositoryTyped`). A host's value is a label like
+    /// quick capture asked (`repositoryTyped`). A host's value is a label like
     /// its project name: only ever a `gh --repo` argument.
     package var repository: String? = nil
     /// The user typed `repository` because the project had no GitHub
     /// `origin`. An `origin` read later replaces it; a missing one does not.
     package var repositoryTyped: Bool? = nil
-    /// What GitHub says about `repository`, for quick capture's router.
+    /// What GitHub said about `repository` for quick capture's router (#926).
+    /// Kept so an older store decodes whole; nothing writes it any more.
     package var github: GitHubRepositoryFacts? = nil
-    /// When `github` was fetched; asked again after `githubRefreshDays`.
     package var githubAt: Date? = nil
-    /// The user files this fork's issues in its upstream (GitHub's
-    /// `parent`), not in the fork. Nil until the user picks; it files in
-    /// the fork meanwhile.
+    /// Quick capture's "File issues here" choice for a fork. Kept like
+    /// `github`; it still keeps its project past the caps.
     package var filesUpstream: Bool? = nil
     /// The enrolled hosts (`ClaudeRemoteHost.id`) whose hooks named this
     /// remote project, so the Projects pane can say where it is checked
@@ -190,9 +190,9 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// on the repository's record (`repo:<remote>`), which every checkout
     /// of it shares. The repository's record carries it too.
     package var remote: String? = nil
-    /// The user added this GitHub repository from the Inbox's suggestion
+    /// The user added this GitHub repository from quick capture's Inbox
     /// (#930). Set only on a repository's record, which is then listed
-    /// although no checkout of it is.
+    /// although no checkout of it is. Kept like `github`.
     package var addedFromInbox: Bool? = nil
     /// The user's Work or Personal choice (#1005); nil in no group. Set on
     /// each of a Projects row's records, read by `LearnedTerms.group`.
@@ -219,13 +219,6 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
         self.proposalAttemptedAt = proposalAttemptedAt
     }
 
-    /// Where File sends this project's issues: the fork's upstream when the
-    /// user chose it and GitHub named one, else `repository`.
-    package var issueRepository: String? {
-        if filesUpstream == true, let parent = github?.parent { return parent }
-        return repository
-    }
-
     /// A project kept for its stamp alone: an agent answered with nothing
     /// new, or failed, and emptying it would ask again.
     package var hasProposalStamp: Bool { proposedAt != nil || proposalAttemptedAt != nil }
@@ -239,7 +232,7 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     }
 
     /// Kept with no terms: a proposal stamp, a hook that named it, an
-    /// agent's work in it, the user's group, or an add from the Inbox. A
+    /// agent's work in it, the user's group, or an add from quick capture's Inbox. A
     /// project holding none is dropped once its last term goes.
     var isKeptWithoutTerms: Bool {
         hasProposalStamp || reportedAt != nil || agentActiveAt != nil || isLinkedCheckout || group != nil
@@ -333,11 +326,6 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// vocabulary follows the work: a name from a project finished last
     /// quarter should stop competing with the current one's.
     package static let staleAfterDays = 90
-    /// A remote README summary is asked for again after this long.
-    package static let summaryRefreshDays = 7
-    /// GitHub's description and topics are fetched again after this long,
-    /// or when the Projects pane opens.
-    package static let githubRefreshDays = 7
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,
     /// since both feed the same prompt slot.
@@ -396,29 +384,8 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             .map(\.term)
     }
 
-    /// Whether a remote project's host should be asked for its README
-    /// (#745): a project a dictation has shown the app, with no report or
-    /// one older than `LearnedTerms.summaryRefreshDays`.
-    package func needsSummary(projectKey: String, now: Date) -> Bool {
-        guard projectKey.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
-              let project = projects.first(where: { $0.key == projectKey })
-        else { return false }
-        guard let reported = project.summaryAt else { return true }
-        return now.timeIntervalSince(reported) >= Double(LearnedTerms.summaryRefreshDays) * 86_400
-    }
-
-    /// Keeps a host's README summary on an existing project; nil records a
-    /// README with no prose. Returns false when the project is gone.
-    @discardableResult
-    package mutating func recordSummary(_ summary: String?, projectKey: String, now: Date) -> Bool {
-        guard let index = projects.firstIndex(where: { $0.key == projectKey }) else { return false }
-        projects[index].summary = summary
-        projects[index].summaryAt = now
-        return true
-    }
-
     /// A hook from a remote session named `project` (#819). A repository's
-    /// name adds the project when it is missing, so quick capture lists
+    /// name adds the project when it is missing, so the Projects pane lists
     /// every repository a session runs in, learned terms or not. A cwd label
     /// only stamps a project a dictation already added: every worktree has
     /// its own label, and none of them is a project. Returns true when it
@@ -517,7 +484,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
 
     @discardableResult
     private mutating func setOriginRepository(_ repository: String, at index: Int) -> Bool {
-        guard QuickCaptureInbox.isRepository(repository) else { return false }
+        guard ProjectRemote.isGitHubRepository(repository) else { return false }
         if projects[index].repository != repository {
             projects[index].repository = repository
             projects[index].github = nil
@@ -526,77 +493,6 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         }
         projects[index].repositoryTyped = nil
         return true
-    }
-
-    /// The user answered the Inbox's `owner/name` for a project with no
-    /// GitHub `origin`; kept so the next capture there does not ask. An
-    /// `origin` the project already has wins. Returns whether it was kept.
-    @discardableResult
-    package mutating func recordTypedRepository(_ repository: String, projectKey: String) -> Bool {
-        guard QuickCaptureInbox.isRepository(repository),
-              let index = projects.firstIndex(where: { $0.key == projectKey }),
-              projects[index].repository == nil || projects[index].repositoryTyped == true,
-              // Like a pin, a typed repository keeps the project past the cap.
-              projects[index].isExplicit || projects.filter(\.isExplicit).count < LearnedTerms.maxProjects
-        else { return false }
-        if projects[index].repository != repository {
-            projects[index].github = nil
-            projects[index].githubAt = nil
-            projects[index].filesUpstream = nil
-        }
-        projects[index].repository = repository
-        projects[index].repositoryTyped = true
-        return true
-    }
-
-    /// The user accepted the Inbox's suggestion of a GitHub repository no
-    /// project names (#930): its record becomes a listed project. Returns
-    /// the record's key; nil when `repository` is no `owner/name`, or the
-    /// caps hold only explicit projects already.
-    @discardableResult
-    package mutating func addRepositoryProject(_ repository: String, now: Date) -> String? {
-        guard let remote = ProjectRemote(githubRepository: repository) else { return nil }
-        let existing = projects.firstIndex { $0.key == remote.key }
-        // Like a typed repository, an added one stays past the cap.
-        guard existing.map({ projects[$0].isExplicit }) == true
-            || projects.filter(\.isExplicit).count < LearnedTerms.maxProjects
-        else { return nil }
-        let index = repositoryRecordIndex(for: remote, lastSeen: now)
-        projects[index].addedFromInbox = true
-        projects[index].lastSeen = max(projects[index].lastSeen, now)
-        prune(now: now)
-        return remote.key
-    }
-
-    /// GitHub answered for `repository`. Kept on every project that still
-    /// names it: a checkout on the Mac and one on a host share one answer.
-    package mutating func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String, now: Date) {
-        for index in projects.indices where projects[index].repository == repository {
-            projects[index].github = facts
-            projects[index].githubAt = now
-        }
-    }
-
-    /// The "File issues here" choice, on every project that names
-    /// `repository`. Kept either way: a fork with no choice yet is one the
-    /// Projects pane asks about.
-    package mutating func setFilesUpstream(_ upstream: Bool, repository: String) {
-        for index in projects.indices where projects[index].repository == repository {
-            projects[index].filesUpstream = upstream
-        }
-    }
-
-    /// The repositories a listed project names whose GitHub facts are
-    /// missing or older than `githubRefreshDays`, or all of them with
-    /// `force`. Each once.
-    package func repositoriesNeedingGitHub(now: Date, force: Bool = false) -> [String] {
-        var seen = Set<String>()
-        return listedProjects(now: now).compactMap { project -> String? in
-            guard let repository = project.repository, seen.insert(repository).inserted else { return nil }
-            if force { return repository }
-            guard let fetched = project.githubAt else { return repository }
-            return now.timeIntervalSince(fetched) >= Double(Self.githubRefreshDays) * 86_400 ? repository : nil
-        }
     }
 
     /// Whether a joined dictation in this project should ask its agent:

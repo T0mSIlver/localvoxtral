@@ -2,76 +2,6 @@ import Foundation
 import os
 import SwiftData
 
-/// One saved dictation as a value. `DictationSessionRecord` is a SwiftData
-/// model bound to the context that fetched it, so nothing outside the store
-/// ever holds one: reads come back as these.
-struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
-    let id: UUID
-    let startedAt: Date
-    let finishedAt: Date
-    let rawText: String
-    let polishedText: String?
-    let polishingDurationSeconds: Double?
-    let provider: String
-    let model: String
-    let outputMode: String
-    let targetAppBundleID: String?
-    let status: DictationSessionStatus
-    let commitSucceeded: Bool
-    let polishProfile: String?
-    let polishContextSummary: String?
-    var projectKey: String? = nil
-    var projectName: String? = nil
-    var joinedAgent: String? = nil
-    /// Where a quick capture went; nil for every other dictation.
-    var quickCaptureDestination: String? = nil
-    /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
-    var editOutcome: String? = nil
-    var polishPromptTokens: Int? = nil
-    var stoppedAt: Date? = nil
-    var polishBackend: String? = nil
-    var polishModel: String? = nil
-
-    /// What the dictation ended up as, the transcript when nothing changed it.
-    var finalText: String { polishedText ?? rawText }
-
-    /// `polishedText` holds whatever the commit path turned the transcript
-    /// into, and that is not always a model's work: with polishing off, the
-    /// replacement dictionary and the clipboard marker land there too. The
-    /// commit path stores it only when it differs, but a record written by an
-    /// older build may hold an equal copy.
-    var textWasChanged: Bool {
-        guard let polishedText else { return false }
-        return polishedText != rawText
-    }
-
-    /// A polish request answered for this dictation. Only the polish path
-    /// records a duration.
-    var polishRan: Bool { polishingDurationSeconds != nil && status != .llmFailed }
-
-    /// This entry with `polishedText` replaced, for the in-memory copy that
-    /// may hold what History must not (the clipboard payload).
-    func replacingPolishedText(_ text: String?) -> DictationHistoryEntry {
-        DictationHistoryEntry(
-            id: id, startedAt: startedAt, finishedAt: finishedAt, rawText: rawText,
-            polishedText: text, polishingDurationSeconds: polishingDurationSeconds,
-            provider: provider, model: model, outputMode: outputMode,
-            targetAppBundleID: targetAppBundleID, status: status,
-            commitSucceeded: commitSucceeded, polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary, projectKey: projectKey,
-            projectName: projectName, joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome,
-            polishPromptTokens: polishPromptTokens, stoppedAt: stoppedAt,
-            polishBackend: polishBackend, polishModel: polishModel)
-    }
-
-    /// What "Copy last dictation" copies, nil when there is no text.
-    var textToCopy: String? {
-        LastDictationCopy.text(
-            rawText: rawText, polishedText: polishedText, polishFailed: status == .llmFailed)
-    }
-}
-
 extension DictationHistoryEntry {
     init(_ record: DictationSessionRecord) {
         self.init(
@@ -129,27 +59,6 @@ extension DictationHistoryEntry {
         record.polishModel = polishModel
         return record
     }
-}
-
-/// Which saved dictations a read wants.
-struct DictationHistoryQuery: Equatable, Sendable {
-    enum Filter: String, CaseIterable, Identifiable, Sendable {
-        case all
-        /// The text never reached the target app, so the history is the only
-        /// place it still exists.
-        case notInserted
-        case polishFailed
-
-        var id: String { rawValue }
-    }
-
-    /// Matched against the transcript and the polished text, ignoring case and
-    /// diacritics. Empty matches everything.
-    var searchText = ""
-    var filter = Filter.all
-    /// Only dictations that started at or after this. Nil is all of them.
-    var since: Date?
-    var limit = 500
 }
 
 @MainActor
@@ -325,35 +234,6 @@ final class DictationSessionStore {
                 }
             }
             return 1
-        }
-    }
-
-    /// Marks where a quick capture went (#725). A record History no longer
-    /// holds changes nothing.
-    @discardableResult
-    func setQuickCaptureDestination(_ destination: String, id: UUID) -> Task<Void, Never> {
-        enqueueWrite("mark quick capture \(id)") { context in
-            let records = try context.fetch(
-                FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
-            for record in records { record.quickCaptureDestination = destination }
-            return records.count
-        }
-    }
-
-    /// A quick capture's polished words (#970). The record was written with
-    /// the raw words before the Inbox polished them.
-    @discardableResult
-    func setQuickCapturePolish(_ polishedText: String, seconds: Double, id: UUID) -> Task<Void, Never> {
-        enqueueWrite("polish quick capture \(id)") { context in
-            let records = try context.fetch(
-                FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
-            for record in records {
-                record.polishedText = polishedText
-                record.polishingDurationSeconds = seconds
-            }
-            return records.count
         }
     }
 

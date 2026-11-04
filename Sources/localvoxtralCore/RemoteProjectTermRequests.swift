@@ -28,7 +28,7 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     /// for 40 terms on this repository (2026-09-27).
     package static let maxAnswerBytes = 16 * 1024
     /// A Vibe run's token counts, from its host's shim (1.19.0 plugin, 1.4.0
-    /// Vibe hooks) on `/v1/terms` and `/v1/draft`: `<input> <cached input>
+    /// Vibe hooks) on `/v1/terms`: `<input> <cached input>
     /// <output>`, decimal. Claude Code's ride in its result object instead.
     package static let usageHeaderName = "X-Lvx-Usage"
     /// A mark waits this long for its session's next hook, and an asked

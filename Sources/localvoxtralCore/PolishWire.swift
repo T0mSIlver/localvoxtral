@@ -4,8 +4,7 @@ import FoundationNetworking
 #endif
 
 // The polishing model's wire dialect, for every request sent to it: polish,
-// term suggestions, the prompt warmup, and quick capture's router and first
-// draft (#1851). Each caller states what it asks in a `PolishWireRequest`;
+// term suggestions and the prompt warmup. Each caller states what it asks in a `PolishWireRequest`;
 // the configuration's shape alone decides the URL, headers, body and how the
 // reply is read.
 
@@ -175,36 +174,18 @@ package struct LLMPolishingConfiguration: Sendable {
 
 /// One request to the polishing model, in no server's dialect.
 package struct PolishWireRequest: Sendable {
-    package enum Purpose: Sendable {
-        /// A dictation's polish, term suggestions or the warmup: the
-        /// configuration's sampling (temperature 0.3 unless it sets one), the
-        /// self-hosted extras, the Bifrost header and Mistral's prompt cache
-        /// key.
-        case polish
-        /// Quick capture's router and first draft: temperature 0 and no
-        /// other sampling, and of the self-hosted extras only the switches
-        /// that decide whether a reasoning model thinks first.
-        case quickCapture
-    }
-
     package enum Effort: Sendable {
         /// What polish asks: Mistral's configured effort, Anthropic's `low`.
         case standard
         /// Think hard: Mistral's `high` where the model reasons, Anthropic's
         /// `high`.
         case deep
-        /// The least the model takes, whatever polish uses: GLM's `low`,
-        /// Mistral's own `none`, nothing for a model the catalog lists
-        /// without reasoning (#1365). Anthropic's `low`. At a higher effort
-        /// GLM 5.3 once spent the whole token cap reasoning (#918).
-        case least
     }
 
     package let systemPrompt: String
     package let userPrompts: [String]
     package let maxTokens: Int?
     package let timeout: TimeInterval
-    package let purpose: Purpose
     package let effort: Effort
 
     package init(
@@ -212,14 +193,12 @@ package struct PolishWireRequest: Sendable {
         userPrompts: [String],
         maxTokens: Int? = nil,
         timeout: TimeInterval,
-        purpose: Purpose,
         effort: Effort = .standard
     ) {
         self.systemPrompt = systemPrompt
         self.userPrompts = userPrompts
         self.maxTokens = maxTokens
         self.timeout = timeout
-        self.purpose = purpose
         self.effort = effort
     }
 }
@@ -265,7 +244,7 @@ extension LLMPolishingConfiguration {
         // Bifrost's opt-in header only means anything to Bifrost, and neither
         // hosted API is it: their shapes emit no passthrough extras at all, so
         // the header would only advertise fields that are not there.
-        if request.purpose == .polish, passthroughExtraParameters, requestShape == .openAICompatible {
+        if passthroughExtraParameters, requestShape == .openAICompatible {
             urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
         }
         urlRequest.timeoutInterval = request.timeout
@@ -366,17 +345,12 @@ extension LLMPolishingConfiguration {
             "model": model,
             "messages": systemMessages + request.userPrompts.map { ["role": "user", "content": $0] },
         ]
-        switch request.purpose {
-        case .polish:
-            body["temperature"] = samplingDefaults?.temperature ?? 0.3
-            if let topP = samplingDefaults?.topP {
-                body["top_p"] = topP
-            }
-            if let presencePenalty = samplingDefaults?.presencePenalty {
-                body["presence_penalty"] = presencePenalty
-            }
-        case .quickCapture:
-            body["temperature"] = 0
+        body["temperature"] = samplingDefaults?.temperature ?? 0.3
+        if let topP = samplingDefaults?.topP {
+            body["top_p"] = topP
+        }
+        if let presencePenalty = samplingDefaults?.presencePenalty {
+            body["presence_penalty"] = presencePenalty
         }
         if let maxTokens = request.maxTokens {
             body["max_tokens"] = maxTokens
@@ -390,19 +364,17 @@ extension LLMPolishingConfiguration {
             if let wireValue = mistralEffort(request.effort).wireValue {
                 body["reasoning_effort"] = wireValue
             }
-            if request.purpose == .polish, let cacheKey = Self.mistralPromptCacheKey(for: request) {
+            if let cacheKey = Self.mistralPromptCacheKey(for: request) {
                 body["prompt_cache_key"] = cacheKey
             }
             return body
         }
 
-        if request.purpose == .polish {
-            if let topK = samplingDefaults?.topK {
-                body["top_k"] = topK
-            }
-            if let minP = samplingDefaults?.minP {
-                body["min_p"] = minP
-            }
+        if let topK = samplingDefaults?.topK {
+            body["top_k"] = topK
+        }
+        if let minP = samplingDefaults?.minP {
+            body["min_p"] = minP
         }
         if let chatTemplateArguments {
             body["chat_template_kwargs"] = chatTemplateArguments
@@ -418,7 +390,6 @@ extension LLMPolishingConfiguration {
         switch effort {
         case .standard: return standard
         case .deep: return standard.deepened
-        case .least: return mistralReasoningEffort == .omitted ? .omitted : .forModel(model)
         }
     }
 

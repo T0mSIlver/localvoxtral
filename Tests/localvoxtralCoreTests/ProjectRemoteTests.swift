@@ -15,10 +15,8 @@ final class ProjectRemoteTests: XCTestCase {
         )
     }
 
-    private func projects(_ learned: LearnedTerms) -> [QuickCaptureProject] {
-        QuickCaptureProjects.projects(
-            from: learned, userLines: [:], now: now, readme: { _ in nil }, checkoutExists: { _ in true }
-        )
+    private func projects(_ learned: LearnedTerms) -> [ListedProject] {
+        ListedProjects.projects(from: learned, now: now, checkoutExists: { _ in true })
     }
 
     /// Tom's two records on 2026-09-28, as #926 left them: the Mac checkout
@@ -245,65 +243,28 @@ final class ProjectRemoteTests: XCTestCase {
         var learned = LearnedTerms(projects: [
             LearnedTermProject(key: "/w/scratch", name: "scratch", terms: [term("Kern", dictations: 3)], lastSeen: now),
         ])
-        learned.recordTypedRepository("me/scratch", projectKey: "/w/scratch")
         learned.linkCheckoutsToRepositories(now: now)
 
         XCTAssertEqual(projects(learned).map(\.name), ["scratch"])
-        XCTAssertEqual(learned.projects.map(\.key), ["/w/scratch"], "a typed repository is where File goes, not a remote")
+        XCTAssertEqual(learned.projects.map(\.key), ["/w/scratch"], "no origin, no remote")
         XCTAssertEqual(learned.confirmedTerms(projectKey: "/w/scratch"), ["Kern"])
     }
 
-    /// A fork is keyed by its own `origin`; its upstream is only where File
-    /// may send issues, so the Projects pane still asks.
-    func testAForkIsItsOriginAndStillAsksWhereToFile() {
+    /// A fork is keyed by its own `origin`, never its upstream's.
+    func testAForkIsItsOrigin() {
         var learned = LearnedTerms(projects: [
             LearnedTermProject(key: "/w/lv", name: "lv", terms: [term("Kern", dictations: 3)], lastSeen: now),
         ])
         learned.recordOriginRepository("me/localvoxtral", projectKey: "/w/lv")
-        learned.recordGitHub(.init(description: nil, topics: [], parent: "them/localvoxtral"), repository: "me/localvoxtral", now: now)
 
         let project = projects(learned).first
         XCTAssertEqual(project?.keys.last, "repo:github.com/me/localvoxtral")
         XCTAssertEqual(project?.name, "localvoxtral")
         let row = ProjectsPane.rows(
-            projects: projects(learned), learned: learned, captures: [], hostNames: [], liveSessions: [],
-            dictationProjectKeys: []
+            projects: projects(learned), learned: learned, hostNames: [], liveSessions: [], dictationProjectKeys: []
         ).first
-        XCTAssertEqual(row?.filing, .forkUnpicked(fork: "me/localvoxtral", upstream: "them/localvoxtral"))
+        XCTAssertEqual(row?.repository, "me/localvoxtral")
         XCTAssertEqual(row?.terms.map(\.term), ["Kern"])
-    }
-
-    // MARK: Captures
-
-    /// A capture routed to the host's label before the merge, and a
-    /// suggestion naming the Mac folder, show under the merged project.
-    func testCapturesMoveToTheMergedProject() {
-        var learned = tomsRecords()
-        learned.linkCheckoutsToRepositories(now: now)
-        var routed = QuickCaptureItem(capturedAt: now, text: "a note")
-        routed.projectKey = "remote:localvoxtral"
-        routed.projectName = "localvoxtral"
-        routed.state = .ready
-        var unplaced = QuickCaptureItem(capturedAt: now, text: "another")
-        unplaced.suggestion = .init(projectKey: "/Users/tom/Desktop/projects/supervoxtral", projectName: "supervoxtral")
-        unplaced.state = .ready
-        var drafting = QuickCaptureItem(capturedAt: now, text: "a third")
-        drafting.projectKey = "remote:localvoxtral"
-        drafting.state = .drafting
-        var checking = QuickCaptureItem(capturedAt: now, text: "a fourth")
-        checking.projectKey = "remote:localvoxtral"
-        checking.state = .ready
-        checking.codeCheck = QuickCaptureCodeCheck(state: .checking)
-
-        let adopted = QuickCaptureInbox(items: [routed, unplaced, drafting, checking]).adopting(projects(learned))
-
-        XCTAssertEqual(adopted.items[0].projectKey, "/Users/tom/Desktop/projects/supervoxtral")
-        XCTAssertEqual(adopted.items[0].projectName, "localvoxtral")
-        XCTAssertEqual(adopted.items[1].suggestion?.projectName, "localvoxtral")
-        XCTAssertEqual(adopted.items[2].projectKey, "remote:localvoxtral", "a running draft keeps its key")
-        XCTAssertEqual(adopted.items[3].projectKey, "remote:localvoxtral", "so does a draft whose check runs")
-        XCTAssertEqual(adopted.items.count, 4)
-        XCTAssertEqual(adopted.adopting(projects(learned)), adopted)
     }
 
     // MARK: The file

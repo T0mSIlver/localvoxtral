@@ -34,7 +34,6 @@ final class OverlayManualPlacementTests: XCTestCase {
             secureInputActive: false,
             polished: false,
             claudeJoin: .hidden,
-            destinations: nil,
             anchor: OverlayAnchor(
                 targetRect: CGRect(x: 22_600, y: 800, width: 10, height: 10), source: .mouseLocation))
 

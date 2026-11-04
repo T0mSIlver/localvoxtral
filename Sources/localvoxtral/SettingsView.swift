@@ -116,7 +116,6 @@ struct SettingsView: View {
                 badgeCount: { tab in
                     switch tab.kind {
                     case .textProcessing: viewModel.termSuggestions.badgeCount
-                    case .inbox: viewModel.quickCapture?.waitingCount ?? 0
                     default: 0
                     }
                 },
@@ -213,7 +212,7 @@ struct SettingsView: View {
         // Context sits among them since PR #310, so its consents are shown
         // by the pane's toggles, not by the row.
         case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
-            .history, .insights, .inbox, .projects:
+            .history, .insights, .projects:
             return nil
         }
     }
@@ -323,12 +322,8 @@ struct SettingsView: View {
             case .insights:
                 InsightsSettingsPane(
                     viewModel: viewModel, model: insightsModel, navigator: navigator)
-            case .inbox:
-                InboxSettingsPane(inbox: viewModel.quickCapture)
             case .projects:
-                ProjectsSettingsPane(
-                    settings: settings, viewModel: viewModel, inbox: viewModel.quickCapture,
-                    openInbox: { navigator.selectedTab = .inbox })
+                ProjectsSettingsPane(settings: settings, viewModel: viewModel, projects: viewModel.projects)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

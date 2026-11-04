@@ -117,7 +117,7 @@ WANT="$E_WORKTREE:alpha:acme/alpha,$E_BETA:beta:gitlab.com/team/beta"
 # --- The hooks folder post.sh runs from: a stub scan ------------------------
 SHIM_DIR="$TMP_DIR/hooks"
 mkdir -p "$SHIM_DIR"
-cp "$HOOKS/post.sh" "$HOOKS/capture.sh" "$SHIM_DIR/"
+cp "$HOOKS/post.sh" "$HOOKS/repository.sh" "$SHIM_DIR/"
 cat >"$SHIM_DIR/agent-projects.sh" <<EOF
 #!/bin/sh
 printf '%s\n' "\$@" >"$TMP_DIR/scan-args.tmp" && mv "$TMP_DIR/scan-args.tmp" "$TMP_DIR/scan-args"

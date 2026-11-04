@@ -218,15 +218,6 @@ final class SessionClockTests: XCTestCase {
         XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
-    /// Only the bundled helper serves one connection at a time.
-    func testOnlyAMemoOnTheBundledHelperYieldsToADictationThere() {
-        XCTAssertTrue(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .managedLocal))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .mistralAPI))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .managedLocal))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .externalURL))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: nil, dictation: .managedLocal))
-    }
-
     func testAudioSendLoopDrainsTheBufferOnTheClock() async {
         let clock = ManualSessionClock()
         let viewModel = makeViewModel(clock: clock)

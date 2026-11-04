@@ -175,8 +175,8 @@ package enum ProjectTermProposal {
         }
     }
 
-    /// The project's sentence is capped like the user's own line.
-    package static let maxLineCharacters = QuickCaptureProjects.maxUserLineCharacters
+    /// The project's sentence is capped at this many characters.
+    package static let maxLineCharacters = 200
 
     /// Bumped whenever the prompt asks for something new, so a project
     /// answered under an older one is asked once more
@@ -184,8 +184,8 @@ package enum ProjectTermProposal {
     /// (#891), 3 asks for names people say instead of the code's (#914).
     package static let promptRevision = 3
 
-    /// The terms, and since #891 one sentence quick capture's router reads:
-    /// a README says what a project is, rarely what it has. The people who
+    /// The terms, and since #891 one sentence about the project (kept, and
+    /// read by nothing since quick capture was removed): a README says what a project is, rarely what it has. The people who
     /// dictate say names, not identifiers (#914); the answer is filtered for
     /// code shapes anyway (`acceptedTerms`).
     package static let prompt = """
@@ -518,8 +518,7 @@ package enum ProjectTermProposal {
         }
     }
 
-    /// The last text message and the run's usage, or why there is none. The
-    /// terms run and quick-capture drafting (#812) both read this.
+    /// The last text message and the run's usage, or why there is none.
     package static func opencodeAnswer(
         stdout: Data, exitCode: Int32
     ) -> Result<(text: String, usage: Usage), Failure> {
@@ -612,7 +611,7 @@ package enum ProjectTermProposal {
         guard !line.isEmpty,
               line.range(of: #"https?://|www\.|\]\("#, options: [.regularExpression, .caseInsensitive]) == nil
         else { return nil }
-        return QuickCaptureProjects.clipped(line, to: maxLineCharacters)
+        return line.count > maxLineCharacters ? String(line.prefix(maxLineCharacters - 1)) + "…" : line
     }
 
     /// The agent's answer is untrusted text that repo contents can steer, so
