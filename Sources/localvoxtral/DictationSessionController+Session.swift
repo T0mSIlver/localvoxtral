@@ -532,7 +532,7 @@ extension DictationSessionController {
 
     /// The user's own terms, as the stall backfill sends them, cut as the
     /// model takes them: what a transcription with no session behind it
-    /// (a voice memo) can send. Empty for a model that takes none. `capabilities` comes from the same snapshot as
+    /// (a recorded file) can send. Empty for a model that takes none. `capabilities` comes from the same snapshot as
     /// the session's model and key (`SettingsStore.dictationModelCapabilities`).
     static func realtimeContextBias(
         settings: SettingsStore, dictionary: ReplacementDictionary?,
