@@ -103,6 +103,14 @@ final class RealtimeServerCommitTests: XCTestCase {
             }
         }
 
+        /// The socket fails as llama-server closes it after its last item:
+        /// macOS reads the close as a receive error (POSIX 57).
+        func socketFails() {
+            client.debugHandleTerminalSocketErrorForTesting(
+                task: task,
+                errorMessage: "WebSocket receive failed: Socket is not connected [NSPOSIXErrorDomain:57]")
+        }
+
         func deliver(_ frames: [[String: Any]]) {
             for frame in frames { client.debugHandleFrameForTesting(json: frame) }
         }
@@ -233,6 +241,28 @@ final class RealtimeServerCommitTests: XCTestCase {
         let bytes = harness.finalTexts.compactMap { Int($0.split(separator: " ").first ?? "") }.reduce(0, +)
         XCTAssertEqual(bytes, 9_600, "finals: \(harness.finalTexts)")
         XCTAssertEqual(harness.finalizedCount, 1)
+    }
+
+    /// llama-server closes the socket once the final item is out. The close
+    /// that follows the final's answer is the end of the dictation, not a
+    /// failure: an error there would tell the stop its end may be missing.
+    func testALlamaServerCloseAfterTheFinalAnswerIsNoError() {
+        let harness = Harness(.llamaServer)
+        harness.sendAudio(chunks: 2)
+        harness.client.sendCommit(final: true)
+        harness.pump()
+        XCTAssertEqual(harness.finalizedCount, 1)
+
+        harness.socketFails()
+
+        let errors = harness.events.filter { event in
+            guard case .error = event else { return false }
+            return true
+        }
+        XCTAssertTrue(errors.isEmpty, "\(errors)")
+        guard case .disconnected = harness.events.last else {
+            return XCTFail("the close is still reported: \(harness.events)")
+        }
     }
 
     /// A periodic commit that queued before the handshake, while the client

@@ -70,6 +70,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
+        /// This socket answered the final commit. llama-server closes it at
+        /// once, and macOS reads that close as a receive error (#1943): from
+        /// here a failure is the socket's end, not an error.
+        var hasAnsweredFinalCommit = false
         var pendingMessages: [PendingFrame] = []
         /// Audio a socket closed on before sending it: queued for its
         /// handshake, the carried audio of a rollover above all. No server
@@ -253,6 +257,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
         s.finalCommitCompletionGate = .idle
+        s.hasAnsweredFinalCommit = false
         s.usageBackend = configuration.usageBackend
         s.usageModel = modelName
     }
@@ -716,6 +721,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                     return .none
                 case .awaitingFinalCommitTranscriptionDone:
                     s.finalCommitCompletionGate = .idle
+                    s.hasAnsweredFinalCommit = true
                     return .emitTranscriptionFinalized
                 }
             }
@@ -808,6 +814,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     ) -> Bool {
         let action: SendAction = state.withLock { s in
             if let retiring, s.rollover?.retiring != retiring { return .dropped }
+            // Chosen before a handshake that named llama-server took the
+            // lock: the queue filter ran without it (#1943).
+            if isNonFinalCommit, s.commitProtocol == .itemPerCommit { return .dropped }
             switch s.base.socketState {
             case .connected:
                 // Behind the handshake's replay too: sent now, this frame
@@ -1065,7 +1074,12 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 return .rollover(retiring: rollover.retiring)
             }
 
-            let shouldEmitError = !s.base.isUserInitiatedDisconnect
+            let shouldEmitError = !s.base.isUserInitiatedDisconnect && !s.hasAnsweredFinalCommit
+            if s.hasAnsweredFinalCommit, let errorMessage {
+                Log.backends.notice(
+                    "realtime server closed the socket after the final commit's answer: \(errorMessage, privacy: .public)"
+                )
+            }
             let generation = s.base.connectionGeneration
             let usage = takeUsageLocked(&s)
             // Taken before the close erases the queue.
@@ -1163,6 +1177,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
         s.finalCommitCompletionGate = .idle
+        s.hasAnsweredFinalCommit = false
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
         s.pendingModelName = ""
