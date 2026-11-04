@@ -849,4 +849,39 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         XCTAssertFalse(record.text.userPrompts[0].contains("ProjectZephyr"))
         XCTAssertFalse(record.sources[0].renderedExcerpt?.contains("ProjectZephyr") == true)
     }
+
+    /// The reverse of the shared-start case: the shorter line is a prefix of
+    /// a longer one that the screen wrapped. Whichever pass matches first, the
+    /// longer line goes whole.
+    func testAShorterPromptLineDoesNotLeaveTheTailOfAWrappedLongerOne() {
+        let prompt = "Please investigate the production ProjectZephyr tomorrow\n"
+            + "Please investigate the production"
+        let excerpt = "> Please investigate the production ProjectZephyr\n tomorrow\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        record.text.userPrompts = [excerpt]
+        record.sources = [source("terminal", excerpt: excerpt)]
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        for text in [record.screen?.sanitizedText, record.text.userPrompts[0], record.sources[0].renderedExcerpt] {
+            let text = text ?? ""
+            XCTAssertFalse(text.contains("ProjectZephyr"), text)
+            XCTAssertFalse(text.contains("tomorrow"), text)
+            XCTAssertTrue(text.contains("Done"), text)
+        }
+    }
+
+    /// Two prompt lines that overlap partway, one matched exactly and the
+    /// other across a row break, are masked as one stretch.
+    func testPartiallyOverlappingPromptLinesAreMaskedAsOneStretch() {
+        let prompt = "alpha beta gamma delta SecretOne\ngamma delta SecretOne epsilon zeta"
+        let excerpt = "> alpha beta gamma delta SecretOne\n  epsilon zeta\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        let text = record.screen?.sanitizedText ?? ""
+        XCTAssertFalse(text.contains("SecretOne"), text)
+        XCTAssertFalse(text.contains("epsilon"), text)
+        XCTAssertFalse(text.contains("zeta"), text)
+        XCTAssertTrue(text.contains("Done"), text)
+    }
 }
