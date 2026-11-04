@@ -4,14 +4,8 @@ package enum TextMergingAlgorithms {
     private static let replayCharacterThreshold = 32
     private static let replayWordThreshold = 8
 
-    // Pre-compiled regex patterns for normalizeTranscriptionFormatting.
-    // These are static string literals so try! is safe — a crash here means a
-    // coding error in the pattern, which we want to catch immediately.
-    private static let apostropheSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*'\\s*(\\p{L})")
-    private static let hyphenSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*-\\s*(\\p{L})")
-    private static let preSymbolSpaceRegex = try! NSRegularExpression(pattern: "\\s+([,.;:!?%\\)\\]])")
-    private static let postSymbolSpaceRegex = try! NSRegularExpression(pattern: "([\\(\\[])\\s+")
-    private static let multipleSpacesRegex = try! NSRegularExpression(pattern: "[ \\t]{2,}")
+    // A static string literal, so try! is safe: a crash here means a coding
+    // error in the pattern, which we want to catch immediately.
     private static let wordTokenRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
 
     package static func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
@@ -275,25 +269,6 @@ package enum TextMergingAlgorithms {
         }
 
         return appendWithoutOverlap(existing: existing, incoming: incoming)
-    }
-
-    /// Lightweight transcription cleanup for tokenizer spacing artifacts.
-    /// This is intentionally conservative and should not rewrite semantics.
-    package static func normalizeTranscriptionFormatting(_ text: String) -> String {
-        guard !text.isEmpty else { return text }
-
-        var output = text.replacingOccurrences(of: "\u{00A0}", with: " ")
-        output = applyRegex(apostropheSpacingRegex, template: "$1'$2", to: output)
-        output = applyRegex(hyphenSpacingRegex, template: "$1-$2", to: output)
-        output = applyRegex(preSymbolSpaceRegex, template: "$1", to: output)
-        output = applyRegex(postSymbolSpaceRegex, template: "$1", to: output)
-        output = applyRegex(multipleSpacesRegex, template: " ", to: output)
-        return output
-    }
-
-    private static func applyRegex(_ regex: NSRegularExpression, template: String, to text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }
 
     private static func appendWithoutOverlap(

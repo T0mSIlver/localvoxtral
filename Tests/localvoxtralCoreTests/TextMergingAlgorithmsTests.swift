@@ -73,29 +73,6 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         XCTAssertFalse(TextMergingAlgorithms.startsMidWord(""))
     }
 
-    // MARK: - normalizeTranscriptionFormatting
-
-    func testNormalizeFormatting() {
-        let cases: [(name: String, input: String, expected: String)] = [
-            ("compactsTokenizerSpacingArtifacts", "l'  homme  est  ici  -  maintenant", "l'homme est ici-maintenant"),
-            ("punctuationSpacing", "hello , world ! ( test ) [ value ]", "hello, world! (test) [value]"),
-            ("preservesNewlines", "hello\t\tworld\nfoo    bar", "hello world\nfoo bar"),
-            // Italian punctuation characterization (issue #13), see testTailOverlap.
-            // Tokenizer spacing artifact "sparisce ." must collapse to "sparisce.".
-            ("compactsSpaceBeforePeriod_italian", "sparisce .", "sparisce."),
-            // "al , fondo" → "al, fondo" (no relocation of the comma into the word).
-            ("compactsSpaceBeforeComma_italian", "al , fondo", "al, fondo"),
-            // "l' acqua" → "l'acqua" (elision glues without splitting).
-            ("apostropheElision_italian", "l' acqua", "l'acqua"),
-            // A legitimately mid-word period (abbreviation/url) must be preserved
-            // as-is — the normalizer never *inserts* punctuation into a word.
-            ("preservesWordInternalPeriod_italian", "sparisce.al fondo", "sparisce.al fondo"),
-        ]
-        for (name, input, expected) in cases {
-            XCTAssertEqual(TextMergingAlgorithms.normalizeTranscriptionFormatting(input), expected, name)
-        }
-    }
-
     // MARK: - longestCommonPrefixLength
 
     func testCommonPrefix() {

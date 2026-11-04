@@ -368,7 +368,7 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         XCTAssertFalse(snapshot.provenance.deadlineExpired, "the test must reach the file check")
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertFalse(
-            ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+            ClaudeRepoContextPreparation.groundingSources(snapshot: snapshot).entityText
                 .contains("never-attach-this-secret")
         )
     }
@@ -409,7 +409,7 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertEqual(snapshot.provenance.skippedUncontained, 1)
         XCTAssertFalse(
-            ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+            ClaudeRepoContextPreparation.groundingSources(snapshot: snapshot).entityText
                 .contains("never-attach-outside-directory-content")
         )
     }
