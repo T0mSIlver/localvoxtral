@@ -431,6 +431,26 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
     }
 
+    /// LVX-93: another copy of the app filled the list since this one read
+    /// it. The merge on save drops this copy's addition, so the chip stays
+    /// and the row says why.
+    func testAListAnotherCopyFilledKeepsTheChipAndSaysWhy() async {
+        let settings = makePolishingSettings()
+        settings.polishSpeakerTerms = (0..<(SpeakerTerms.maxTerms - 1)).map { "Known\($0)x" }
+        settings.defaults.set(
+            settings.polishSpeakerTerms + ["Elsewhere"], forKey: "settings.polish_speaker_terms")
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service)
+
+        await model.suggest()
+        model.accept("Qwen")
+
+        XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+        XCTAssertEqual(model.phase, .failed("Terms list is full."))
+    }
+
     func testTheOldestRefusalIsTheOneTheCapDrops() {
         let settings = makePolishingSettings()
         for index in 0...SpeakerTermSuggestions.maxDismissed {
