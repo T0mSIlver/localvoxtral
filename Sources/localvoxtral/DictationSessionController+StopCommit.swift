@@ -678,7 +678,8 @@ extension DictationSessionController {
                 self.handleLLMPolishingConnectionFailure(
                     title: llmConnectionFailure.title,
                     message: llmConnectionFailure.message,
-                    technicalDetails: llmConnectionFailure.technicalDetails
+                    technicalDetails: llmConnectionFailure.technicalDetails,
+                    publicSummary: llmConnectionFailure.publicSummary
                 )
             }
             if !addressed.superseded {
@@ -787,7 +788,8 @@ extension DictationSessionController {
             self.handleLLMPolishingConnectionFailure(
                 title: llmConnectionFailure.title,
                 message: llmConnectionFailure.message,
-                technicalDetails: llmConnectionFailure.technicalDetails
+                technicalDetails: llmConnectionFailure.technicalDetails,
+                publicSummary: llmConnectionFailure.publicSummary
             )
         }
 
