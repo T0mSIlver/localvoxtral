@@ -941,27 +941,51 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         // report is as old as a stale term.
         removeEmptyProjects()
         if projects.count > LearnedTerms.maxProjects {
-            // A project the user made a choice in is never evicted (#989);
-            // the rest share the room left, one kept only for a hook's
-            // report going first.
-            var room = max(0, LearnedTerms.maxProjects - projects.filter(\.isExplicit).count)
-            projects = projects
-                .sorted { lhs, rhs in
-                    if lhs.isExplicit != rhs.isExplicit { return lhs.isExplicit }
-                    let lhsReportOnly = lhs.terms.isEmpty && !lhs.hasProposalStamp
-                    let rhsReportOnly = rhs.terms.isEmpty && !rhs.hasProposalStamp
-                    if lhsReportOnly != rhsReportOnly { return rhsReportOnly }
-                    return lhs.lastSeen == rhs.lastSeen
-                        ? lhs.key < rhs.key
-                        : lhs.lastSeen > rhs.lastSeen
-                }
-                .filter { project in
-                    guard !project.isExplicit else { return true }
-                    guard room > 0 else { return false }
-                    room -= 1
-                    return true
-                }
+            evictPastTheRecordCap()
         }
+    }
+
+    /// Cuts the records to `maxProjects`. A repository's record and the
+    /// checkouts linked to it go or stay together: a checkout's terms live
+    /// on that record, and a record no checkout points at is found by no
+    /// lookup, so its terms would show under No project (LVX-91). A group
+    /// the user made a choice in is never evicted (#989); the rest share
+    /// the room left, most recent first, those kept only for a hook's report
+    /// going first.
+    private mutating func evictPastTheRecordCap() {
+        struct Unit {
+            var members: [LearnedTermProject]
+            var isExplicit: Bool { members.contains(where: \.isExplicit) }
+            var isReportOnly: Bool { members.allSatisfy { $0.terms.isEmpty && !$0.hasProposalStamp } }
+            var lastSeen: Date { members.map(\.lastSeen).max() ?? .distantPast }
+            var key: String { members.map(\.key).min() ?? "" }
+        }
+        var units: [Unit] = []
+        var unitOfRepository: [String: Int] = [:]
+        for project in projects {
+            let repository = project.isRepositoryRecord ? project.key : project.repositoryRecordKey
+            if let repository, let index = unitOfRepository[repository] {
+                units[index].members.append(project)
+            } else {
+                if let repository { unitOfRepository[repository] = units.count }
+                units.append(Unit(members: [project]))
+            }
+        }
+        var room = max(0, LearnedTerms.maxProjects - units.filter(\.isExplicit).reduce(0) { $0 + $1.members.count })
+        let kept = units
+            .sorted { lhs, rhs in
+                if lhs.isExplicit != rhs.isExplicit { return lhs.isExplicit }
+                if lhs.isReportOnly != rhs.isReportOnly { return rhs.isReportOnly }
+                return lhs.lastSeen == rhs.lastSeen ? lhs.key < rhs.key : lhs.lastSeen > rhs.lastSeen
+            }
+            .filter { unit in
+                guard !unit.isExplicit else { return true }
+                guard unit.members.count <= room else { return false }
+                room -= unit.members.count
+                return true
+            }
+        let keptKeys = Set(kept.flatMap { $0.members.map(\.key) })
+        projects.removeAll { !keptKeys.contains($0.key) }
     }
 
     /// Whether pinning a term in this project keeps within `maxProjects`
