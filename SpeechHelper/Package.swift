@@ -44,7 +44,7 @@ let package = Package(
         // become an upstream SHA (Blaizzy/mlx-audio-swift) before this merges.
         .package(
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "11e8ca2f5f601b4fe64e52090b5e10965d8080f3"
+            revision: "1a6136290c506fc6d88fd46b06e6a63e5cfb7e78"
         ),
     ],
     targets: [
