@@ -204,32 +204,6 @@ final class HerdrIntegrationTests: XCTestCase {
         })
     }
 
-    // MARK: - External assumption: navigation's one focus write (#1012)
-
-    /// `pane.focus` through the app's forward focuses the named pane, and
-    /// `pane.current` reads it back: the two calls `HerdrSessionPaneFocuser`
-    /// confirms a focus with. A refused pane is herdr's own error.
-    func testPaneFocusThroughTheForwardIsReadBackByPaneCurrent() async throws {
-        let split = try fixture.herdrCLI(["pane", "split", fixture.info.paneID, "--direction", "right", "--no-focus"])
-        guard let data = split.data(using: .utf8),
-              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let pane = (root["result"] as? [String: Any])?["pane"] as? [String: Any],
-              let otherPaneID = pane["pane_id"] as? String
-        else { throw HerdrLaneError.fixtureFailed("pane split gave no pane: \(split)") }
-        let (service, handle) = try await openForward()
-        defer { handle.close(); service.stopAllForQuit() }
-        let client = Self.makeLaneClient()
-
-        let before = await client.focusedPane(socketPath: handle.localSocketPath)?.paneID
-        XCTAssertEqual(before, fixture.info.paneID, "--no-focus left the fixture pane focused")
-        let focused = await client.focusPane(socketPath: handle.localSocketPath, paneID: otherPaneID)
-        XCTAssertEqual(focused, .ok)
-        let after = await client.focusedPane(socketPath: handle.localSocketPath)?.paneID
-        XCTAssertEqual(after, otherPaneID)
-        let missing = await client.focusPane(socketPath: handle.localSocketPath, paneID: "w99:p99")
-        XCTAssertEqual(missing, .refused)
-    }
-
     // MARK: - External assumption: what a whole-view client renders
 
     /// The positive half of the panel-binding premise: a whole-view App client
@@ -510,41 +484,6 @@ final class HerdrIntegrationTests: XCTestCase {
             paneID: "w99:p99"
         )
         XCTAssertNil(foreign, "a read for an unknown pane must return nothing")
-    }
-
-    /// The herdr pane route's two writes (#726) against the live server:
-    /// `pane.send_text` puts the text in the pane, `pane.send_keys ["enter"]`
-    /// submits it (the pane's shell runs the echo, so the marker shows twice),
-    /// and a write to a pane that does not exist is refused, never unknown:
-    /// only a refusal may fall back to keystrokes.
-    func testPaneWritesReachTheJoinedPaneAndAnUnknownPaneIsRefused() async throws {
-        let marker = "LVXHERDRWRITE\(Int.random(in: 100_000...999_999))"
-        let (service, handle) = try await openForward()
-        defer { handle.close(); service.stopAllForQuit() }
-        let client = Self.makeLaneClient()
-
-        let sent = await client.sendText(
-            socketPath: handle.localSocketPath, paneID: fixture.info.paneID, text: "echo \(marker)"
-        )
-        let pressed = await client.pressEnter(socketPath: handle.localSocketPath, paneID: fixture.info.paneID)
-        XCTAssertEqual(sent, .ok)
-        XCTAssertEqual(pressed, .ok)
-
-        var text: String?
-        for _ in 0..<40 {
-            text = await client.paneVisibleText(socketPath: handle.localSocketPath, paneID: fixture.info.paneID)
-            if (text?.components(separatedBy: marker).count ?? 0) >= 3 { break }
-            try? await Task.sleep(for: .milliseconds(200))
-        }
-        XCTAssertGreaterThanOrEqual(
-            (text?.components(separatedBy: marker).count ?? 0) - 1, 2,
-            "the echo was typed and then run: \(text ?? "nil")"
-        )
-
-        let foreignText = await client.sendText(socketPath: handle.localSocketPath, paneID: "w99:p99", text: "x")
-        let foreignEnter = await client.pressEnter(socketPath: handle.localSocketPath, paneID: "w99:p99")
-        XCTAssertEqual(foreignText, .refused)
-        XCTAssertEqual(foreignEnter, .refused)
     }
 
     // MARK: - The app's forward

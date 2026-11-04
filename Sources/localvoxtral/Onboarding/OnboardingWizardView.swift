@@ -168,7 +168,7 @@ private struct EnginePage: View {
 
             EngineChoiceRow(
                 title: "Run locally",
-                detail: "Downloads Voxtral and a polishing model to this Mac. Nothing leaves your Mac.",
+                detail: "Downloads a speech model and a polishing model to this Mac. Nothing leaves your Mac.",
                 isSelected: model.engineChoice == .local
             ) {
                 model.engineChoice = .local

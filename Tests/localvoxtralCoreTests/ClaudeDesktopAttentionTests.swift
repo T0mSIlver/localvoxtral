@@ -94,7 +94,7 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { _ in nil },
-            focusedDesktopSessionURL: { _ in shownURL.get() }
+            focusedDesktopSessionURL: { _ in ClaudeDesktopFocusRead(address: shownURL.get()) }
         )
         let target = desktopTarget
         let registry = registry!
@@ -201,37 +201,28 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
         XCTAssertEqual(tracker.queue.entries.map(\.kind), [.finished])
     }
 
-    // MARK: - Bringing it forward
+    // MARK: - Reading the pane back
 
-    private struct FocusHarness {
+    private struct ReadBackHarness {
         let focuser: ClaudeDesktopSessionPaneFocuser
-        let opened: Box<[URL]>
         let shown: Box<String?>
         let frontmost: Box<pid_t?>
-        let sleeps: Box<Int>
     }
 
-    /// `shownAfterOpen` is what Desktop's focused view names once the link
-    /// has been open for `afterSleeps` read-backs.
-    private func focusHarness(
+    /// Desktop shows `shown`, and `frontmost` is the app in front.
+    private func readBackHarness(
         running: Bool = true,
-        shownAfterOpen: String?,
-        afterSleeps: Int = 2,
+        shown shownURL: String?,
+        frontmostIsDesktop: Bool = true,
         switchAppsDuringRead: Bool = false
-    ) -> FocusHarness {
-        let shown = Box<String?>("https://claude.ai/epitaxy/\(otherDesktopID)")
-        let frontmost = Box<pid_t?>(999)
-        let opened = Box<[URL]>([])
-        let sleeps = Box(0)
+    ) -> ReadBackHarness {
+        let shown = Box<String?>(shownURL)
         let pid = desktopPID
+        let frontmost = Box<pid_t?>(frontmostIsDesktop ? pid : 999)
         let registry = registry!
         let focuser = ClaudeDesktopSessionPaneFocuser(
             desktopPID: { running ? pid : nil },
             frontmostPID: { frontmost.get() },
-            open: { url in
-                opened.mutate { $0.append(url) }
-                return true
-            },
             shownSessionID: { _ in
                 // The join's rule: the focused view's id, resolved to one
                 // live session.
@@ -242,116 +233,53 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
                 // The user switches apps while the read is suspended.
                 if switchAppsDuringRead { frontmost.set(999) }
                 return snapshot.sessionID
-            },
-            sleep: { _ in
-                sleeps.mutate { $0 += 1 }
-                if sleeps.get() == afterSleeps {
-                    frontmost.set(pid)
-                    shown.set(shownAfterOpen)
-                }
             }
         )
-        return FocusHarness(focuser: focuser, opened: opened, shown: shown, frontmost: frontmost, sleeps: sleeps)
+        return ReadBackHarness(focuser: focuser, shown: shown, frontmost: frontmost)
     }
 
-    func testTheLinkBringsTheSessionForwardAndItIsReadBack() async throws {
-        _ = try start()
-        defer { stop() }
+    private func waitingSession() throws -> ClaudeSessionSnapshot {
         try publish(["Notification-permission_prompt"])
-        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(desktopID)")
-
-        let outcome = await h.focuser.focusPane(of: session)
-
-        XCTAssertEqual(outcome, .focused(bundleID: ClaudeDesktopAllowlist.bundleID))
-        XCTAssertEqual(h.opened.get().map(\.absoluteString), ["claude://code/continue?session=\(desktopID)"])
-        XCTAssertEqual(h.sleeps.get(), 2, "read back until it shows, no longer")
-        let still = await h.focuser.focusedPaneShows(session, bundleID: ClaudeDesktopAllowlist.bundleID)
-        XCTAssertTrue(still)
+        return try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
     }
 
-    func testAViewThatNeverShowsTheSessionIsUnverified() async throws {
+    func testDesktopShowsTheSessionOnlyWhenItIsFrontmostAndShowsIt() async throws {
         _ = try start()
         defer { stop() }
-        try publish(["Notification-permission_prompt"])
-        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(otherDesktopID)")
-
-        let outcome = await h.focuser.focusPane(of: session)
-
-        XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
-        XCTAssertEqual(h.sleeps.get(), ClaudeDesktopSessionPaneFocuser.readBackAttempts)
-    }
-
-    /// Focus left in the sidebar, or a view the join cannot read, is no
-    /// answer: the dictation would not go to the session.
-    func testAnUnreadableViewIsUnverified() async throws {
-        _ = try start()
-        defer { stop() }
-        try publish(["Notification-permission_prompt"])
-        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(shownAfterOpen: nil)
-
-        let outcome = await h.focuser.focusPane(of: session)
-        XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
-    }
-
-    func testTheSessionShownWhileDesktopIsNotFrontmostIsUnverified() async throws {
-        _ = try start()
-        defer { stop() }
-        try publish(["Notification-permission_prompt"])
-        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(desktopID)", afterSleeps: 0)
-        h.shown.set("https://claude.ai/epitaxy/\(desktopID)")
-
-        let outcome = await h.focuser.focusPane(of: session)
-        XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
-    }
-
-    /// Desktop stops being frontmost while the read is suspended: the
-    /// session it read is no answer, or the answer shortcut would dictate
-    /// into the app the user switched to.
-    func testASwitchToAnotherAppDuringTheReadIsUnverified() async throws {
-        _ = try start()
-        defer { stop() }
-        try publish(["Notification-permission_prompt"])
-        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(desktopID)", switchAppsDuringRead: true)
-
-        let outcome = await h.focuser.focusPane(of: session)
-        XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
+        let session = try waitingSession()
+        let shown = "https://claude.ai/epitaxy/\(desktopID)"
+        let other = "https://claude.ai/epitaxy/\(otherDesktopID)"
+        let cases: [(name: String, harness: ReadBackHarness, expected: Bool)] = [
+            ("shown and frontmost", readBackHarness(shown: shown), true),
+            ("another session shown", readBackHarness(shown: other), false),
+            ("an unreadable view", readBackHarness(shown: nil), false),
+            ("Desktop is not frontmost", readBackHarness(shown: shown, frontmostIsDesktop: false), false),
+            ("a switch to another app during the read", readBackHarness(shown: shown, switchAppsDuringRead: true), false),
+            ("Desktop is closed", readBackHarness(running: false, shown: shown), false),
+        ]
+        for c in cases {
+            let shows = await c.harness.focuser.focusedPaneShows(session, bundleID: ClaudeDesktopAllowlist.bundleID)
+            XCTAssertEqual(shows, c.expected, c.name)
+        }
     }
 
     /// Two live sessions reporting one view (a `claude -p` inside it on a
     /// host whose plugin predates 1.14.0) make the view ambiguous: the join
     /// abstains, and so does the read-back.
-    func testAViewTwoSessionsReportIsUnverified() async throws {
+    func testAViewTwoSessionsReportIsNotShown() async throws {
         _ = try start()
         defer { stop() }
         try publish(["Notification-permission_prompt", "Notification-AskUserQuestion"])
         let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(desktopID)")
-
-        let outcome = await h.focuser.focusPane(of: session)
-        XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
+        let h = readBackHarness(shown: "https://claude.ai/epitaxy/\(desktopID)")
+        let shows = await h.focuser.focusedPaneShows(session, bundleID: ClaudeDesktopAllowlist.bundleID)
+        XCTAssertFalse(shows)
     }
 
-    func testWithDesktopClosedTheLinkIsNotOpened() async throws {
-        _ = try start()
-        defer { stop() }
-        try publish(["Notification-permission_prompt"])
-        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
-        let h = focusHarness(running: false, shownAfterOpen: nil)
-
-        let outcome = await h.focuser.focusPane(of: session)
-        XCTAssertEqual(outcome, .paneNotFound)
-        XCTAssertEqual(h.opened.get(), [], "opening the link would launch Desktop")
-    }
-
-    func testTheRouterSendsDesktopSessionsToDesktopHerdrPanesToHerdrAndTabsToTheTerminal() async {
-        let terminal = FakeSessionPaneFocuser(outcome: .focused(bundleID: TerminalScreenAllowlist.ghosttyBundleID))
-        let desktop = FakeSessionPaneFocuser(outcome: .focused(bundleID: ClaudeDesktopAllowlist.bundleID))
-        let herdr = FakeSessionPaneFocuser(outcome: .focused(bundleID: TerminalScreenAllowlist.ghosttyBundleID))
+    func testTheRouterReadsDesktopSessionsFromDesktopHerdrPanesFromHerdrAndTabsFromTheTerminal() async {
+        let terminal = FakeSessionPaneFocuser()
+        let desktop = FakeSessionPaneFocuser()
+        let herdr = FakeSessionPaneFocuser()
         let router = SessionPaneFocuserRouter(terminal: terminal, claudeDesktop: desktop, herdr: herdr)
         let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
         var tab = ClaudeSessionSnapshot(sessionID: "tab", origin: local, firstSeen: epoch)
@@ -364,12 +292,12 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
             hookPID: 3, claudePID: 4, tty: "/dev/ttys005", herdrPaneID: "w1:p2", herdrSocketPath: "/tmp/h.sock"
         )
 
-        _ = await router.focusPane(of: tab)
-        _ = await router.focusPane(of: remote)
-        _ = await router.focusPane(of: pane)
+        _ = await router.focusedPaneShows(tab, bundleID: "x")
+        _ = await router.focusedPaneShows(remote, bundleID: "x")
+        _ = await router.focusedPaneShows(pane, bundleID: "x")
 
-        XCTAssertEqual(terminal.focusedSessionIDs, ["tab"])
-        XCTAssertEqual(desktop.focusedSessionIDs, ["ssh"])
-        XCTAssertEqual(herdr.focusedSessionIDs, ["pane"])
+        XCTAssertEqual(terminal.readBackSessionIDs, ["tab"])
+        XCTAssertEqual(desktop.readBackSessionIDs, ["ssh"])
+        XCTAssertEqual(herdr.readBackSessionIDs, ["pane"])
     }
 }

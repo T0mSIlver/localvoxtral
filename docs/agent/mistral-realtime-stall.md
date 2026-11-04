@@ -2,6 +2,8 @@
 
 Status on 2026-09-19 (D added 2026-10-03): symptom A (the one the owner hits) is not reproduced and has no request ID yet. Symptom B is reproduced on demand and ready to report to Mistral once confirmed. Owner rulings: no second parallel connection (it doubles the bill for Mistral's bug), and no silence-padding workaround (it may move the trigger instead of removing it).
 
+Voxtral Realtime 3 (`voxtral-mini-transcribe-realtime-3-0`, the default since #1967), soaked 2026-11-04 from the dev box with the app's frames: 100 sessions of 2 minutes, 4 at a time. 99 clean: no gap of 5 s or more (no D), no first delta later than 3.9 s (no B), no stream that stopped (no A). One session got no `transcription.done` within 10 s (`ws-01a1a3d5-ac3d-723b-aa5b-4f0d4be3fb44`), in the minutes when the dev box's own connection dropped every open socket. B's 1410 s clip: 3 of 3 clean on Realtime 3 (first delta 1.2 s, 896 chars), 3 of 3 still stalled on 2602 (31.3 s, 476 chars). A 2602 control beside it: 25 of 25 clean. Realtime 3 answers `input_audio.end` more slowly: `done` median 0.74 s and max 2.9 s after the end, against 0.31 s and 0.46 s for 2602.
+
 ## Symptoms
 
 **A. Text stops mid-dictation and never resumes.** Overlay Buffer mode, Mistral API engine. Deltas arrive normally, then stop while the user keeps talking. After stop, no `transcription.done` arrives, the client closes on the finalization idle rule 1.6 s later, and the partial text is inserted. A new dictation always works. One occurrence in ~40 dictations on 2026-09-19 (session opened 15:56:20 local, last delta at 35 s, no request ID because it predates the logging).
@@ -28,7 +30,7 @@ To find a failed dictation, look for a `connect` without a later `transcription.
 
 ## Tools
 
-- `MistralRealtimeSoakTests`: real-time-paced sessions of real speech through our client. It needs `.mistral-soak-enable.json` (`{"apiKey","sessions","concurrency","seconds"}`, mode 0600) and 16 kHz mono s16le speech at `local-notes/mistral-soak/soak.pcm`. Run it with `./scripts/remote-build.sh exec swift test --filter MistralRealtimeSoakTests` and delete the marker afterwards. It costs 0.006 USD per minute of audio.
+- `MistralRealtimeSoakTests`: real-time-paced sessions of real speech through our client. It needs `.mistral-soak-enable.json` (`{"apiKey","sessions","concurrency","seconds"}`, optionally `"model"`, `"contextBias"` and `"startSeconds"` for one fixed window such as B's 1410 s clip; mode 0600) and 16 kHz mono s16le speech at `local-notes/mistral-soak/soak.pcm`. Run it with `./scripts/remote-build.sh exec swift test --filter MistralRealtimeSoakTests` and delete the marker afterwards. Each `SOAK` line carries the request id, the first delta's time after the first audio, and every gap of 5 s or more (D's size). It costs the model's per-minute price: 0.006 USD for 2602, 0.008 for Realtime 3.
 - The speech used so far is LibriVox, *William Again* chapter 1 (`https://archive.org/download/williamagain_1902_librivox/williamagain_01_crompton_64kb.mp3`), converted with `ffmpeg -i in.mp3 -ac 1 -ar 16000 -f s16le out.pcm`.
 - `repro.py` inside the report below reproduces symptom B with the official SDK.
 

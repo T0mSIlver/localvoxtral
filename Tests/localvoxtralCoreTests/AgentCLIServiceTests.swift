@@ -210,6 +210,22 @@ final class AgentCLIServiceTests: XCTestCase {
         XCTAssertTrue(memory.needsProposal(projectKey: "/work/quillmark", now: now))
     }
 
+    /// A refusal holds across spacing and punctuation, and the answer says
+    /// so: the store would drop it, so it is the user's list, not "known".
+    func testARefusalSpelledDifferentlyIsSkippedAsTheUsersList() async throws {
+        let source = fixture()
+        source.state.withLock { $0.learned = learned(); $0.refusedTerms = ["Stable Diffusion"] }
+        let response = await service(source).respond(to: AgentCLIRequest(
+            command: .termsPropose,
+            project: "/work/quillmark",
+            terms: ["Stable-Diffusion", "Featherline"],
+            caller: .claude
+        ))
+        let text = try json(response)
+        XCTAssertTrue(text.contains(#"{"reason":"userList","term":"Stable-Diffusion"}"#), text)
+        XCTAssertTrue(text.contains(#""added":["Featherline"]"#), text)
+    }
+
     func testAProposalTakesAKnownProjectByNameAndRefusesAnUnknownOne() async {
         let source = fixture()
         source.state.withLock { $0.learned = learned() }

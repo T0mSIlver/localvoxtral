@@ -20,6 +20,9 @@ package struct SpeechModelOption: Equatable, Sendable {
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
     package let sizeOnDiskGB: Double
+    /// What the model takes besides audio. Neither shipped engine biases its
+    /// decoding yet (#316, #521).
+    package let capabilities: DictationModelCapabilities
 }
 
 package enum SpeechModelCatalog {
@@ -34,7 +37,8 @@ package enum SpeechModelCatalog {
             revision: "247f2eeccf962fbcaf85e361731a5e75b2d8cac1",
             displayName: "Voxtral Mini 4B Realtime (4-bit, quantized head)",
             engine: .voxtral,
-            sizeOnDiskGB: 2.6
+            sizeOnDiskGB: 2.6,
+            capabilities: .audioOnly
         ),
         // NVIDIA's cache-aware streaming RNN-T, 8-bit. A third of Voxtral's weights,
         // which is what matters on an 8 or 16 GB Mac where the speech model and the
@@ -51,7 +55,8 @@ package enum SpeechModelCatalog {
             revision: "7279359e4481b5e9e185a318bd618e429c6d86cd",
             displayName: "Nemotron 3.5 ASR Streaming 0.6B (8-bit)",
             engine: .nemotron,
-            sizeOnDiskGB: 0.8
+            sizeOnDiskGB: 0.8,
+            capabilities: .audioOnly
         ),
     ]
 

@@ -32,6 +32,9 @@ protocol OverlayKeyboardInserting: AnyObject {
 
     func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool
+    /// Runs `write`, which replaces the clipboard, once no Cmd+V may still
+    /// read it.
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void)
 }
 
 extension TextInsertionService: OverlayKeyboardInserting {}
@@ -129,12 +132,6 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// The mic's level, 0...1, for the bars while the dictation runs.
     /// Defaulted so test doubles stay unchanged.
     func updateMicLevel(_ level: Double)
-    /// Shows the overlay's destinations (#840). Defaulted so test doubles
-    /// stay unchanged.
-    func showDestinations(_ strip: OverlayDestinationStrip?)
-    /// Shows the one draft a review dictation acts on (#927). Defaulted so
-    /// test doubles stay unchanged.
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?)
 }
 
 extension OverlayBufferSessionCoordinating {
@@ -145,8 +142,6 @@ extension OverlayBufferSessionCoordinating {
     var showsSecondPassMiss: Bool { false }
     var showsPolishChange: Bool { false }
     func updateMicLevel(_ level: Double) {}
-    func showDestinations(_ strip: OverlayDestinationStrip?) {}
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {}
 }
 
 @MainActor
@@ -329,7 +324,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
         if inserted {
             if autoCopyEnabled {
-                _ = copyToPasteboard(commitText)
+                // The target reads the pasteboard after Cmd+V is posted: a
+                // copy now would swap the pasted text for the trimmed one.
+                let copy = copyToPasteboard
+                keyboard.writeClipboardAfterPendingPastes { _ = copy(commitText) }
             }
             Log.overlay.info("overlay commit succeeded")
             return .succeeded
@@ -389,16 +387,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     func updateMicLevel(_ level: Double) {
         guard stateMachine.phase == .buffering else { return }
         renderer.updateMicLevel(level)
-    }
-
-    func showDestinations(_ strip: OverlayDestinationStrip?) {
-        stateMachine.setDestinations(strip)
-        renderCurrentSnapshot()
-    }
-
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
-        stateMachine.setDraftReview(draft)
-        renderCurrentSnapshot()
     }
 
     func dismissAfterHold(minimumVisibility: TimeInterval) {

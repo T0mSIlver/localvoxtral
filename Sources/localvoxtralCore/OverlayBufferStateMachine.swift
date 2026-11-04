@@ -56,11 +56,6 @@ package struct OverlayBufferStateMachine {
         /// once, from the join resolved at session start; cleared on every new
         /// session. `.hidden` renders nothing at all.
         package let claudeJoin: OverlayClaudeJoinBadge
-        /// Where the words go at stop (#840), nil when the overlay has no
-        /// choice to offer. Replaced whenever Tab moves or the list changes.
-        package var destinations: OverlayDestinationStrip? = nil
-        /// The draft a review dictation acts on (#927), nil otherwise.
-        package var draftReview: QuickCaptureDraftSnapshot? = nil
         package let anchor: OverlayAnchor
 
         package init(
@@ -73,8 +68,6 @@ package struct OverlayBufferStateMachine {
             polishing: Bool = false,
             secondPassMissed: Bool = false,
             claudeJoin: OverlayClaudeJoinBadge,
-            destinations: OverlayDestinationStrip? = nil,
-            draftReview: QuickCaptureDraftSnapshot? = nil,
             anchor: OverlayAnchor
         ) {
             self.phase = phase
@@ -86,8 +79,6 @@ package struct OverlayBufferStateMachine {
             self.polishing = polishing
             self.secondPassMissed = secondPassMissed
             self.claudeJoin = claudeJoin
-            self.destinations = destinations
-            self.draftReview = draftReview
             self.anchor = anchor
         }
     }
@@ -103,8 +94,6 @@ package struct OverlayBufferStateMachine {
     package private(set) var polishing = false
     package private(set) var secondPassMissed = false
     package private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
-    package private(set) var destinations: OverlayDestinationStrip?
-    package private(set) var draftReview: QuickCaptureDraftSnapshot?
     package private(set) var anchor: OverlayAnchor?
 
     package var snapshot: Snapshot? {
@@ -119,8 +108,6 @@ package struct OverlayBufferStateMachine {
             polishing: polishing,
             secondPassMissed: secondPassMissed,
             claudeJoin: claudeJoin,
-            destinations: destinations,
-            draftReview: draftReview,
             anchor: anchor
         )
     }
@@ -152,23 +139,7 @@ package struct OverlayBufferStateMachine {
         // describes the previous dictation's session, and a badge that survived
         // into this one would vouch for a grounding this session was not given.
         self.claudeJoin = claudeJoin
-        destinations = nil
-        draftReview = nil
         self.anchor = anchor
-    }
-
-    /// Shows where the words go. Only while the dictation runs: once it
-    /// stops, the destination is decided.
-    package mutating func setDestinations(_ strip: OverlayDestinationStrip?) {
-        guard phase == .buffering else { return }
-        destinations = strip
-    }
-
-    /// Shows the draft under review. Only while the dictation runs; it stays
-    /// through finalizing, so the panel does not jump at the stop.
-    package mutating func setDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
-        guard phase == .buffering else { return }
-        draftReview = draft
     }
 
     /// Marks that LLM polishing changed the displayed text vs the raw
@@ -245,7 +216,6 @@ package struct OverlayBufferStateMachine {
         polishing = false
         secondPassMissed = false
         claudeJoin = .hidden
-        destinations = nil
         anchor = nil
     }
 }

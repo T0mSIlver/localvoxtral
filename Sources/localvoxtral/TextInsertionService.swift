@@ -326,8 +326,7 @@ final class TextInsertionService {
         } else {
             snapshot = capturePasteboardSnapshot(from: pasteboard)
         }
-        pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
+        guard TemporaryPasteWriter.write(text, to: pasteboard) else {
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: pasteboard.changeCount)
             return false
         }

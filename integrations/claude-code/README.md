@@ -72,10 +72,6 @@ The remote plugin also ships the `localvoxtral-doctor` skill. Its one-line
 description sits in each session's context on the host; the rest loads only
 when you ask why dictation misbehaves.
 
-The remote plugin also drafts a quick capture routed to one of that host's
-projects. It has the same caps as the Mac's own draft, $0.50 at most
-([Quick capture on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#quick-capture-on-a-host)).
-
 ## Which terminal am I dictating into?
 
 Every join below matches ONE identifier your session's own hooks published
@@ -421,12 +417,6 @@ the prompt waits for that turn, and the menu bar says so. A box holding a
 paste, an image, an `@` mention or a slash command is still typed and sent
 with Return. Sessions in Claude Desktop or a browser tab are still typed.
 
-"Send that to <name>" uses the same mod when the named session has one: the
-words go into that session's prompt box and are submitted there, without
-bringing its pane forward or pressing a key. If its mod cannot take them,
-the pane comes forward and the words are typed, as for a session without
-the mod.
-
 When an Overlay Buffer dictation into such a session is polished, the app
 also asks the mod what the prompt box already holds, in a terminal or the
 Claude Desktop Code tab. With **Send diff, recent files and prompts** on, polish sees
@@ -441,13 +431,6 @@ session shows it above its prompt: **Listening** and the words so far, then
 wherever the session is drawn, a terminal, the Claude Desktop Code tab or the
 Claude app on a phone.
 
-`/inbox` opens a pane listing this project's quick captures, newest first,
-each with **Open in localvoxtral**, which brings the app's Inbox forward on
-that capture. Editing and filing stay in the app, and the captures' words
-stay in the pane: none reaches the session's prompt. The pane needs the
-`localvoxtral` command (see `docs/coding-agents.md`) or the app in
-/Applications. On a remote host the pane asks the app through the tunnel and
-shows only titles, kinds, states and ages (`docs/remote-claude-context.md`).
 
 While the mod is connected, the app keeps the session joinable however long
 it sits idle, and drops it the moment the session ends or `/clear` starts a
@@ -693,7 +676,7 @@ does so only when the config has no agents table and no rows key, and
 otherwise leaves the file unchanged. The row is defined in the
 [enrollment service](../../Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift).
 
-**4. Check it.** Press **Check Setup** in the sheet. The app runs two
+**4. Check it.** The run's last step, **Check Setup**, runs two
 read-only checks over ssh and reports what they mean:
 
 * **Connection & tunnel.** The app sends an unauthenticated session-start hook

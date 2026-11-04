@@ -138,17 +138,6 @@ package struct ReplacementDictionary: Equatable, Sendable {
         return output
     }
 
-    package func renderedPromptSection() -> String {
-        guard !entries.isEmpty else { return "" }
-
-        let rules = entries.map { entry in
-            let aliases = entry.matches.joined(separator: ", ")
-            return "- \(entry.replaceWith): \(aliases)"
-        }.joined(separator: "\n")
-
-        return "Replacement dictionary:\n\(rules)"
-    }
-
     private func prioritizedRules() -> [ReplacementRule] {
         var rules: [ReplacementRule] = []
         rules.reserveCapacity(entries.reduce(0) { $0 + $1.matches.count })
@@ -440,18 +429,12 @@ private struct ReplacementMatchCandidate {
 }
 
 package enum AppConfigError: Error, LocalizedError {
-    case missingBundledResource(String)
     case invalidFile(fileName: String, reason: String)
-    case unableToResolveConfigDirectory
 
     package var errorDescription: String? {
         switch self {
-        case .missingBundledResource(let fileName):
-            return "Missing bundled config resource: \(fileName)"
         case .invalidFile(let fileName, let reason):
             return "Invalid config file \(fileName): \(reason)"
-        case .unableToResolveConfigDirectory:
-            return "Unable to resolve the localvoxtral config directory."
         }
     }
 }

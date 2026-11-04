@@ -61,8 +61,8 @@ private final class OverlayDragRegionView: NSView {
     var onDragBegan: ((CGPoint) -> Void)?
     /// Mouse moved during a drag, now at this screen location.
     var onDragMoved: ((CGPoint) -> Void)?
-    /// Mouse came up, at this location in this view.
-    var onDragEnded: ((NSPoint) -> Void)?
+    /// Mouse came up.
+    var onDragEnded: (() -> Void)?
     /// Double-click: put the panel back where the anchor says it goes.
     var onReanchorRequested: (() -> Void)?
 
@@ -144,7 +144,7 @@ private final class OverlayDragRegionView: NSView {
         guard isDragging else { return }
         isDragging = false
         NSCursor.openHand.set()
-        onDragEnded?(convert(event.locationInWindow, from: nil))
+        onDragEnded?()
     }
 }
 
@@ -205,16 +205,9 @@ final class DictationOverlayController {
     /// the next word arrived, which reads as the double-click doing nothing
     /// (field report, 2026-09-21).
     private var lastPositioning: (anchor: OverlayAnchor, contentSize: CGSize)?
-    /// Where each destination pill or list row sits, top-left origin in the
-    /// hosting view, as the view last reported it.
-    private var destinationFrames: [OverlayDestinationTarget: CGRect] = [:]
     /// The level bars read this directly, so a level never re-renders or
     /// re-measures the panel.
     private let micLevel = OverlayMicLevel()
-
-    /// A click, not a drag, on a destination (#880). The panel keeps
-    /// swallowing the click, so the target app keeps the focus.
-    var onDestinationClick: ((DictationDestination) -> Void)?
 
     init(
         metricsProvider: @escaping @MainActor () -> OverlayLayoutMetrics = {
@@ -311,8 +304,8 @@ final class DictationOverlayController {
         dragRegionView.onDragMoved = { [weak self] mouse in
             self?.continueDrag(to: mouse)
         }
-        dragRegionView.onDragEnded = { [weak self] point in
-            self?.endDrag(at: point)
+        dragRegionView.onDragEnded = { [weak self] in
+            self?.endDrag()
         }
         dragRegionView.onReanchorRequested = { [weak self] in
             self?.reanchor()
@@ -345,19 +338,12 @@ final class DictationOverlayController {
             secondPassMissed: snapshot.secondPassMissed,
             micLevel: micLevel,
             polishColor: polishColorProvider().color,
-            claudeJoin: snapshot.claudeJoin,
-            destinations: snapshot.destinations,
-            draftReview: snapshot.draftReview,
-            onDestinationFrame: { [weak self] target, frame in
-                self?.destinationFrames[target] = frame
-            }
+            claudeJoin: snapshot.claudeJoin
         )
 
         let contentHeight = metrics.contentHeight(
             text: bufferText,
-            errorMessage: snapshot.errorMessage,
-            draftReview: snapshot.draftReview,
-            destinations: snapshot.destinations
+            errorMessage: snapshot.errorMessage
         )
         let size = CGSize(
             width: metrics.panelWidth,
@@ -386,7 +372,6 @@ final class DictationOverlayController {
         dragAnchor = nil
         dragPassedThreshold = false
         lastPositioning = nil
-        destinationFrames = [:]
         metricsLock.unlock()
         micLevel.reset()
         panel.ignoresMouseEvents = false
@@ -431,14 +416,9 @@ final class DictationOverlayController {
         panel.setFrame(settled.frame, display: true)
     }
 
-    /// `point` is where the mouse came up, in `dragRegionView`.
-    private func endDrag(at point: NSPoint) {
-        let wasClick = dragAnchor != nil && !dragPassedThreshold
+    private func endDrag() {
         dragAnchor = nil
         dragPassedThreshold = false
-        if wasClick {
-            clickDestination(at: point)
-        }
         guard let draggedPlacement else { return }
         placementWriter(draggedPlacement)
         Log.overlay.info(
@@ -446,34 +426,7 @@ final class DictationOverlayController {
         )
     }
 
-    private func clickDestination(at point: NSPoint) {
-        let local = hostingView.convert(point, from: dragRegionView)
-        let topLeft = hostingView.isFlipped ? local : NSPoint(x: local.x, y: hostingView.bounds.height - local.y)
-        guard let destination = destinationFrames.first(where: { $0.value.contains(topLeft) })?.key.destination
-        else { return }
-        Log.overlay.info("click: destination")
-        onDestinationClick?(destination)
-    }
-
     #if DEBUG
-    /// A click at `point`, bottom-left origin in the panel's content view,
-    /// through the same path as a real one.
-    func clickForTesting(at point: NSPoint) {
-        dragRegionView.onDragBegan?(NSEvent.mouseLocation)
-        dragRegionView.onDragEnded?(dragRegionView.convert(point, from: panel.contentView))
-    }
-
-    /// A drag past the threshold, pressed and released at `point`.
-    func dragForTesting(at point: NSPoint) {
-        dragRegionView.onDragBegan?(.zero)
-        dragRegionView.onDragMoved?(CGPoint(x: 20, y: 0))
-        dragRegionView.onDragEnded?(dragRegionView.convert(point, from: panel.contentView))
-    }
-
-    /// The frames drawn now, in the list (`inList`) or the header.
-    func destinationFramesForTesting(inList: Bool) -> [DictationDestination: CGRect] {
-        Dictionary(uniqueKeysWithValues: destinationFrames.filter { $0.key.inList == inList }.map { ($0.key.destination, $0.value) })
-    }
     var contentHeightForTesting: CGFloat { panel.contentView?.bounds.height ?? 0 }
 
     var panelFrameForTesting: CGRect { panel.frame }

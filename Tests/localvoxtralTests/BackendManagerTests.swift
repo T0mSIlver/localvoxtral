@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -400,8 +401,8 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
-    /// A voice memo and a dictation share one cold speechd start. Turning memos
-    /// off cancels only the memo's wait: it returns at once, and the dictation
+    /// A second caller and a dictation share one cold speechd start. Cancelling
+    /// the second caller cancels only its wait: it returns at once, and the dictation
     /// still reaches ready (#1511).
     func testCancellingMemoWaiterPreservesDictationWaiter() async throws {
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
@@ -494,7 +495,7 @@ final class BackendManagerTests: XCTestCase {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let settings = SettingsStore(
-            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            defaults: makeTestDefaults(),
             secretStore: InMemorySecretStore()
         )
         let manager = makeManager(

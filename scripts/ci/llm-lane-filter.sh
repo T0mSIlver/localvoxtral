@@ -154,7 +154,6 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+ShellSetup.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Statusline.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Verification.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'

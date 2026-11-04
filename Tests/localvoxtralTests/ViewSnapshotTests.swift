@@ -107,76 +107,8 @@ final class ViewSnapshotTests: XCTestCase {
             appearance: appearance)
     }
 
-    /// The Inbox with a drafted capture that has a follow-up and extends an
-    /// issue (#965), one whose filing the app quit during (#1509), one no
-    /// project took, one offering to add a GitHub repository (#930), and
-    /// one filed (#725). Made-up
-    /// words: the artifacts are public.
-    func testInboxWithCaptures() async throws {
-        try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("inbox-snapshot-\(UUID().uuidString)")
-            let fileURL = directory.appendingPathComponent("quick-captures.json")
-            let now = Date()
-            var drafted = QuickCaptureItem(
-                capturedAt: now.addingTimeInterval(-300),
-                text: "the overlay should remember its size per display, not just its position")
-            drafted.state = .ready
-            drafted.projectKey = "/work/demo"
-            drafted.projectName = "demo"
-            drafted.repository = "example/demo"
-            drafted.title = "Remember the overlay's size per display"
-            drafted.body = "## Scope\nStore the overlay's size with its position, per display.\n\n## Proof\nA test that restores both."
-            drafted.followUps = [.init(
-                id: UUID(), capturedAt: now.addingTimeInterval(-120),
-                text: "also when a display is unplugged and plugged back", historyRecordID: nil, draftBefore: nil
-            )]
-            drafted.relation = .extends
-            drafted.relatedIssue = 8
-            var unplaced = QuickCaptureItem(capturedAt: now.addingTimeInterval(-3_600), text: "renew the passport before December")
-            unplaced.state = .ready
-            unplaced.note = "Not routed to a project. Move it to one."
-            // One of the user's recent GitHub repositories no project names (#930).
-            var suggested = QuickCaptureItem(
-                capturedAt: now.addingTimeInterval(-5_400), text: "the recipes app should scale a recipe to four people")
-            suggested.state = .ready
-            suggested.note = "Not routed to a project. Move it to one."
-            suggested.repositorySuggestion = .init(repository: "example/recipes", name: "recipes")
-            var filed = QuickCaptureItem(capturedAt: now.addingTimeInterval(-7_200), text: "add a dark mode to the settings window")
-            filed.state = .filed
-            filed.title = "Dark mode for the settings window"
-            filed.repository = "example/demo"
-            filed.filedURL = "https://github.com/example/demo/issues/12"
-            // The app quit while filing it, and GitHub could not be asked (#1509).
-            var unconfirmed = QuickCaptureItem(
-                capturedAt: now.addingTimeInterval(-1_800), text: "the export menu should remember the last format")
-            unconfirmed.state = .ready
-            unconfirmed.projectKey = "/work/demo"
-            unconfirmed.projectName = "demo"
-            unconfirmed.repository = "example/demo"
-            unconfirmed.kind = .issue
-            unconfirmed.title = "Remember the last export format"
-            unconfirmed.body = "## Scope\nThe export menu preselects the format used last."
-            unconfirmed.unconfirmedFiling = .init(processID: 0, at: now.addingTimeInterval(-600))
-            unconfirmed.note = QuickCaptureInboxFile.unconfirmedNote
-            try QuickCaptureInboxFile.save(
-                QuickCaptureInbox(items: [drafted, unconfirmed, unplaced, suggested, filed]), to: fileURL)
-            self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-            let learned = LearnedTerms(projects: [
-                LearnedTermProject(key: "/work/demo", name: "demo", terms: [], lastSeen: now),
-            ])
-            viewModel.installQuickCaptureInbox(QuickCaptureInboxViewModel(
-                settings: viewModel.settings,
-                learnedTerms: { learned },
-                fileURL: fileURL,
-                applicationSupport: directory
-            ))
-        }
-    }
-
-    /// Projects (#939), light and dark: the table, with a fork waiting for
-    /// a choice, a project with no GitHub repository and the "No project"
-    /// entry (#972), Import… and Export… under it (#999), the collapsed
+    /// Projects (#939), light and dark: the table, with a project that has no
+    /// repository and the "No project" entry (#972), Import… and Export… under it (#999), the collapsed
     /// Ignored group (#1006), then that group open and with its list
     /// unsaved, one project's sheet with its whole term list and after a
     /// failed Export Terms…, and the "No project" sheet. Made-up projects
@@ -186,7 +118,7 @@ final class ViewSnapshotTests: XCTestCase {
             try await recordSettings(
                 pane: .projects, name: "settings-projects-\(theme)", setUp: false, appearance: appearance
             ) { viewModel in
-                viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                viewModel.installProjects(self.projectsViewModel())
                 // Export… shows only when the store holds terms (#999).
                 let store = self.ignoringStore()
                 store.importProjects(self.projectsLearnedTerms().projects) { _ in }
@@ -198,7 +130,7 @@ final class ViewSnapshotTests: XCTestCase {
                 pane: .projects, name: "settings-projects-forgotten-list-problem-\(theme)", setUp: false,
                 appearance: appearance
             ) { viewModel in
-                viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                viewModel.installProjects(self.projectsViewModel())
                 let store = try self.newerForgottenListStore()
                 store.importProjects(self.projectsLearnedTerms().projects) { _ in }
                 store.waitForPendingWrites()
@@ -217,12 +149,12 @@ final class ViewSnapshotTests: XCTestCase {
                 name: "projects-ignored-unsaved-\(theme)",
                 width: 600, height: 200, growToFit: false, appearance: appearance)
             let (settings, viewModel) = makeViewModel()
-            let inbox = try projectsInbox(settings)
+            let projects = projectsViewModel()
             try record(
                 ProjectDetailSheet(
-                    projectKey: "/work/demo", settings: settings, viewModel: viewModel, inbox: inbox,
+                    projectKey: "/work/demo", settings: settings, viewModel: viewModel, projects: projects,
                     dictationProjectKeys: Array(repeating: "/work/demo", count: 142) + ["remote:demo", nil],
-                    openInbox: {}, onDone: {})
+                    onDone: {})
                 // A sheet draws on its window's background; the snapshot
                 // window has none.
                 .background(Color(nsColor: .windowBackgroundColor)),
@@ -230,14 +162,14 @@ final class ViewSnapshotTests: XCTestCase {
                 width: 560, height: 760, growToFit: false, appearance: appearance)
             try record(
                 ProjectDetailSheet(
-                    projectKey: "/work/demo", settings: settings, viewModel: viewModel, inbox: inbox,
-                    dictationProjectKeys: [], openInbox: {}, onDone: {},
+                    projectKey: "/work/demo", settings: settings, viewModel: viewModel, projects: projects,
+                    dictationProjectKeys: [], onDone: {},
                     exportMessage: "Could not save the file.")
                 .background(Color(nsColor: .windowBackgroundColor)),
                 name: "projects-sheet-export-failed-\(theme)",
                 width: 560, height: 760, growToFit: false, appearance: appearance)
             try record(
-                UnlistedTermsSheet(viewModel: viewModel, inbox: inbox, onDone: {})
+                UnlistedTermsSheet(viewModel: viewModel, projects: projects, onDone: {})
                     .background(Color(nsColor: .windowBackgroundColor)),
                 name: "projects-no-project-sheet-\(theme)",
                 width: 560, height: 480, growToFit: false, appearance: appearance)
@@ -461,34 +393,19 @@ final class ViewSnapshotTests: XCTestCase {
         ])
     }
 
-    private func projectsInbox(_ settings: SettingsStore) throws -> QuickCaptureInboxViewModel {
+    private func projectsViewModel() -> ProjectsViewModel {
         let now = Date()
         let learned = projectsLearnedTerms()
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("projects-snapshot-\(UUID().uuidString)")
-        let fileURL = directory.appendingPathComponent("quick-captures.json")
-        func capture(_ key: String, _ state: QuickCaptureItem.State) -> QuickCaptureItem {
-            var item = QuickCaptureItem(capturedAt: now, text: "a note")
-            item.projectKey = key
-            item.state = state
-            return item
-        }
-        try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [
-            capture("/work/demo", .ready), capture("/work/demo", .ready), capture("remote:demo", .drafting),
-            capture("/work/demo", .filed), capture("/work/demo", .filed),
-            capture("remote:working-set", .ready), capture("/work/mlx-audio-swift", .ready),
-        ]), to: fileURL)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let inbox = QuickCaptureInboxViewModel(
-            settings: settings, learnedTerms: { learned }, fileURL: fileURL, applicationSupport: directory)
-        inbox.enrolledHosts = { [(id: "h1", name: "devbox"), (id: "h2", name: "buildbox")] }
+        let projects = ProjectsViewModel(learnedTerms: { learned })
+        projects.enrolledHosts = { [(id: "h1", name: "devbox"), (id: "h2", name: "buildbox")] }
         let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
         var claude = ClaudeSessionSnapshot(sessionID: "s1", origin: local, firstSeen: now)
         claude.workspace = .make(rawCwd: "/work/demo", origin: local)
         var opencode = ClaudeSessionSnapshot(sessionID: "s2", origin: .remote(channel: "ssh:h1"), firstSeen: now)
         opencode.agent = .opencode
         opencode.workspace = .make(rawCwd: "/home/me/demo", origin: .remote(channel: "ssh:h1"))
-        inbox.liveSessions = { [claude, opencode] }
-        return inbox
+        projects.liveSessions = { [claude, opencode] }
+        return projects
     }
 
     /// Dictation → Output → Send phrases (#839): the saved
@@ -676,12 +593,6 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
-            ("draft-review", DictationOverlayView(
-                phase: .buffering, text: "", errorMessage: nil, secureInputActive: false,
-                metrics: metrics, draftReview: Self.draft)),
-            ("draft-review-change", DictationOverlayView(
-                phase: .buffering, text: "Make it only the popover part", errorMessage: nil,
-                secureInputActive: false, metrics: metrics, draftReview: Self.draft)),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -719,27 +630,16 @@ final class ViewSnapshotTests: XCTestCase {
                 errorMessage: "Couldn't insert. Copied for manual paste.",
                 secureInputActive: false, metrics: metrics)),
         ]
-        // Where the words go (#1015), with 1, 3 and 10 agents waiting: the
-        // list closed on the second agent, then open on it.
-        let destinations = [1, 3, 10].flatMap { waiting in
-            [false, true].map { open in
-                (name: "destinations-\(waiting)-\(open ? "open" : "closed")",
-                 view: DictationOverlayView(
-                    phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                    metrics: metrics, destinations: Self.strip(waiting: waiting, open: open)))
-            }
-        }
         // The #1074 states on a dark desktop too: the marks, the band and
         // the tints must read on both.
         let darkNames: Set = [
-            "listening", "polishing", "polished", "polished-accent", "destinations-3-open", "destinations-3-closed",
+            "listening", "polishing", "polished", "polished-accent",
         ]
-        let renders: [(String, DictationOverlayView, NSAppearance.Name)] = (states + destinations).map { ($0.name, $0.view, .aqua) }
-            + (states + destinations).filter { darkNames.contains($0.name) }.map { ("\($0.name)-dark", $0.view, .darkAqua) }
+        let renders: [(String, DictationOverlayView, NSAppearance.Name)] = states.map { ($0.name, $0.view, .aqua) }
+            + states.filter { darkNames.contains($0.name) }.map { ("\($0.name)-dark", $0.view, .darkAqua) }
         for (name, overlay, appearance) in renders {
             let height = metrics.contentHeight(
-                text: overlay.text, errorMessage: overlay.errorMessage, draftReview: overlay.draftReview,
-                destinations: overlay.destinations)
+                text: overlay.text, errorMessage: overlay.errorMessage)
             // A flat backdrop stands in for the desktop the panel floats over.
             let inset: CGFloat = 16
             let view = overlay
@@ -751,49 +651,6 @@ final class ViewSnapshotTests: XCTestCase {
                 width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
                 appearance: appearance)
         }
-    }
-
-    /// A ready draft under spoken review (#927).
-    private static let draft = QuickCaptureDraftSnapshot(
-        id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,
-        projectName: "localvoxtral",
-        title: "Show drafting progress in the Inbox row",
-        body: """
-        ## Problem
-        A capture shows "Drafting" with a spinner for minutes and never says which step it is on.
-
-        ## Scope
-        The Inbox row names the drafting step. The popover is unchanged.
-        """
-    )
-
-    /// Made-up session names as long as real ones: worktree folders, and
-    /// Claude Desktop titles, which run to about 70 characters (#1013).
-    private static let sessionNames = [
-        "Fix test-remote-doctor.sh broken-pipe flake in the harness scripts",
-        "history-store-own-file-a41c2e",
-        "Polish prompt token sizes in Settings and History",
-        "quick-capture-polish-before-routing",
-        "Voice memos keep follow-up recordings",
-        "overlay-destination-list-1015",
-        "Learned terms import and export move to Projects",
-        "remote-join-diagnosis-3b9d10",
-        "Boost the user's terms while Nemotron decodes",
-        "eval-e2e-scheduled-run-guard-874",
-    ]
-
-    /// The overlay's destinations (#840) with `waiting` sessions waiting,
-    /// the first of them picked: the second Tab.
-    private static func strip(waiting: Int, open: Bool) -> OverlayDestinationStrip {
-        let ids = (0..<waiting).map { "s\($0)" }
-        return OverlayDestinationStrip(
-            list: DictationDestinationList(
-                waitingSessionIDs: ids, focusedSessionID: nil, selected: .session(id: ids[0])),
-            focusedAppLabel: "ci-speed-optimizations-7ffef0",
-            focusedAppJoined: true,
-            sessionName: { id in sessionNames[Int(id.dropFirst())!] },
-            isOpen: open
-        )
     }
 
     // MARK: - Support

@@ -43,7 +43,8 @@ public enum StreamingSpeechBenchmark {
         // long dictation costs instead of an engine that silently stopped decoding (#314).
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
-            utteranceLimit: options.utteranceLimit
+            utteranceLimit: options.utteranceLimit,
+            terms: .empty
         )
         var batcher = makeBatcher(benchmark, options: options)
         var records: [StepRecord] = []
@@ -147,7 +148,8 @@ public enum StreamingSpeechBenchmark {
         let warmupSamples = min(audio.count, 3 * sampleRate)
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
-            utteranceLimit: options.utteranceLimit
+            utteranceLimit: options.utteranceLimit,
+            terms: .empty
         )
         var batcher = makeBatcher(benchmark, options: options)
         var timeline = RealtimeStepTimeline(sampleRate: sampleRate)

@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -73,22 +74,17 @@ final class LazySecretLoadingTests: XCTestCase {
     private static let polishingEnabledKey = "settings.llm_polishing_enabled"
 
     private var defaults: UserDefaults!
-    private var suiteName = ""
 
     override func setUp() async throws {
         try await super.setUp()
-        suiteName = "localvoxtral.LazySecretLoadingTests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults = makeTestDefaults()
         // Every case here is an install that has already migrated: the sweep
         // out of UserDefaults is a separate contract (SecretStoreTests).
         defaults.set(true, forKey: Self.migratedFlagKey)
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: suiteName)
         defaults = nil
-        suiteName = ""
         try await super.tearDown()
     }
 
@@ -176,7 +172,7 @@ final class LazySecretLoadingTests: XCTestCase {
 
         // What SettingsView.onAppear calls: the panes show all three fields.
         store.ensureAllSecretsLoaded()
-        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases).subtracting([.jevAPIKey]))
+        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases))
         XCTAssertEqual(store.apiKey, "sk-realtime")
         XCTAssertEqual(store.llmPolishingAPIKey, "polish-key")
         XCTAssertEqual(store.mistralAPIKey, "mk-mistral")
@@ -185,21 +181,7 @@ final class LazySecretLoadingTests: XCTestCase {
         // read per key per process is the budget, because each one is a prompt.
         store.ensureAllSecretsLoaded()
         store.dictationBackendMode = .mistralAPI
-        XCTAssertEqual(secrets.reads.count, SecretKey.allCases.count - 1)
-    }
-
-    /// The Jev key (#725) is read only once quick capture routing is on:
-    /// opening Settings must not prompt for a feature nobody turned on.
-    func testTheJevKeyIsReadOnlyOnceRoutingIsOn() {
-        let secrets = CountingSecretStore([.jevAPIKey: "jev-key"])
-        let store = makeStore(secrets)
-        store.ensureAllSecretsLoaded()
-        XCTAssertFalse(secrets.reads.contains(.jevAPIKey))
-        XCTAssertEqual(store.jevAPIKey, "")
-
-        store.quickCaptureRouter = .jev
-        XCTAssertEqual(secrets.reads.filter { $0 == .jevAPIKey }.count, 1)
-        XCTAssertEqual(store.jevAPIKey, "jev-key")
+        XCTAssertEqual(secrets.reads.count, SecretKey.allCases.count)
     }
 
     /// A value that just came OUT of the store must not go back IN: a write

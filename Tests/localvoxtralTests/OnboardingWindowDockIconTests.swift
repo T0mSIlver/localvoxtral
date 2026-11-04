@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -22,7 +23,7 @@ final class OnboardingWindowDockIconTests: XCTestCase {
     ) -> OnboardingWindowController {
         // An isolated suite and an in-memory secret store: `SettingsStore`
         // traps under XCTest rather than touch the runner's login keychain.
-        let defaults = UserDefaults(suiteName: "OnboardingWindowDockIconTests.\(UUID().uuidString)")!
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults,
             environment: [:],

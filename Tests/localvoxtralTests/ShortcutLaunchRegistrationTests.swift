@@ -1,6 +1,7 @@
 import Carbon.HIToolbox
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// The launch registration reports a dictation key it could not take, the
@@ -27,12 +28,7 @@ final class ShortcutLaunchRegistrationTests: XCTestCase {
     }
 
     private func makeShortcuts() -> (ShortcutController, FakeShortcutSession) {
-        let suiteName = "localvoxtral.ShortcutLaunchRegistrationTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
@@ -40,8 +36,6 @@ final class ShortcutLaunchRegistrationTests: XCTestCase {
         // Only the dictation slots register; the action slots would reach
         // real Carbon, whose answer in a test host is not ours to assert.
         settings.setCopyLastDictationShortcut(nil)
-        settings.setAnswerAgentShortcut(nil)
-        settings.setQuickCaptureShortcut(nil)
 
         let shortcuts = ShortcutController(settings: settings)
         let session = FakeShortcutSession()

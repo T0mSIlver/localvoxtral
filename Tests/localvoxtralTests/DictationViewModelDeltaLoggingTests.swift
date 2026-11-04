@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 // Tests for the issue #13 raw-delta instrumentation: when the hidden
@@ -24,12 +25,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
     /// arrival order. `enableDeltaLogging` controls the toggle so each test
     /// pins the exact state under test.
     private func makeViewModel(enableDeltaLogging: Bool) -> DictationViewModel {
-        let suiteName = "localvoxtral.DictationViewModelDeltaLoggingTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.debugLogRealtimeDeltas = enableDeltaLogging

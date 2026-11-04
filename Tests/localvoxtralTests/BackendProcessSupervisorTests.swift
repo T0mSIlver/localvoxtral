@@ -19,6 +19,15 @@ final class BackendProcessSupervisorTests: XCTestCase {
         )
     }
 
+    /// speechd's step diagnostics are numbers only, so they log whole; any other
+    /// line, a look-alike included, keeps its text private.
+    func testOnlySpeechdDiagnosticLinesLogTheirText() {
+        let diagnostic = "speechd diag: a step took 3120 ms for 2000 ms of audio; the GPU is not keeping up"
+        XCTAssertEqual(BackendProcessSupervisor.publicDiagnostic(diagnostic), diagnostic)
+        XCTAssertNil(BackendProcessSupervisor.publicDiagnostic("speechd: ready on 127.0.0.1:8000"))
+        XCTAssertNil(BackendProcessSupervisor.publicDiagnostic("partial: speechd diag: the words I dictated"))
+    }
+
     func testHappyPathWaitsForReadinessThenRuns() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

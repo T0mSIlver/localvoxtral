@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -283,10 +284,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     }
 
     private func makeTestSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.AgentDictationE2EEvalSupportTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         return SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
     }
 
