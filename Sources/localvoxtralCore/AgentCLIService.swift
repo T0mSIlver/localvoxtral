@@ -222,7 +222,8 @@ package struct AgentCLIService: Sendable {
         }
 
         let userList = await source.userTerms() + source.refusedTerms()
-        let userKeys = Set(userList.map(\.caseFoldedForMatching))
+        // Refusals hold across spacing and punctuation, as the store drops them.
+        let userKeys = Set(userList.map(PolishProjectNames.key))
         var known = Set(memory.termRecord(project.key)?.terms.map(\.term.caseFoldedForMatching) ?? [])
         var accepted: [String] = []
         var skipped: [AgentCLIProposal.Skipped] = []
@@ -236,7 +237,7 @@ package struct AgentCLIService: Sendable {
                 continue
             }
             let key = term.caseFoldedForMatching
-            if userKeys.contains(key) {
+            if userKeys.contains(PolishProjectNames.key(term)) {
                 skipped.append(.init(term: term, reason: .userList))
             } else if !known.insert(key).inserted {
                 skipped.append(.init(term: term, reason: .known))
