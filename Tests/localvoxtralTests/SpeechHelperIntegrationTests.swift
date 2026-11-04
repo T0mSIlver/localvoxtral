@@ -340,7 +340,10 @@ final class SpeechHelperIntegrationTests: XCTestCase {
     func testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensureModelCached(model)
-        let (process, _) = try await launchHelper(binary: binary, model: model)
+        let (process, stderrLog) = try await launchHelper(binary: binary, model: model)
+        // A model that takes a language (Nemotron Unified) gets the phrase's,
+        // as a session with the user's choice would; the others get none.
+        let language = SpeechModelCatalog.option(forRepoID: model)?.capabilities.sessionLanguage(for: "en")
 
         let healthURL = URL(string: "http://127.0.0.1:\(Self.testPort)/health")!
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
@@ -403,7 +406,8 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         let configuration = RealtimeSessionConfiguration(
             endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
             apiKey: "",
-            model: model
+            model: model,
+            language: language
         )
         try client.connect(configuration: configuration)
         await fulfillment(
@@ -446,6 +450,14 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             0.55,
             "Expected synthetic-audio transcript accuracy >= 0.55. Transcript: \(doneText)"
         )
+        if let language {
+            // The session.update language reached the session as its prompt:
+            // "en" is index 0 in Nemotron's prompt dictionary.
+            XCTAssertTrue(
+                stderrLog.tail(200).contains("speechd: nemotron session language \(language) prompt 0"),
+                "speechd must open the session on the en prompt: \(stderrLog.tail(30))"
+            )
+        }
         XCTAssertTrue(process.isRunning)
         process.terminate()
     }

@@ -31,7 +31,8 @@ public enum StreamingSpeechBenchmark {
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit,
-            terms: .empty
+            terms: .empty,
+            language: nil
         )
         var batcher = makeBatcher(benchmark, options: options)
         var records: [StepRecord] = []
@@ -119,7 +120,8 @@ public enum StreamingSpeechBenchmark {
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit,
-            terms: .empty
+            terms: .empty,
+            language: nil
         )
         var batcher = makeBatcher(benchmark, options: options)
         var timeline = RealtimeStepTimeline(sampleRate: sampleRate)

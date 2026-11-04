@@ -390,6 +390,7 @@ extension DictationSessionController {
         let usageBackend = Self.usageBackend(for: settings.dictationBackendMode)
         // Same snapshot: the terms are cut for the model this session dials.
         let modelCapabilities = settings.dictationModelCapabilities
+        let sessionLanguage = settings.sessionDictationLanguage
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -474,7 +475,8 @@ extension DictationSessionController {
             apiKey: apiKey,
             model: model,
             usageBackend: usageBackend,
-            contextBias: startContextBias
+            contextBias: startContextBias,
+            language: sessionLanguage
         )
     }
 
