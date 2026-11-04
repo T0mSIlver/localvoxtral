@@ -13,7 +13,7 @@
 #
 # stdout: one label per line, possibly none.
 #   waits:mac-llm      the LLM lane will run (llm-lane-filter.sh)
-#   waits:mac-voxtral  the speechd or live STT lane will run
+#   waits:mac-speech  the speechd or live STT lane will run
 #                      (speechd-lane-filter.sh, stt-lane-filter.sh)
 #   waits:stack        the base is another PR's branch, not main
 #
@@ -41,7 +41,7 @@ if runs "$("$DIR/llm-lane-filter.sh" "$FILES" "$MARKER_TEXT")"; then
 fi
 if runs "$("$DIR/speechd-lane-filter.sh" "$FILES" "$MARKER_TEXT")" \
   || runs "$("$DIR/stt-lane-filter.sh" "$FILES" pull_request "$MARKER_TEXT")"; then
-  echo "waits:mac-voxtral"
+  echo "waits:mac-speech"
 fi
 if [[ "$BASE_REF" != "main" ]]; then
   echo "waits:stack"
