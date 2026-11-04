@@ -158,7 +158,7 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         ssh: [String: SSHDestinationTTYProbeResult] = [:],
         federation: HerdrMachineFederation = .notFederated,
         localSockets: Set<String> = [],
-        wholeViewClients: Set<String>? = nil
+        wholeViewClients: [String: String]? = nil
     ) -> HerdrWindowLocator {
         let hosts = [host, otherHost]
         return HerdrWindowLocator(
@@ -167,7 +167,7 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
             sshConnection: { ssh[$0] ?? .noSSHClient },
             federation: { federation },
             liveLocalHerdrSockets: { localSockets },
-            isWholeViewClient: { wholeViewClients?.contains($0) ?? true },
+            wholeViewClientSession: { tty in wholeViewClients.map { $0[tty] } ?? "default" },
             enrolledHosts: { destination in hosts.filter { $0.sshHostAlias == destination } },
             canonicalizedEnrolledHosts: { _ in [] }
         )
@@ -219,18 +219,18 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
     }
 
     func testALocalPaneRaisesTheLocalHerdrClientShowingLocal() async {
-        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h.sock")
-        let shown = await locator(herdrClients: ["/dev/ttys006"], localSockets: ["/tmp/h.sock"])
+        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h/herdr.sock")
+        let shown = await locator(herdrClients: ["/dev/ttys006"], localSockets: ["/tmp/h/herdr.sock"])
             .windowShows(target, tty: "/dev/ttys006")
         XCTAssertTrue(shown)
 
         let builder = HerdrMachineProfile(id: "p", label: "b", target: "builder", session: "default", enabled: true)
         let federated = await locator(
-            herdrClients: ["/dev/ttys006"], federation: .showingMachine(builder), localSockets: ["/tmp/h.sock"]
+            herdrClients: ["/dev/ttys006"], federation: .showingMachine(builder), localSockets: ["/tmp/h/herdr.sock"]
         ).windowShows(target, tty: "/dev/ttys006")
         XCTAssertFalse(federated, "the client shows a remote machine, not this herdr")
 
-        let twoServers = await locator(herdrClients: ["/dev/ttys006"], localSockets: ["/tmp/h.sock", "/tmp/i.sock"])
+        let twoServers = await locator(herdrClients: ["/dev/ttys006"], localSockets: ["/tmp/h/herdr.sock", "/tmp/i/herdr.sock"])
             .windowShows(target, tty: "/dev/ttys006")
         XCTAssertFalse(twoServers, "no way to tell which herdr the client attaches")
     }
@@ -239,9 +239,9 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
     /// saved. herdr keeps one focus per server, so the focused window shows
     /// the focused pane whichever of the two it is.
     func testEitherWindowOfOneLocalHerdrShowsItsFocusedPane() async {
-        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h.sock")
+        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h/herdr.sock")
         let clients = ["/dev/ttys006", "/dev/ttys007"]
-        let locator = locator(herdrClients: clients, localSockets: ["/tmp/h.sock"])
+        let locator = locator(herdrClients: clients, localSockets: ["/tmp/h/herdr.sock"])
         for tty in clients {
             let shows = await locator.windowShows(target, tty: tty)
             XCTAssertTrue(shows, tty)
@@ -253,25 +253,52 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
     /// `herdr terminal attach <id>` and `herdr --remote` show something other
     /// than the server's focused pane, so their window never counts.
     func testAnAttachOrRemoteClientWindowDoesNotShowTheFocusedPane() async {
-        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h.sock")
+        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h/herdr.sock")
         let locator = locator(
-            herdrClients: ["/dev/ttys006", "/dev/ttys007"], localSockets: ["/tmp/h.sock"],
-            wholeViewClients: ["/dev/ttys006"]
+            herdrClients: ["/dev/ttys006", "/dev/ttys007"], localSockets: ["/tmp/h/herdr.sock"],
+            wholeViewClients: ["/dev/ttys006": "default"]
         )
         let attach = await locator.windowShows(target, tty: "/dev/ttys007")
         XCTAssertFalse(attach)
         let lone = await self.locator(
-            herdrClients: ["/dev/ttys007"], localSockets: ["/tmp/h.sock"], wholeViewClients: []
+            herdrClients: ["/dev/ttys007"], localSockets: ["/tmp/h/herdr.sock"], wholeViewClients: [:]
         ).windowShows(target, tty: "/dev/ttys007")
         XCTAssertFalse(lone, "a lone attach client is not a whole view either")
+    }
+
+    /// Codex review of LVX-99: a second window on `herdr --session other`
+    /// attaches another server, whose focused pane the read-back never asked.
+    func testAWindowOnAnotherHerdrSessionDoesNotShowTheFocusedPane() async {
+        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/Users/t/.config/herdr/herdr.sock")
+        let locator = locator(
+            herdrClients: ["/dev/ttys006", "/dev/ttys007"], localSockets: ["/Users/t/.config/herdr/herdr.sock"],
+            wholeViewClients: ["/dev/ttys006": "default", "/dev/ttys007": "other"]
+        )
+        let defaultWindow = await locator.windowShows(target, tty: "/dev/ttys006")
+        XCTAssertTrue(defaultWindow)
+        let otherSession = await locator.windowShows(target, tty: "/dev/ttys007")
+        XCTAssertFalse(otherSession)
+
+        let named = HerdrPaneFocusTarget.local(
+            paneID: "w1:p2", socketPath: "/Users/t/.config/herdr/sessions/other/herdr.sock"
+        )
+        let namedLocator = self.locator(
+            herdrClients: ["/dev/ttys006", "/dev/ttys007"],
+            localSockets: ["/Users/t/.config/herdr/sessions/other/herdr.sock"],
+            wholeViewClients: ["/dev/ttys006": "default", "/dev/ttys007": "other"]
+        )
+        let namedWindow = await namedLocator.windowShows(named, tty: "/dev/ttys007")
+        XCTAssertTrue(namedWindow)
+        let defaultOnNamed = await namedLocator.windowShows(named, tty: "/dev/ttys006")
+        XCTAssertFalse(defaultOnNamed)
     }
 
     /// With machines saved, herdr keeps one selection per user, so a second
     /// client makes it unknowable which machine the focused one shows.
     func testTwoWindowsWithMachinesSavedShowNothing() async {
-        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h.sock")
+        let target = HerdrPaneFocusTarget.local(paneID: "w1:p2", socketPath: "/tmp/h/herdr.sock")
         let shows = await locator(
-            herdrClients: ["/dev/ttys006", "/dev/ttys007"], federation: .showingLocal, localSockets: ["/tmp/h.sock"]
+            herdrClients: ["/dev/ttys006", "/dev/ttys007"], federation: .showingLocal, localSockets: ["/tmp/h/herdr.sock"]
         ).windowShows(target, tty: "/dev/ttys006")
         XCTAssertFalse(shows)
     }

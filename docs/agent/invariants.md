@@ -884,8 +884,11 @@ there is not.
     `HerdrWindowLocator` takes the join's process-table evidence and asks
     whether the FOCUSED tty shows that herdr. For a local pane: the one live
     local herdr socket is the pane's, the focused tty runs a whole-view herdr
-    client in its foreground (the join's `HerdrClientTTYProbe` test: an
-    attach or `--remote` client shows something else), and the machine
+    client OF THAT SOCKET'S SESSION in its foreground (an attach or `--remote`
+    client shows something else, and `herdr --session <name>` attaches
+    another server: `HerdrClientTTYProbe.wholeViewSessionName` against
+    `HerdrSessionSocket`; a client started with its own `HERDR_SOCKET_PATH`
+    still reads as the default session), and the machine
     selection shows Local (a lone client once machines are saved). Several
     windows on one local herdr with no machines saved all pass (LVX-99):
     herdr keeps one focus per server, not per client (a client holds size,

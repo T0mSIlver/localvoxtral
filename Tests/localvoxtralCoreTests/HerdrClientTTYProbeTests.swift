@@ -25,6 +25,27 @@ final class HerdrClientTTYProbeTests: XCTestCase {
         XCTAssertEqual(processTableReads.withLock { $0 }, 0)
     }
 
+    /// The session a whole-view client shows, from its argv (LVX-99 review):
+    /// a plain `herdr` is the default session, `--session other` another
+    /// server, and anything that is not a whole-view client names none.
+    func testWholeViewSessionNameReadsTheClientsSession() {
+        func session(_ argvs: [Int32: [String]]) -> String? {
+            HerdrClientTTYProbe.wholeViewSessionName(
+                onTTYDevicePath: "/dev/ttys001",
+                deviceID: { _ in dev_t(123) },
+                processes: { _ in argvs.keys.sorted().map { Self.foreground(pid: $0, name: "herdr") } },
+                arguments: { argvs[$0] }
+            )
+        }
+        XCTAssertEqual(session([2: ["herdr"]]), "default")
+        XCTAssertEqual(session([2: ["herdr", "--session", "other"]]), "other")
+        XCTAssertEqual(session([2: ["herdr", "--session=other"], 3: ["herdr", "--session", "other"]]), "other")
+        XCTAssertNil(session([2: ["herdr"], 3: ["herdr", "--session", "other"]]), "two sessions in one job")
+        XCTAssertNil(session([2: ["herdr", "terminal", "attach", "w1:p2"]]))
+        XCTAssertNil(session([2: ["herdr", "--remote", "builder"]]))
+        XCTAssertNil(session([:]), "no herdr client in the foreground")
+    }
+
     func testProcessTableFailureRefuses() {
         XCTAssertFalse(
             HerdrClientTTYProbe.isHerdrClient(

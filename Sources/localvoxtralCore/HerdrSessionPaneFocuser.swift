@@ -132,14 +132,17 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
 /// (herdr has no client introspection).
 ///
 /// - A local herdr: the one live local herdr socket is the pane's, the tty
-///   runs a whole-view herdr client in its foreground, and the saved-machine
-///   state shows Local (with machines saved, only for a lone client surface,
+///   runs a whole-view herdr client of THAT socket's session in its
+///   foreground (`herdr --session <name>` attaches another server), and the
+///   saved-machine state shows Local (with machines saved, only for a lone client surface,
 ///   as the local join arm requires). Several client windows are fine with no
 ///   machines saved: herdr keeps ONE focus per server, not per client, so
 ///   every whole-view client of that server shows the same focused pane
 ///   (herdr `server/clients.rs`: a client holds size, theme and keys, no
 ///   workspace, tab or pane; LVX-99). An attach (`herdr terminal attach`)
-///   or `--remote` client shows something else and never counts.
+///   or `--remote` client shows something else and never counts. Residual:
+///   a client started with its own `HERDR_SOCKET_PATH` reads as the default
+///   session, as it does for the join arm.
 /// - A remote herdr: a tty whose foreground ssh goes to exactly that
 ///   enrolled host with a plain herdr client of that socket's session and no
 ///   competing herdr view (the remote join arm's argv checks), or the lone
@@ -153,7 +156,7 @@ package struct HerdrWindowLocator {
     private let sshConnection: @Sendable (String) -> SSHDestinationTTYProbeResult
     private let federation: @Sendable () -> HerdrMachineFederation
     private let liveLocalHerdrSockets: () -> Set<String>
-    private let isWholeViewClient: @Sendable (String) -> Bool
+    private let wholeViewClientSession: @Sendable (String) -> String?
     private let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     private let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
 
@@ -162,15 +165,16 @@ package struct HerdrWindowLocator {
     ///     client job; nil when the process table cannot be read.
     ///   - sshClientTTYs: the ttys whose foreground job is an ssh.
     ///   - sshConnection: the join's ssh probe for one tty.
-    ///   - isWholeViewClient: whether a tty's foreground job is a whole-view
-    ///     herdr client (`HerdrClientTTYProbe.isHerdrClient`), the join's test.
+    ///   - wholeViewClientSession: the herdr session a whole-view client in a
+    ///     tty's foreground shows, nil when it runs none
+    ///     (`HerdrClientTTYProbe.wholeViewSessionName`).
     package init(
         herdrClientTTYs: @escaping @Sendable () -> [String]?,
         sshClientTTYs: @escaping @Sendable () -> [String]?,
         sshConnection: @escaping @Sendable (String) -> SSHDestinationTTYProbeResult,
         federation: @escaping @Sendable () -> HerdrMachineFederation,
         liveLocalHerdrSockets: @escaping () -> Set<String>,
-        isWholeViewClient: @escaping @Sendable (String) -> Bool,
+        wholeViewClientSession: @escaping @Sendable (String) -> String?,
         enrolledHosts: @escaping @MainActor (String) -> [ClaudeRemoteHost],
         canonicalizedEnrolledHosts: @escaping @MainActor (String) async -> [ClaudeRemoteHost]
     ) {
@@ -179,7 +183,7 @@ package struct HerdrWindowLocator {
         self.sshConnection = sshConnection
         self.federation = federation
         self.liveLocalHerdrSockets = liveLocalHerdrSockets
-        self.isWholeViewClient = isWholeViewClient
+        self.wholeViewClientSession = wholeViewClientSession
         self.enrolledHosts = enrolledHosts
         self.canonicalizedEnrolledHosts = canonicalizedEnrolledHosts
     }
@@ -204,7 +208,9 @@ package struct HerdrWindowLocator {
 
     private func localWindowShows(socketPath: String, tty: String) -> Bool {
         guard liveLocalHerdrSockets() == [socketPath], let clients = herdrClientTTYs(),
-              clients.contains(tty), isWholeViewClient(tty)
+              clients.contains(tty),
+              let session = wholeViewClientSession(tty),
+              HerdrSessionSocket.isSocket(socketPath, ofSessionNamed: session)
         else { return false }
         switch federation() {
         case .notFederated:

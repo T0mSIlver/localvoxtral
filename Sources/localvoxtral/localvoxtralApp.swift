@@ -617,7 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sshConnection: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
             federation: { HerdrMachineFederationReader.live().federation() },
             liveLocalHerdrSockets: { [claudeSessionRegistry] in claudeSessionRegistry.liveLocalHerdrSocketPaths() },
-            isWholeViewClient: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
+            wholeViewClientSession: { HerdrClientTTYProbe.wholeViewSessionName(onTTYDevicePath: $0) },
             enrolledHosts: { [weak self] destination in
                 self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
             },
