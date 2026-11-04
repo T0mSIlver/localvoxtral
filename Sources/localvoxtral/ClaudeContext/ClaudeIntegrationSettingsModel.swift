@@ -198,6 +198,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// The bundled local plugin's `plugin.json` version, for the update
     /// comparison. Nil when the bundled manifest could not be read.
     let bundledPluginVersion: String?
+    /// The bundled mod's `plugin.json` version, compared on its own at launch.
+    /// Nil when the bundled manifest could not be read: the mod is then never
+    /// updated unattended.
+    let bundledModVersion: String?
     /// Reads and writes the `statusLine` key. Nil disables the row's actions.
     let statuslineService: @Sendable () -> ClaudeStatuslineInstallService?
     /// The hook command the statusline entry points at, e.g.
@@ -354,6 +358,7 @@ public final class ClaudeIntegrationSettingsModel {
         fetchMarketplaceListOutput: @escaping @Sendable () async -> String? = { nil },
         desiredMarketplacePath: @escaping @Sendable () -> String? = { nil },
         bundledPluginVersion: String? = nil,
+        bundledModVersion: String? = nil,
         statuslineService: @escaping @Sendable () -> ClaudeStatuslineInstallService? = { nil },
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
@@ -384,6 +389,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.fetchMarketplaceListOutput = fetchMarketplaceListOutput
         self.desiredMarketplacePath = desiredMarketplacePath
         self.bundledPluginVersion = bundledPluginVersion
+        self.bundledModVersion = bundledModVersion
         self.statuslineService = statuslineService
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService

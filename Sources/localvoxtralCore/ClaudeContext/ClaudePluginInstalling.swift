@@ -14,6 +14,9 @@ public protocol ClaudePluginInstalling: Sendable {
     func updatePlugin() throws
     /// Update an installed plugin in place, never uninstalling it.
     func updateInstalledPlugin() throws
+    /// Update the installed mod in place when only the mod is behind, never
+    /// installing or uninstalling anything.
+    func updateInstalledMod() throws
     func uninstallPlugin() throws
     /// stdout of `claude plugin list`, or nil when the listing is unavailable.
     /// Default nil so test doubles that only exercise install paths keep
@@ -34,6 +37,9 @@ extension ClaudePluginInstalling {
     /// launch path only calls this after a listing said repair is needed, and
     /// a double that answers no listing never gets there.
     public func repairMarketplaceRegistration() throws {}
+    /// Same bargain: the launch path calls this only after a listing named an
+    /// installed mod behind the bundled one.
+    public func updateInstalledMod() throws {}
 }
 
 extension ClaudePluginInstallService: ClaudePluginInstalling {}
