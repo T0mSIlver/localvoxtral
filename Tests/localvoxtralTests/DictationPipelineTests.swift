@@ -887,6 +887,47 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(alertsOfTheFirst, ["LLM Polishing Returned No Text"])
     }
 
+    /// The polish-failure alert is modal. The edit watch of the inserted
+    /// fallback text must already be open when it appears, or an edit made
+    /// while it is up is missed and the record says `clean`.
+    func testTheEditWatchIsOpenWhenThePolishFailureAlertAppears() async throws {
+        StubHTTPProtocol.reply.withLock { $0 = .http(200, #"{"choices":[{"message":{"role":"assistant","content":" "}}]}"#) }
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(session: StubHTTPProtocol.session()),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false
+        )
+        let viewModel = pipeline.viewModel
+        viewModel.settings.dictationHistoryRetention = .forever
+        viewModel.settings.diagnosticRecordsEnabled = true
+        let sleeper = EditSignalManualSleeper()
+        addTeardownBlock { sleeper.fireAll() }
+        let watcher = EditSignalWatcher(monitor: EditSignalTestMonitor(), sleepFor: { await sleeper.sleep($0) })
+        viewModel.session.editSignalWatcher = watcher
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let recordStore = DiagnosticRecordStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.diagnosticRecordStore = recordStore
+        viewModel.sessionStore = store
+        viewModel.session.diagnosticRecordStore = recordStore
+        var watchingAtAlert: Bool?
+        pipeline.presenter.onPresent = { watchingAtAlert = watcher.isWatching }
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(
+            pipeline,
+            expectedError: "The LLM polishing endpoint answered with no usable text, so the transcript was not polished."
+                + " [endpoint: http://\(StubHTTPProtocol.host)/v1/chat/completions]",
+            finalStatus: "LLM polishing failed.",
+            alerts: ["LLM Polishing Returned No Text"]
+        )
+
+        XCTAssertEqual(watchingAtAlert, true, "the edit watch opened after the modal alert")
+    }
+
     /// A polish cut off at the backend's output limit (#1109): the real
     /// client refuses the prefix, and the stop commits the whole transcript
     /// once and says why.
