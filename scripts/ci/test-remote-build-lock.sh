@@ -193,6 +193,14 @@ grep -q 'was taken by hand from this worktree' "$TMP_DIR/out" \
 [[ ! -s "$payload_log" ]] || fail "the payload ran inside someone's hand lock"
 grep -q ' by-hand ' "$LOCK/owner" || fail "the run touched the hand lock"
 
+# The same worktree reached through a symlink is still this worktree.
+ln -s "$ROOT_DIR" "$TMP_DIR/linked-checkout"
+status=0
+env "${common_env[@]}" LV_LOCK_WAIT_SECONDS=5 "$TMP_DIR/linked-checkout/scripts/remote-build.sh" build \
+  >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" == 75 ]] && grep -q 'was taken by hand from this worktree' "$TMP_DIR/out" \
+  || fail "a run through a symlinked checkout waited on its own hand lock (exit $status): $(cat "$TMP_DIR/out")"
+
 # Released only while it is still this worktree's.
 echo "other-thread $(date -u +%Y-%m-%dT%H:%M:%SZ) by-hand eval worktree=/elsewhere" >"$LOCK/owner"
 status=0

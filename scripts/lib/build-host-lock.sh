@@ -91,7 +91,11 @@ lv_lock_age() {
 # this worktree. remote-build.sh takes the lock itself, so waiting on it would
 # wait on ourselves: that held the Mini for 55 minutes (LVX-104).
 lv_lock_held_by_hand_here() {
-  [[ "$1" == *" by-hand "*" worktree=${ROOT_DIR:-$PWD}" ]]
+  # Physical, as the helper records it: a checkout reached through a symlink
+  # is the same worktree (Codex review).
+  local here
+  here="$(cd "${ROOT_DIR:-$PWD}" 2>/dev/null && pwd -P)" || return 1
+  [[ "$1" == *" by-hand "*" worktree=$here" ]]
 }
 
 # Whether the line is not one a remote-build.sh wrote: someone took the lock by
