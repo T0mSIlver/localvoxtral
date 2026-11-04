@@ -1181,6 +1181,24 @@ extension DictationSessionController {
         return record.id
     }
 
+    /// Deletes every recording, through History's write queue. When History
+    /// did not open there is no queue and no quarantine, so the folder is
+    /// emptied here; turning audio off must not depend on a store that
+    /// failed (same fallback as `deleteAllDiagnosticRecords`, #1771).
+    @discardableResult
+    func deleteAllAudio(removingBackups: Bool = false) -> Task<Void, Never>? {
+        if let sessionStore {
+            return sessionStore.deleteAllAudio(removingBackups: removingBackups)
+        }
+        if historyOpenFailed, let audioStoreWithoutHistory {
+            let removed = audioStoreWithoutHistory.removeAll()
+            if removingBackups { quarantineWithoutHistory?.removeAll(of: "dictation-audio") }
+            Log.persistence.info(
+                "History did not open: deleted \(removed, privacy: .public) recording(s) directly")
+        }
+        return nil
+    }
+
     /// Brings the store in line with the retention setting: at launch, and
     /// when the setting changes. `off` deletes everything there is; with
     /// `removingBackups` (the user ticked it when choosing Don't keep) the
@@ -1200,7 +1218,7 @@ extension DictationSessionController {
             deleteAllDiagnosticRecords()
         }
         if !settings.dictationAudioEnabled {
-            sessionStore?.deleteAllAudio()
+            deleteAllAudio()
         }
         if !retention.savesDictations, removingBackups {
             // Not a trim: a trim snapshots the store first.
