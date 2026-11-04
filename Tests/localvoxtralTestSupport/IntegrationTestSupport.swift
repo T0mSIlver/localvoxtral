@@ -116,9 +116,7 @@ package enum IntegrationTestSupport {
     }
 
     private static func tokenizedWords(from text: String) -> [String] {
-        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting(
-            text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        let normalized = text.lowercased()
         guard !normalized.isEmpty else { return [] }
 
         let range = NSRange(normalized.startIndex..., in: normalized)

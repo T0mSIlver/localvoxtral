@@ -35,13 +35,6 @@ package final class RealtimeServerModel: @unchecked Sendable {
         self.kind = kind
     }
 
-    /// Whether a run is going: the server is reading audio it will answer.
-    package var hasRunGoing: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return isRunning
-    }
-
     /// The server's answer to one client frame, in order. Frames that are not
     /// JSON (a test's placeholder) are ignored.
     package func receive(_ text: String) -> [[String: Any]] {

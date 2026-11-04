@@ -51,17 +51,6 @@ struct TerminalCapabilities: Equatable, Hashable, Sendable {
     let joinRequirement: String?
     let screenRequirement: String?
 
-    /// DYNAMIC gates the catalog cannot know: cmux's socket setup, Ghostty's
-    /// installed version. Evaluated by `TerminalAppsSettingsModel`.
-    enum DynamicGate: Equatable, Sendable {
-        /// Ghostty's TTY join and AX grid read need ≥ 1.4 — or a tip build
-        /// whose scripting dictionary already declares the join's chain.
-        case ghosttyVersion(installed: String?)
-        /// cmux joins only with the surface-join toggle on and a socket
-        /// password stored (`CmuxSocketPasswordStore`).
-        case cmuxSocketSetUp(enabled: Bool, passwordStored: Bool)
-    }
-
     static func supportsEverything() -> TerminalCapabilities {
         TerminalCapabilities(joinRequirement: nil, screenRequirement: nil)
     }

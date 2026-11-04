@@ -406,21 +406,6 @@ package enum RepoVocabularyMatcher {
         return Array(ranked.prefix(maxEntries))
     }
 
-    /// The spans the production matcher REWRITES: exact-tier hits only (a lone
-    /// word may change letter case and nothing else). Sound-alike hits are in
-    /// `groundedCandidates(...).verificationCandidates`. Historical notes on
-    /// the tiers: a heard span that maps to multiple terms abstains.
-    /// Exact-index hits are single-valued; multiple terms for the same span are
-    /// therefore tied distance-one fuzzy hits and must all abstain. Only when
-    /// those tiers leave NOTHING, try one broader aligned match (which applies
-    /// its own score margin) and otherwise abstain.
-    package static func groundedCandidateEntries(
-        transcript: String,
-        vocabulary: RepoVocabulary
-    ) -> [ReplacementEntry] {
-        groundedCandidates(transcript: transcript, vocabulary: vocabulary).entries
-    }
-
     /// One source's grounding decision, carrying HOW it was reached.
     ///
     /// `entries` holds only spans that normalize to the term itself, so
@@ -459,7 +444,14 @@ package enum RepoVocabularyMatcher {
         )
     }
 
-    /// `groundedCandidateEntries` with its provenance retained.
+    /// `entries` are the spans the production matcher REWRITES: exact-tier hits only (a lone
+    /// word may change letter case and nothing else). Sound-alike hits are in
+    /// `groundedCandidates(...).verificationCandidates`. Historical notes on
+    /// the tiers: a heard span that maps to multiple terms abstains.
+    /// Exact-index hits are single-valued; multiple terms for the same span are
+    /// therefore tied distance-one fuzzy hits and must all abstain. Only when
+    /// those tiers leave NOTHING, try one broader aligned match (which applies
+    /// its own score margin) and otherwise abstain.
     package static func groundedCandidates(
         transcript: String,
         vocabulary: RepoVocabulary
@@ -1180,8 +1172,7 @@ package enum RepoVocabularyMatcher {
         "[Candidate terms: maybe said, use one only where it fits better]"
 
 
-    /// Renders matched entries as a prompt section mirroring
-    /// `ReplacementDictionary.renderedPromptSection`'s `- key: aliases` shape,
+    /// Renders matched entries as a prompt section of `- key: aliases` lines
     /// under the given header. Every key/alias is sanitized first; an entry
     /// whose key or every alias becomes unrenderable is dropped. Empty entries
     /// render nothing.
