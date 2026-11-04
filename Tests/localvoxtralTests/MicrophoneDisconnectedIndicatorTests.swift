@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// A dictation stopped because its mic was unplugged turns the menu bar icon
@@ -73,12 +74,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
     }
 
     private func makeDictatingViewModel() -> DictationViewModel {
-        let suiteName = "localvoxtral.MicrophoneDisconnectedIndicatorTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = .liveAutoPaste
         let viewModel = DictationViewModel(

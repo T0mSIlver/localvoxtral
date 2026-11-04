@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -17,10 +18,7 @@ final class SpeakerTermsImportTests: XCTestCase {
     }
 
     private func makeViewModel(store: Store) -> DictationViewModel {
-        let suiteName = "localvoxtral.SpeakerTermsImportTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let viewModel = DictationViewModel(
             settings: SettingsStore(
                 defaults: defaults, environment: [:], secretStore: InMemorySecretStore()

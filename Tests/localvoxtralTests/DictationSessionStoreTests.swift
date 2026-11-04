@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -232,10 +233,7 @@ final class DictationHistoryRetentionTests: XCTestCase {
 
     @MainActor
     func testTheSettingDefaultsToForeverAndPersists() {
-        let suiteName = "localvoxtral.DictationHistoryRetentionTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())

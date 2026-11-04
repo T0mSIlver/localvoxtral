@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -54,16 +55,14 @@ final class OverlayManualPlacementTests: XCTestCase {
 
     @MainActor
     func testFirstRunHasNoStoredPosition() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = makeTestDefaults()
 
         XCTAssertNil(SettingsStore.loadOverlayBufferPlacement(defaults: defaults))
     }
 
     @MainActor
     func testStoredPositionSurvivesAReload() throws {
-        let suite = UUID().uuidString
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeTestDefaults()
         let store = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
 
@@ -78,9 +77,7 @@ final class OverlayManualPlacementTests: XCTestCase {
 
     @MainActor
     func testReanchoringForgetsTheStoredPosition() throws {
-        let suite = UUID().uuidString
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeTestDefaults()
         let store = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         store.overlayBufferPlacement = OverlayManualPlacement(
@@ -96,9 +93,7 @@ final class OverlayManualPlacementTests: XCTestCase {
 
     @MainActor
     func testAHalfWrittenPositionIsIgnored() throws {
-        let suite = UUID().uuidString
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeTestDefaults()
         defaults.set("display-uuid", forKey: "settings.overlay_buffer_position_screen_id")
         defaults.set(120.0, forKey: "settings.overlay_buffer_position_offset_x")
 
@@ -107,9 +102,7 @@ final class OverlayManualPlacementTests: XCTestCase {
 
     @MainActor
     func testStoredPositionLoadsIntoTheSettingsStore() throws {
-        let suite = UUID().uuidString
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeTestDefaults()
         defaults.set("display-uuid", forKey: "settings.overlay_buffer_position_screen_id")
         defaults.set(120.0, forKey: "settings.overlay_buffer_position_offset_x")
         defaults.set(240.0, forKey: "settings.overlay_buffer_position_offset_y")

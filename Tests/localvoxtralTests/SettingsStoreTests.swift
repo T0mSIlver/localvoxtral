@@ -1,6 +1,7 @@
 import Carbon.HIToolbox
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -14,15 +15,13 @@ final class SettingsStoreTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.SettingsStoreTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        let suite = makeTestDefaultsSuite()
+        defaultsSuiteName = suite.suiteName
+        defaults = suite.defaults
         secrets = InMemorySecretStore()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
         defaultsSuiteName = ""
         secrets = nil
