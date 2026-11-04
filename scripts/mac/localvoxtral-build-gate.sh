@@ -833,12 +833,17 @@ process_start_time() {
 }
 
 # One record per payload, `<records dir>/<pgid>`: unit-test shards run several
-# payloads in one work dir at once.
+# payloads in one work dir at once. Written aside and renamed into place: a
+# reap that found the record before its start time was written ended nothing
+# for that group and deleted the record (LVX-103). `reap`'s glob skips the
+# dot file.
 record_payload_group() {
   [[ -n "$LV_GATE_PAYLOAD_RECORD" ]] || return 0
   mkdir -p "$LV_GATE_PAYLOAD_RECORD" 2>/dev/null || return 0
-  process_start_time "$LV_GATE_PAYLOAD_PGID" \
-    >"$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID" 2>/dev/null || true
+  local final="$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID"
+  local partial="$LV_GATE_PAYLOAD_RECORD/.$LV_GATE_PAYLOAD_PGID.partial"
+  process_start_time "$LV_GATE_PAYLOAD_PGID" >"$partial" 2>/dev/null \
+    && mv -f "$partial" "$final" 2>/dev/null || rm -f "$partial"
 }
 
 forget_payload_group() {
