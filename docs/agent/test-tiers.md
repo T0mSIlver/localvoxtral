@@ -176,7 +176,10 @@ what it needs, not about cost:
   `build-test` runs the shell suites too, for the Mac's bash 3.2.
 - **`mac-lanes`, the self-hosted Mac, same-repo PRs that are NOT drafts +
   pushes + dispatches** — a draft gets `build-test` only, and marking it ready
-  (`gh pr ready <n>`) starts the run. The literal `[mac-lanes]` in a draft's PR
+  (`gh pr ready <n>`) starts the run. That run, and the one a pull back to
+  draft starts, skips `build-test` and `linux` when the head's newest finished
+  run of each passed (the `prior` job, `scripts/ci/prior-green.sh`): the hosted
+  macOS queue is scarce. The literal `[mac-lanes]` in a draft's PR
   body opts it back in, for a draft that needs the signed `try-pr.sh` artifact
   or a live lane. What the job holds is
   anything that needs THAT machine: the `localvoxtral-dev` signing identity

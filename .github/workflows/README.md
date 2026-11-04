@@ -27,7 +27,9 @@ DRAFT therefore gets no bundle at all, unless its body carries `[mac-lanes]`.
 
 **`mac-lanes` — the self-hosted Mac, same-repo PRs that are not drafts /
 pushes to main / dispatches only.** A draft gets `build-test` alone; marking it
-ready starts `mac-lanes`, and `[mac-lanes]` in a draft's body opts it in. One
+ready starts `mac-lanes`, and `[mac-lanes]` in a draft's body opts it in. That
+ready run skips `build-test` and `linux` when the head already passed them
+(`prior` job). One
 Mac serves every agent, and work in progress was most of its queue (#418). Everything a hosted runner cannot supply: packaging and
 launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 (an ad-hoc signature would invalidate the owner's Accessibility grant on every

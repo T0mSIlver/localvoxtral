@@ -51,6 +51,41 @@ permissions:
   contents: read
 
 jobs:
+  # Marking a PR ready, or back to draft, starts a run on a head that already
+  # ran build-test and linux: it is how mac-lanes gets its run. On the hosted
+  # macOS queue every rerun costs a slot, so on those two events this asks
+  # whether each job's newest finished run on the head passed, and the job
+  # skips only on that answer. A skipped required check counts as passing,
+  # which is why the answer must be the head's own pass: prior-green.sh
+  # ignores skips and cancels, lets a later failure win over an older pass,
+  # and says false on any error, so a failed lookup runs the job.
+  prior:
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.event.action == 'ready_for_review' || github.event.action == 'converted_to_draft')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      build_test: ${{ steps.prior.outputs.build_test }}
+      linux: ${{ steps.prior.outputs.linux }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+      - name: Earlier results on this head
+        id: prior
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for job in build-test linux; do
+            echo "${job//-/_}=$(./scripts/ci/prior-green.sh "$GITHUB_REPOSITORY" "$HEAD_SHA" "$job")"
+          done | tee -a "$GITHUB_OUTPUT"
+
   # TIER 0 — GitHub-hosted macOS, for every event and every contributor.
   #
   # This is the required status check on main, and it is deliberately the
@@ -69,6 +104,10 @@ jobs:
   # otherwise lose. For same-repo runs mac-lanes does that with the real
   # signing identity, so those steps are skipped here rather than duplicated.
   build-test:
+    # `!cancelled()`, not `always()`: a skipped `prior` (every other event)
+    # leaves the output empty and the job runs.
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.build_test != 'true' }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -624,6 +663,8 @@ jobs:
   # PRs' linux jobs that never got one (#1831). The steps' bounds add up to
   # 29 minutes, about five times a green run.
   linux:
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.linux != 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
