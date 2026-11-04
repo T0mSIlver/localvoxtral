@@ -570,8 +570,7 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.settings.projectTermProposalsEnabled = true
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])]
             )
         )
         let store = LearnedTermStore(fileURL: nil)

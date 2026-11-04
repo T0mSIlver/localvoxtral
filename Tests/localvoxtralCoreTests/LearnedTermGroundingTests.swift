@@ -40,7 +40,6 @@ final class LearnedTermGroundingTests: XCTestCase {
         let proposal = outcome(transcript, proposals: ["GlyphAtlasCache"])
         XCTAssertEqual(proposal.entries, [])
         XCTAssertEqual(proposal.verificationCandidates, [])
-        XCTAssertEqual(proposal.phoneticEntries, [])
     }
 
     /// With no proposals, the learned source is exactly what it was before

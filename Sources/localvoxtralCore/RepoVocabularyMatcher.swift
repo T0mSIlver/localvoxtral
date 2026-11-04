@@ -406,42 +406,22 @@ package enum RepoVocabularyMatcher {
         return Array(ranked.prefix(maxEntries))
     }
 
-    /// One source's grounding decision, carrying HOW it was reached.
-    ///
-    /// `entries` holds only spans that normalize to the term itself, so
-    /// `isFallbackOnly` is always false here; `PolishContextGrounding` keeps
-    /// the grade for callers that build candidates by hand.
+    /// One source's grounding decision.
     package struct GroundingOutcome: Equatable, Sendable {
+        /// Only spans that normalize to the term itself: what pre-applies.
         package let entries: [ReplacementEntry]
-        package let isFallbackOnly: Bool
-        /// Always empty from `groundedCandidates`: phonetic hits nominate now
-        /// (see there). Kept because the cross-source merge and the diagnostic
-        /// record still carry the grade.
-        package let phoneticEntries: [ReplacementEntry]
         /// Every sound-alike hit, strongest tier first. The transcript bytes
         /// stay untouched; the prompt renderer offers the terms to the model.
         package let verificationCandidates: [ReplacementEntry]
 
-        package init(
-            entries: [ReplacementEntry],
-            isFallbackOnly: Bool,
-            phoneticEntries: [ReplacementEntry] = [],
-            verificationCandidates: [ReplacementEntry] = []
-        ) {
+        package init(entries: [ReplacementEntry], verificationCandidates: [ReplacementEntry] = []) {
             self.entries = entries
-            self.isFallbackOnly = isFallbackOnly
-            self.phoneticEntries = phoneticEntries
             self.verificationCandidates = verificationCandidates
         }
 
         /// Not `none`: a static of that name on a non-Optional type shadows
         /// `Optional.none` at any use site that wraps it.
-        package static let empty = GroundingOutcome(
-            entries: [],
-            isFallbackOnly: false,
-            phoneticEntries: [],
-            verificationCandidates: []
-        )
+        package static let empty = GroundingOutcome(entries: [])
     }
 
     /// `entries` are the spans the production matcher REWRITES: exact-tier hits only (a lone
@@ -609,12 +589,7 @@ package enum RepoVocabularyMatcher {
             if verificationCandidates.count == offerLimit { break }
         }
 
-        return GroundingOutcome(
-            entries: primaryEntries,
-            isFallbackOnly: false,
-            phoneticEntries: [],
-            verificationCandidates: verificationCandidates
-        )
+        return GroundingOutcome(entries: primaryEntries, verificationCandidates: verificationCandidates)
     }
 
     /// A nominated file name whose extension the speaker never said. Shown to

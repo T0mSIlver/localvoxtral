@@ -268,7 +268,6 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.repoVocabularyEnabled = true
         scenario.repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
             entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"])],
-            isFallbackOnly: false,
             verificationCandidates: [
                 ReplacementEntry(replaceWith: "SessionBroker", matches: ["session broker"]),
             ]
@@ -310,8 +309,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.targetBundleID = "com.apple.Terminal"
         scenario.repoVocabularyEnabled = true
         scenario.repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
-            entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-            isFallbackOnly: false
+            entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
         )
         scenario.clipboardContextEnabled = true
         scenario.clipboardText = "see use_auth.ts for the hook"
@@ -324,8 +322,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.targetBundleID = "com.apple.Terminal"
         scenario.repoVocabularyEnabled = true
         scenario.repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
-            entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"])],
-            isFallbackOnly: false
+            entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"])]
         )
         scenario.standardUserTemplate = "Clean this up.\n{{input_text}}"
         scenario.agentUserTemplate = "Fix only recognition errors.\n{{input_text}}"

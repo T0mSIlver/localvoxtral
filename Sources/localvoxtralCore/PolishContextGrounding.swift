@@ -4,7 +4,7 @@ import Foundation
 /// single set that gets pre-applied to the transcript before the polish call.
 ///
 /// Each source matches independently and knows nothing about the others, so a
-/// merge has to answer three questions the per-source matchers cannot:
+/// merge has to answer what the per-source matchers cannot:
 ///
 /// - Two sources propose the SAME exact term for a heard span. That is not a
 ///   conflict, it is corroboration — keep one entry.
@@ -13,18 +13,10 @@ import Foundation
 ///   user's words into something they did not say. Abstain on that span
 ///   entirely — the same rule `RepoVocabularyMatcher.groundedCandidates`
 ///   already applies to tied fuzzy hits within one source.
-/// - One source has only a FALLBACK guess for a span (its exact and
-///   edit-distance-one tiers found nothing and the bounded aligned matcher
-///   guessed) while another has a solid hit on that span. The solid hit wins;
-///   the guess is dropped rather than allowed to compete.
-/// - Weak evidence never rewrites text. Explicit verification candidates and
-///   conflicting guess-grade readings remain bounded prompt suggestions only
-///   while their literal heard bytes have not been pre-applied by another hit.
-///
-/// Since the 2026-09-18 nomination rework every production source emits only
-/// solid entries (`isFallbackOnly` false, `phoneticEntries` empty): sound-alike
-/// hits arrive as `verificationEntries`. The guess-grade rules above still hold
-/// for candidates built by hand, which is how the tests pin them.
+/// - Weak evidence never rewrites text. Sound-alike hits arrive as
+///   `verificationEntries` (since #342, 2026-09-18) and remain bounded prompt
+///   suggestions only while their literal heard bytes have not been
+///   pre-applied by another hit.
 ///
 /// Pure and deterministic — decisions depend only on the candidates and the
 /// fixed `PolishContextSource` order.
@@ -33,13 +25,6 @@ package enum PolishContextGrounding {
     package struct Candidate: Sendable {
         let source: PolishContextSource
         let entries: [ReplacementEntry]
-        /// True when `entries` came from the bounded aligned fallback rather
-        /// than the exact / edit-distance-one tiers — a guess, admissible only
-        /// while no better-grounded source covers the same heard span.
-        let isFallbackOnly: Bool
-        /// Exact, unambiguous phonetic evidence is pre-apply eligible inside a
-        /// source, but remains guess grade when sources are reconciled.
-        let phoneticEntries: [ReplacementEntry]
         /// Prompt-only possible-mishearing suggestions. They never enter the
         /// pre-application vote directly.
         let verificationEntries: [ReplacementEntry]
@@ -47,14 +32,10 @@ package enum PolishContextGrounding {
         package init(
             source: PolishContextSource,
             entries: [ReplacementEntry],
-            isFallbackOnly: Bool,
-            phoneticEntries: [ReplacementEntry] = [],
             verificationEntries: [ReplacementEntry] = []
         ) {
             self.source = source
             self.entries = entries
-            self.isFallbackOnly = isFallbackOnly
-            self.phoneticEntries = phoneticEntries
             self.verificationEntries = verificationEntries
         }
     }
@@ -126,19 +107,7 @@ package enum PolishContextGrounding {
                         source: candidate.source,
                         exact: entry.replaceWith,
                         heard: heard,
-                        heardKey: RepoVocabularyMatcher.normalize(heard),
-                        isGuess: candidate.isFallbackOnly
-                    ))
-                }
-            }
-            for entry in candidate.phoneticEntries {
-                for heard in entry.matches {
-                    pairs.append(Pair(
-                        source: candidate.source,
-                        exact: entry.replaceWith,
-                        heard: heard,
-                        heardKey: RepoVocabularyMatcher.normalize(heard),
-                        isGuess: true
+                        heardKey: RepoVocabularyMatcher.normalize(heard)
                     ))
                 }
             }
@@ -149,17 +118,14 @@ package enum PolishContextGrounding {
         // "useauth dot ts"), and those must corroborate/conflict rather than
         // pass each other by. The literal span is what survives into the entry,
         // because pre-application matches literal transcript bytes.
-        let solidKeys = Set(pairs.filter { !$0.isGuess }.map(\.heardKey))
-        let grounded = pairs.filter { !$0.isGuess || !solidKeys.contains($0.heardKey) }
-
         var termsByKey: [String: Set<String>] = [:]
-        for pair in grounded {
+        for pair in pairs {
             termsByKey[pair.heardKey, default: []].insert(pair.exact)
         }
         let ambiguousKeys = Set(termsByKey.compactMap { key, terms in
             terms.count > 1 ? key : nil
         })
-        let surviving = grounded.filter { !ambiguousKeys.contains($0.heardKey) }
+        let surviving = pairs.filter { !ambiguousKeys.contains($0.heardKey) }
 
         // Group by exact term, first appearance wins the term (and with it the
         // source attribution), so agreement collapses to one entry instead of
@@ -204,23 +170,14 @@ package enum PolishContextGrounding {
             verificationPairs.append(VerificationPair(heard: heard, exact: exact))
         }
 
-        // Explicit weak evidence retains source rank ordering. It precedes
-        // conflict demotions so each matcher gets first claim on the small
-        // verification budget it deliberately emitted.
+        // Weak evidence keeps source rank ordering. A disagreement between
+        // two solid hits is a plain abstention, never a suggestion.
         for candidate in ordered {
             for entry in candidate.verificationEntries {
                 for heard in entry.matches {
                     appendVerification(heard: heard, exact: entry.replaceWith)
                 }
             }
-        }
-
-        // Only ambiguous GUESS keys become suggestions. Solid-vs-solid
-        // disagreement remains a plain abstention, while guesses that yielded
-        // to a solid were removed before ambiguity and cannot be resurrected.
-        let ambiguousGuessKeys = ambiguousKeys.subtracting(solidKeys)
-        for pair in grounded where ambiguousGuessKeys.contains(pair.heardKey) {
-            appendVerification(heard: pair.heard, exact: pair.exact)
         }
 
         return Merged(
@@ -235,7 +192,6 @@ package enum PolishContextGrounding {
         let exact: String
         let heard: String
         let heardKey: String
-        let isGuess: Bool
     }
 
     private struct VerificationKey: Hashable {

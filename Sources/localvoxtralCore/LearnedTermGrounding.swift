@@ -37,8 +37,6 @@ package enum LearnedTermGrounding {
         // proposal is never offered as one either.
         return RepoVocabularyMatcher.GroundingOutcome(
             entries: outcome.entries,
-            isFallbackOnly: outcome.isFallbackOnly,
-            phoneticEntries: outcome.phoneticEntries.filter { !proposalTerms.contains($0.replaceWith) },
             verificationCandidates: outcome.verificationCandidates.filter {
                 !proposalTerms.contains($0.replaceWith)
             }
