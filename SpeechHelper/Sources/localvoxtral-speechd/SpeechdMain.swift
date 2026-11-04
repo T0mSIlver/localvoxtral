@@ -20,6 +20,9 @@ struct SpeechdMain {
     }
 
     static func run(_ options: SpeechdLaunchOptions) async throws {
+        // Before any MLX call: MLX reads the override once, when it first loads its kernels.
+        FileHandle.standardError.write(Data("\(try SpeechMetalLibrary.useBundledKernels())\n".utf8))
+
         if options.benchmark != nil {
             try await StreamingSpeechBenchmark.run(options)
             return

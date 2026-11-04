@@ -6,6 +6,7 @@ import XCTest
 
 #if canImport(Darwin)
 import Darwin
+import localvoxtralTestSupport
 #endif
 
 /// A config the test can write into, so the read-only forward-state scan has
@@ -2449,9 +2450,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     }
 
     func testThePreviewIsOffUnlessTheDebugDefaultIsArmed() throws {
-        let suiteName = "lvx-preview-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
 
         XCTAssertFalse(ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed(defaults: defaults))
         defaults.set(true, forKey: ClaudeIntegrationSettingsModel.enrollmentSheetPreviewDefaultsKey)

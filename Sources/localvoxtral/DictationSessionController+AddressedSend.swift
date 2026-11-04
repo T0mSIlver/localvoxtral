@@ -330,7 +330,7 @@ extension DictationSessionController {
         handedOffAddressedCommits = []
         for handedOff in pending {
             Log.persistence.notice("quit while an addressed send delivers; saving it as not inserted")
-            handedOff.saveForQuit()
+            _ = keepUntypedDictation(savedBy: handedOff.saveForQuit)
         }
     }
 }

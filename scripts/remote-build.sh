@@ -163,6 +163,11 @@ set -euo pipefail
 # lock. The full remote output of every run is also written to
 # .build/last-remote.log, so a crash mid-run can never eat the failing test's
 # name (don't pipe this script straight into grep — grep the log file).
+# Optional: a lock per build host, so runs on one Mac go one at a time:
+#   git config localvoxtral.<build host>.lock /path/to/<host>.lock
+# (LV_LOCK_DIR overrides it). A run that sends work to the host waits for
+# that directory, then holds it until it exits; scripts/lib/build-host-lock.sh
+# has the recipe for taking it by hand.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
@@ -175,6 +180,27 @@ DIR="${LV_BUILD_DIR:-work/localvoxtral-${TREE_SLUG}-${TREE_HASH}}"
 REMOTE_LOG="${LOCALVOXTRAL_REMOTE_LOG:-$ROOT_DIR/.build/last-remote.log}"
 REMOTE_PAYLOAD_ACTIVE=0
 REMOTE_REAP_ATTEMPTED=0
+
+# The build host's lock (scripts/lib/build-host-lock.sh): one heavy job at a
+# time per host, a directory named per host in git config like the host itself.
+LV_LOCK_DIR="${LV_LOCK_DIR:-$(git -C "$ROOT_DIR" config --get "localvoxtral.$HOST.lock" 2>/dev/null || true)}"
+# shellcheck source=lib/build-host-lock.sh
+. "$ROOT_DIR/scripts/lib/build-host-lock.sh"
+
+# Everything that must run when the script exits, in the order added: a verb's
+# transient marker cleanup, then the lock release. One EXIT trap runs them all,
+# so adding one never replaces another.
+EXIT_HOOKS=()
+run_exit_hooks() {
+  local hook
+  for hook in ${EXIT_HOOKS[@]+"${EXIT_HOOKS[@]}"}; do
+    eval "$hook" || true
+  done
+}
+on_exit() {
+  EXIT_HOOKS+=("$1")
+  trap run_exit_hooks EXIT
+}
 
 run_remote() {
   local remote_command="$1"
@@ -639,7 +665,7 @@ case "$CMD" in
       exit 1
     fi
     KEYCHAIN_MARKER="$ROOT_DIR/.keychain-integration-enable.json"
-    trap 'cleanup_transient_marker "$KEYCHAIN_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$KEYCHAIN_MARKER"'
     (umask 077; : >"$KEYCHAIN_MARKER")
     printf '{"enabled": true}\n' >"$KEYCHAIN_MARKER"
     REMOTE_CMD=(swift test --build-system native --filter KeychainSecretStoreIntegrationTests)
@@ -664,7 +690,7 @@ case "$CMD" in
     MISTRAL_MARKER="$ROOT_DIR/.mistral-integration-enable.json"
     # Trap registered before the marker exists, so no kill window can strand a
     # key-bearing file (locally or in the remote work dir).
-    trap 'cleanup_transient_marker "$MISTRAL_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$MISTRAL_MARKER"'
     (umask 077; : >"$MISTRAL_MARKER")
     printf '{"apiKey": "%s"}\n' "$MISTRAL_API_KEY" >"$MISTRAL_MARKER"
     REMOTE_CMD=(swift test --build-system native --filter MistralRealtimeIntegrationTests)
@@ -684,7 +710,7 @@ case "$CMD" in
     fi
     POLISHD_MODEL="${1:-}"
     POLISHD_MARKER="$ROOT_DIR/.polishd-integration-enable.json"
-    trap 'cleanup_transient_marker "$POLISHD_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$POLISHD_MARKER"'
     if [[ -n "$POLISHD_MODEL" ]]; then
       printf '{"helperPath": "%s", "model": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
@@ -707,7 +733,7 @@ case "$CMD" in
     fi
     SPEECHD_MODEL="${1:-}"
     SPEECHD_MARKER="$ROOT_DIR/.speechd-integration-enable.json"
-    trap 'cleanup_transient_marker "$SPEECHD_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$SPEECHD_MARKER"'
     if [[ -n "$SPEECHD_MODEL" ]]; then
       printf '{"helperPath": "%s", "model": "%s"}\n' \
         "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
@@ -748,7 +774,7 @@ case "$CMD" in
     HERDR_MARKER="$ROOT_DIR/.herdr-integration-enable.json"
     # Registered before the marker exists, so no kill window leaves a stale
     # marker behind — locally or in the remote work dir.
-    trap 'cleanup_transient_marker "$HERDR_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$HERDR_MARKER"'
     if [[ -n "$HERDR_DESTINATION" ]]; then
       printf '{"destination": "%s"}\n' "$HERDR_DESTINATION" >"$HERDR_MARKER"
     else
@@ -774,7 +800,7 @@ case "$CMD" in
       exit 1
     fi
     CAPTURE_LATENCY_MARKER="$ROOT_DIR/.quick-capture-polish-latency-enable.json"
-    trap 'cleanup_transient_marker "$CAPTURE_LATENCY_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$CAPTURE_LATENCY_MARKER"'
     CAPTURE_LATENCY_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
     if [[ -n "$CAPTURE_LATENCY_CAPTURES" ]]; then
       printf '{"helperPath": "%s", "rounds": %s, "capturesPath": "%s"}\n' \
@@ -803,7 +829,7 @@ case "$CMD" in
       exit 1
     fi
     POLISHD_BENCH_MARKER="$ROOT_DIR/.polishd-bench-enable.json"
-    trap 'cleanup_transient_marker "$POLISHD_BENCH_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$POLISHD_BENCH_MARKER"'
     POLISHD_BENCH_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
     # The greedy arm comes first: the report compares every arm's outputs
     # with the first, and MTP must reproduce greedy decoding exactly.
@@ -867,7 +893,7 @@ case "$CMD" in
       exit 1
     fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
-    trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"'
     # The optional fields are omitted rather than nulled, so the test's decoder
     # falls back to its own defaults exactly as it did before they existed.
     SPEECHD_BENCH_OPTIONAL=""
@@ -970,7 +996,7 @@ case "$CMD" in
       exit 1
     fi
     TR_MARKER="$ROOT_DIR/.term-recall-eval-enable.json"
-    trap 'cleanup_transient_marker "$TR_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$TR_MARKER"'
     if [[ ${#TR_COMPARE[@]} -eq 2 ]]; then
       for label in "${TR_COMPARE[@]}"; do
         if [[ ! -f "$ROOT_DIR/$TR_DIR/runs/$label.jsonl" ]]; then
@@ -1166,7 +1192,7 @@ case "$CMD" in
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir) — and in the
     # Mistral arm that marker carries a real API key.
-    trap 'cleanup_transient_marker "$E2E_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$E2E_MARKER"'
     if [[ "$E2E_PROVIDER" == "mistral" ]]; then
       # 0600 before a single byte of the key is written. No helperPath/asrModel:
       # the harness resolves Mistral's own pins from the provider.
@@ -1222,7 +1248,7 @@ case "$CMD" in
     EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
-    trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
+    on_exit 'cleanup_transient_marker "$EVAL_MARKER"'
     if [[ "$EVAL_MODEL" == mistral/* ]]; then
       # The key below comes from this shell, not from the caller's endpoint,
       # so it goes nowhere but Mistral's API (#1622).
@@ -1291,6 +1317,11 @@ esac
 # Checked on the assembled payload, so every command that forwards arguments
 # is covered, and before the first ssh of the run.
 reject_gate_blocked_args "${REMOTE_CMD[@]}"
+
+# From here the run loads the host (a warm test server, the sync, the payload):
+# wait for the build host's lock first, and hold it until the script exits.
+on_exit lv_lock_release
+lv_lock_acquire "$CMD"
 
 if [[ -n "$ENSURE_SERVER" ]]; then
   ensure_remote_server "$ENSURE_SERVER"

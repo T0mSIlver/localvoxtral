@@ -434,7 +434,7 @@ look at the built site before merging. Build it locally with
 
 ## `pr-waits-labels.yml`
 
-Adds `waits:mac-llm`, `waits:mac-voxtral` and `waits:stack` to a same-repo PR
+Adds `waits:mac-llm`, `waits:mac-speech` and `waits:stack` to a same-repo PR
 on open, push, and body or base edits, from `scripts/ci/waits-labels.sh`,
 which runs the same lane filters `ci.yml` does. Hosted Ubuntu, a few seconds,
 not a required check. It only adds labels. What each label means and who

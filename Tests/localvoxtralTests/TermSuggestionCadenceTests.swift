@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -64,10 +65,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
     private var finishedWaiters: [CheckedContinuation<Void, Never>] = []
 
     private func makeFixture(hosted: Bool = true) -> Fixture {
-        let suiteName = "localvoxtral.TermSuggestionCadenceTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
         )
@@ -126,9 +124,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
     }
 
     func testTheDefaultIsEveryFiftyDictations() {
-        let suiteName = "localvoxtral.TermSuggestionCadenceTests.default.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
         )

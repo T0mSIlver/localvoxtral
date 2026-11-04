@@ -1,6 +1,7 @@
 import AppKit
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// The one-shot-per-terminal Automation consent pre-warm. What matters here is
@@ -268,10 +269,7 @@ final class TerminalAutomationConsentPrewarmTests: XCTestCase {
     }
 
     func testSettingsOffToOnTransitionPrewarmsOnlyOncePerAppRun() async {
-        let suiteName = "localvoxtral.TerminalPrewarmSettings.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let executions = EventCount()
         let observer = TerminalAutomationConsentPrewarmSettingsObserver(settings: settings) {

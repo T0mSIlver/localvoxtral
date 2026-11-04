@@ -3,6 +3,13 @@
 Thanks for considering a contribution. This is a small, fast-moving project
 with daily users, so the bar is proof, not promise.
 
+## Issues
+
+Bug reports, ideas and questions are welcome as
+[GitHub issues](https://github.com/T0mSIlver/localvoxtral/issues/new/choose),
+whether or not you write code. The maintainer's own tasks are tracked
+elsewhere, so the issue list holds only what users and contributors raise.
+
 ## Building and testing
 
 You need a Mac with Apple Silicon and macOS 15+ — see

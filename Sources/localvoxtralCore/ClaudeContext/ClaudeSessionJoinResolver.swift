@@ -67,7 +67,7 @@ package struct ClaudeSessionJoinResolver {
     package let registry: ClaudeSessionRegistry
     private let focusedTerminalTTY: (String) async -> String?
     package let focusedBrowserTabURL: (String) async -> String?
-    package let focusedDesktopSessionURL: (pid_t) async -> String?
+    package let focusedDesktopSessionURL: (pid_t) async -> ClaudeDesktopFocusRead
     package let focusedWindowID: (pid_t) -> CGWindowID?
     private let herdrClientProbe: @Sendable (String) -> Bool
     package let herdrFederation: @Sendable () -> HerdrMachineFederation
@@ -111,9 +111,10 @@ package struct ClaudeSessionJoinResolver {
     ///     live reader by forgetting an injection. The app wires
     ///     `AppleScriptFocusedBrowserTabURLReader` explicitly.
     ///   - focusedDesktopSessionURL: reads the address of the Claude Desktop
-    ///     web view holding keyboard focus, for that app's pid. DEFAULTS TO
-    ///     ABSTAIN: it is an Accessibility read of another process and flips
-    ///     Electron's accessibility tree on, so no test may reach the live
+    ///     web view holding keyboard focus, for that app's pid, or why it gave
+    ///     none (`ClaudeDesktopFocusRead`). DEFAULTS TO ABSTAIN: it is an
+    ///     Accessibility read of another process and flips Electron's
+    ///     accessibility tree on, so no test may reach the live
     ///     reader by forgetting an injection. The app wires
     ///     `AXClaudeDesktopSessionURLReader` explicitly.
     ///   - focusedWindowID: the join's window identity, from its own
@@ -175,7 +176,9 @@ package struct ClaudeSessionJoinResolver {
         registry: ClaudeSessionRegistry,
         focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
         focusedBrowserTabURL: @escaping (String) async -> String? = { _ in nil },
-        focusedDesktopSessionURL: @escaping (pid_t) async -> String? = { _ in nil },
+        focusedDesktopSessionURL: @escaping (pid_t) async -> ClaudeDesktopFocusRead = { _ in
+            .refused(.unavailable)
+        },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = { _ in nil },
         herdrClientProbe: @escaping @Sendable (String) -> Bool = { _ in false },
         herdrFederation: @escaping @Sendable () -> HerdrMachineFederation = { .notFederated },
@@ -385,7 +388,7 @@ package struct ClaudeSessionJoinResolver {
 
     package func sessionShown(target: TerminalScreenTarget) async -> String? {
         if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
-            guard let address = await focusedDesktopSessionURL(target.pid),
+            guard let address = await focusedDesktopSessionURL(target.pid).foundAddress,
                   let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address),
                   case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopSessionID)
             else { return nil }

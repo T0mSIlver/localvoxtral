@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -941,10 +942,7 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
     }
 
     private func makeContext() -> SessionContextResolver {
-        let suiteName = "localvoxtral.TerminalScreenContextLifecycleTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         return SessionContextResolver(settings: settings, textInsertion: TextInsertionService())
     }
@@ -1023,19 +1021,16 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
 
 @MainActor
 final class TerminalScreenContextSettingTests: XCTestCase {
-    private func makeStore() -> (SettingsStore, UserDefaults, String) {
-        let suiteName = "TerminalScreenContextSettingTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+    private func makeStore() -> (SettingsStore, UserDefaults) {
+        let defaults = makeTestDefaults()
         return (
             SettingsStore(defaults: defaults, secretStore: InMemorySecretStore()),
-            defaults,
-            suiteName
+            defaults
         )
     }
 
     func testDefaultsOff() {
-        let (store, defaults, suiteName) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let (store, defaults) = makeStore()
         XCTAssertFalse(
             store.terminalScreenContextEnabled,
             "reading the user's terminal screen must be opt-in"
@@ -1043,8 +1038,7 @@ final class TerminalScreenContextSettingTests: XCTestCase {
     }
 
     func testRoundtripsThroughDefaults() {
-        let (store, defaults, suiteName) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let (store, defaults) = makeStore()
 
         store.terminalScreenContextEnabled = true
         XCTAssertTrue(defaults.bool(forKey: "settings.terminal_screen_context_enabled"))

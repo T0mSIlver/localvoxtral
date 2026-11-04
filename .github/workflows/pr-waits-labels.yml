@@ -1,7 +1,7 @@
 name: PR waits labels
 
 # Adds the waits labels a PR earns from its diff: waits:mac-llm and
-# waits:mac-voxtral when a live-model lane will run on the Mac (in the night
+# waits:mac-speech when a live-model lane will run on the Mac (in the night
 # window), waits:stack when the base is another PR's branch. The decision is
 # scripts/ci/waits-labels.sh. This workflow only adds: the scheduler clears a
 # Mac label once the night run passed, and a later push adds it back because
@@ -63,7 +63,7 @@ jobs:
           if [[ -z "$BASE" ]]; then
             # Fail open like ci.yml: an uncomputable diff runs every lane.
             echo "::warning title=waits labels::diff unavailable, adding both Mac labels"
-            LABELS="$(printf 'waits:mac-llm\nwaits:mac-voxtral')"
+            LABELS="$(printf 'waits:mac-llm\nwaits:mac-speech')"
             [[ "$BASE_REF" == "main" ]] || LABELS+=$'\nwaits:stack'
           else
             git diff --name-only "$BASE" "$TIP" > "$FILES"
