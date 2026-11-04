@@ -69,9 +69,8 @@ if [[ -n "$CASK_FILE" ]]; then
   brew tap-new --no-git "$TAP" >/dev/null
   # Homebrew 7 refuses to load a cask from a tap it was not told to trust,
   # and a tap-new tap is not trusted (the 2026-11-03 v0.17.0 pin failed here:
-  # "Refusing to load cask ... from untrusted tap"). An explicit
-  # `brew tap <user>/<repo>` is trusted, so the public path below needs
-  # nothing. Older Homebrew has no `brew trust`.
+  # "Refusing to load cask ... from untrusted tap"). Older Homebrew has no
+  # `brew trust`.
   if brew trust --help >/dev/null 2>&1; then
     brew trust --tap "$TAP"
   fi
@@ -91,9 +90,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The public tap is trusted the way a user's is: since Homebrew 7.0.11 only
+# install, reinstall and upgrade trust a tap on their own and remember it, and
+# `brew tap` does not. So its cask is audited after the install (cask.yml run
+# 41816967159 failed in a `brew audit` that ran first).
 brew style "$TAP_DIR/Casks/localvoxtral.rb"
-brew audit --cask "$CASK"
-pass "brew style and brew audit"
+audit() { brew audit --cask "$CASK"; pass "brew style and brew audit"; }
+[[ -z "$CASK_FILE" ]] || audit
 
 if [[ -n "$PREVIOUS_TAG" ]]; then
   "$ROOT_DIR/scripts/ci/render-cask.sh" "$PREVIOUS_TAG" "$PREVIOUS_SHA256" > "$TAP_DIR/Casks/localvoxtral.rb"
@@ -111,6 +114,7 @@ else
   expect_notarized
   pass "brew install --cask on a machine without the app"
 fi
+[[ -n "$CASK_FILE" ]] || audit
 
 # Sentinels stand in for real data: zap must take the app's own directory and
 # leave SwiftData's default store, a name other apps share.
