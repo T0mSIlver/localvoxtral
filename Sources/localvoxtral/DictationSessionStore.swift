@@ -295,8 +295,11 @@ final class DictationSessionStore {
     /// (`DictationHistoryRetention.cutoff(now:)`) with its audio and
     /// diagnostic record, then sweeps the attachments whose dictation is gone.
     /// A snapshot of the store comes first when something will go.
+    /// `expiringBackups` also deletes them from the snapshots after a day:
+    /// a 7-, 30- or 90-day retention, not Don't keep, whose backups go only
+    /// when the user ticks "Also delete the backups" (#1916).
     @discardableResult
-    func trim(olderThan cutoff: Date) -> Task<Void, Never> {
+    func trim(olderThan cutoff: Date, expiringBackups: Bool = false) -> Task<Void, Never> {
         guard !isFailing else { return skipWhileFailing("trim dictations") }
         let attachments = attachments
         return enqueueWrite("trim dictations") { context in
@@ -313,6 +316,9 @@ final class DictationSessionStore {
                 attachments.diagnostics?.remove(deleted)
             }
             try attachments.sweepOrphans(context: context)
+            // The backups keep no dictation past the setting either, after a
+            // day's grace that spares the snapshot just taken (#1916).
+            if expiringBackups { attachments.backups?.expireDictations(startedBefore: cutoff) }
             return deleted.count
         }
     }
