@@ -229,6 +229,11 @@ final class SpeakerTermSuggestionModel {
     /// Which run owns `phase`. A stopped run whose request returns late must
     /// not touch the row of the run that replaced it (review, 2026-09-21).
     @ObservationIgnored private var runID = 0
+    /// Where each chip on the row came from, for the outcome counts.
+    @ObservationIgnored private var sourceByKey: [String: TermSuggestionOutcomes.Source] = [:]
+
+    /// The app's defaults key for `TermSuggestionOutcomes` (LVX-11).
+    static let outcomesDefaultsKey = "settings.term_suggestion_outcomes"
 
     init(
         settings: SettingsStore,
@@ -281,6 +286,7 @@ final class SpeakerTermSuggestionModel {
         let learned = learnedCandidates(from: screened)
         guard !learned.isEmpty else { return }
         suggestions = Array((suggestions + learned).prefix(SpeakerTermSuggestions.maxShown))
+        noteShown(source: .learned)
         // Never while a run is in flight: `.loading` is the row's progress
         // state, and dropping out of it would hide the Stop button and the
         // clock from a user whose request is still running.
@@ -416,6 +422,7 @@ final class SpeakerTermSuggestionModel {
                     dismissed: settings.polishDismissedTermSuggestions
                 ).prefix(SpeakerTermSuggestions.maxShown)
             )
+            noteShown(source: .model)
             phase = suggestions.isEmpty && !background ? .nothingFound : .idle
             // A run that started before the pane had refreshed, or that ran
             // for minutes while dictation taught the app new terms, must not
@@ -436,17 +443,58 @@ final class SpeakerTermSuggestionModel {
 
     func accept(_ term: String) {
         guard add([term]) else { return }
+        recordOutcome(.accepted, of: [term])
         suggestions.removeAll { $0 == term }
     }
 
     func acceptAll() {
         guard add(suggestions) else { return }
+        recordOutcome(.accepted, of: suggestions)
         suggestions = []
     }
 
     func dismiss(_ term: String) {
         settings.dismissTermSuggestion(term)
+        recordOutcome(.refused, of: [term])
         suggestions.removeAll { $0 == term }
+    }
+
+    // MARK: Outcome counts (LVX-11)
+
+    /// Counts the chips on the row that no count has seen yet, as offered
+    /// by `source`. Once per chip per launch: a learned chip offered again
+    /// after a relaunch counts again.
+    private func noteShown(source: TermSuggestionOutcomes.Source) {
+        let new = suggestions.map(SpeakerTermSuggestions.key).filter { sourceByKey[$0] == nil }
+        for key in new { sourceByKey[key] = source }
+        record(.shown, source: source, count: new.count)
+    }
+
+    private func recordOutcome(_ event: TermSuggestionOutcomes.Event, of terms: [String]) {
+        var counts: [TermSuggestionOutcomes.Source: Int] = [:]
+        for term in terms {
+            counts[sourceByKey[SpeakerTermSuggestions.key(term)] ?? .model, default: 0] += 1
+        }
+        for (source, count) in counts.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            record(event, source: source, count: count)
+        }
+    }
+
+    /// Adds to the saved counts in the app's defaults. Counts only: no term
+    /// is saved or logged.
+    private func record(_ event: TermSuggestionOutcomes.Event, source: TermSuggestionOutcomes.Source, count: Int) {
+        guard count > 0 else { return }
+        let defaults = settings.defaults
+        var outcomes = defaults.data(forKey: Self.outcomesDefaultsKey)
+            .flatMap { try? JSONDecoder().decode(TermSuggestionOutcomes.self, from: $0) }
+            ?? TermSuggestionOutcomes()
+        outcomes.record(event, source: source, count: count, at: now())
+        if let data = try? JSONEncoder().encode(outcomes) {
+            defaults.set(data, forKey: Self.outcomesDefaultsKey)
+        }
+        Log.polishing.info(
+            "Term suggestions \(String(describing: event), privacy: .public): \(count, privacy: .public) from \(source.rawValue, privacy: .public)"
+        )
     }
 
     /// False when the list's cap swallowed any of them: the chips stay and

@@ -212,6 +212,29 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertTrue(service.requests.isEmpty, "no request, no API credits")
     }
 
+    /// LVX-11: what became of each chip is counted by where it came from,
+    /// in the app's defaults, and no term is saved there.
+    func testChipOutcomesAreCountedBySource() async throws {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral", "polishd"])
+
+        await model.refreshLearnedSuggestions()
+        await model.suggest()
+        model.accept("Voxtral")
+        model.dismiss("polishd")
+        model.accept("Qwen")
+
+        let data = try XCTUnwrap(settings.defaults.data(forKey: SpeakerTermSuggestionModel.outcomesDefaultsKey))
+        let outcomes = try JSONDecoder().decode(TermSuggestionOutcomes.self, from: data)
+        XCTAssertEqual(outcomes.weeks.count, 1)
+        XCTAssertEqual(outcomes.weeks[0].learned, .init(shown: 2, accepted: 1, refused: 1))
+        XCTAssertEqual(outcomes.weeks[0].model, .init(shown: 1, accepted: 1, refused: 0))
+        let saved = String(decoding: data, as: UTF8.self)
+        for term in ["Voxtral", "polishd", "Qwen"] { XCTAssertFalse(saved.contains(term), term) }
+    }
+
     func testLearnedTermAlreadyKnownOrRefusedIsNotOffered() async {
         let settings = makePolishingSettings()
         settings.polishSpeakerTerms = ["Voxtral"]
