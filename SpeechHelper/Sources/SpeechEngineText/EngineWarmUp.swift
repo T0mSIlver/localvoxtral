@@ -29,7 +29,8 @@ public enum EngineWarmUp {
         let session = engine.makeSession(
             transcriptionDelayMs: transcriptionDelayMs,
             utteranceLimit: utteranceLimit,
-            terms: SessionTerms([])
+            terms: SessionTerms([]),
+            language: nil
         )
         let silence = [Float](repeating: 0, count: stepSamples)
         var fed = 0

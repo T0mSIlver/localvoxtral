@@ -71,6 +71,12 @@ extension SettingsStore {
     /// What the dictation model in use takes besides audio. An External URL
     /// server's model is the user's, so the app sends it nothing it can't
     /// vouch for.
+    /// The language a session sends: the user's choice when the session's
+    /// model takes it, else nil and the model detects it.
+    var sessionDictationLanguage: String? {
+        dictationModelCapabilities.sessionLanguage(for: dictationLanguage.isEmpty ? nil : dictationLanguage)
+    }
+
     var dictationModelCapabilities: DictationModelCapabilities {
         switch dictationBackendMode {
         case .managedLocal: return resolvedManagedSpeechModel.capabilities

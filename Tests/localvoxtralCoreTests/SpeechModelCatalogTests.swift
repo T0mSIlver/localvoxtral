@@ -82,6 +82,29 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
+    /// Unified takes a language hint for exactly the 25 languages of NVIDIA's
+    /// model card; the other models detect the language themselves.
+    func testOnlyUnifiedTakesALanguageAndExactlyItsTwentyFive() throws {
+        let unified = try XCTUnwrap(
+            SpeechModelCatalog.option(forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit")
+        )
+        XCTAssertEqual(
+            Set(unified.capabilities.languages),
+            ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
+             "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"]
+        )
+        XCTAssertEqual(unified.capabilities.languages.count, 25)
+        for option in SpeechModelCatalog.options where option.repoID != unified.repoID {
+            XCTAssertEqual(option.capabilities.languages, [], option.repoID)
+        }
+    }
+
+    func testLanguagePickerListsNamesAlphabetically() {
+        let entries = SpeechModelPickerSupport.languageEntries(["fr", "de", "en"], locale: Locale(identifier: "en_US"))
+        XCTAssertEqual(entries.map(\.code), ["en", "fr", "de"])
+        XCTAssertEqual(entries.map(\.name), ["English", "French", "German"])
+    }
+
     func testPickerMenuLabelNamesTheSize() throws {
         let option = try XCTUnwrap(
             SpeechModelCatalog.option(
