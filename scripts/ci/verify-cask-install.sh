@@ -67,6 +67,14 @@ expect_notarized() {
 if [[ -n "$CASK_FILE" ]]; then
   TAP="localvoxtral-ci/pretest"
   brew tap-new --no-git "$TAP" >/dev/null
+  # Homebrew 7 refuses to load a cask from a tap it was not told to trust,
+  # and a tap-new tap is not trusted (the 2026-11-03 v0.17.0 pin failed here:
+  # "Refusing to load cask ... from untrusted tap"). An explicit
+  # `brew tap <user>/<repo>` is trusted, so the public path below needs
+  # nothing. Older Homebrew has no `brew trust`.
+  if brew trust --help >/dev/null 2>&1; then
+    brew trust --tap "$TAP"
+  fi
   TAP_DIR="$(brew --repository "$TAP")"
   mkdir -p "$TAP_DIR/Casks"
   cp "$CASK_FILE" "$TAP_DIR/Casks/localvoxtral.rb"
