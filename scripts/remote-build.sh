@@ -919,6 +919,10 @@ case "$CMD" in
       done
       SPEECHD_BENCH_OPTIONAL+=",\"environment\":{$env_json}"
     fi
+    if [[ -n "${LV_SPEECHD_BENCH_TRANSCRIBE:-}" && -n "${LV_SPEECHD_BENCH_WAV:-}" ]]; then
+      echo "speechd-bench: LV_SPEECHD_BENCH_TRANSCRIBE reads its own WAVs; drop LV_SPEECHD_BENCH_WAV" >&2
+      exit 1
+    fi
     if [[ -n "${LV_SPEECHD_BENCH_STEP_MS:-}" ]]; then
       if [[ ! "$LV_SPEECHD_BENCH_STEP_MS" =~ ^[1-9][0-9]*$ ]]; then
         echo "speechd-bench: LV_SPEECHD_BENCH_STEP_MS must be a positive integer" >&2

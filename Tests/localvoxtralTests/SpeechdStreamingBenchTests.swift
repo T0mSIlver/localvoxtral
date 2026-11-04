@@ -103,6 +103,11 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
             .merging(config.environment ?? [:]) { _, new in new }
         if let manifest = config.transcribeManifest {
+            // The utterance limit stays the helper's own: the bench's default (its run
+            // length) would cut long recordings.
+            if let cacheLimitMB = config.cacheLimitMB {
+                arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
+            }
             try runTranscription(binary: binary, environment: environment, arguments: arguments
                 + ["--transcribe", repoRoot.appendingPathComponent(manifest).path])
             return
