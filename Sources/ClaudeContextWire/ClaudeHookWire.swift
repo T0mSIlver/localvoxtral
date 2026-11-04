@@ -407,8 +407,6 @@ extension ClaudeHookRecord: Codable {
         toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
         files = try container.decodeIfPresent([ClaudeFileTouch].self, forKey: .files) ?? []
         process = try container.decodeIfPresent(ClaudeHookProcessInfo.self, forKey: .process)
-        // A relay that does not decode loses the field, not the record: the
-        // focus declaration it rides on stands without it.
         // An unknown type decodes to nil, and `decodeLine` drops a
         // Notification without one.
         notificationType = (try? container.decodeIfPresent(ClaudeNotificationType.self, forKey: .notificationType)) ?? nil

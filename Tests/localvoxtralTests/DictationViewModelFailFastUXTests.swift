@@ -606,12 +606,12 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(homeEntries, [".claude", "work"], "nothing was written into the home")
     }
 
-    /// An upgrade over what quick capture, voice memos and Jev left behind: its
-    /// settings keys, `quick-captures.json`, `voice-memos.json`, a learned-term
+    /// An upgrade over what quick capture, voice memos, Jev and agent control
+    /// left behind: their settings keys, `quick-captures.json`, `voice-memos.json`, a learned-term
     /// file with Inbox fields and ledger lines of the removed features. Startup
     /// opens every store, none of the old files is read, rewritten or deleted,
     /// and what the Projects pane lists is still there.
-    func testRuntimeServicesOverQuickCaptureLeftoversLaunchAndLeaveThemAlone() async throws {
+    func testRuntimeServicesOverRemovedFeatureLeftoversLaunchAndLeaveThemAlone() async throws {
         let dependencies = makeRuntimeDependencies()
         let dataDirectory = try XCTUnwrap(dependencies.dataDirectory)
         let quickCaptures = Data(
@@ -635,7 +635,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         try learned.write(to: LearnedTermStore.defaultFileURL(in: dataDirectory))
 
         let defaults = makeSettingsDefaults()
-        for (key, value) in RemovedFeatureUpgradeTests.quickCaptureKeys { defaults.set(value, forKey: key) }
+        for (key, value) in RemovedFeatureUpgradeTests.removedFeatureKeys { defaults.set(value, forKey: key) }
         let settings = makeSettings(defaults: defaults)
         settings.dictationBackendMode = .externalURL
         settings.polishingBackendMode = .externalURL

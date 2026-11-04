@@ -184,7 +184,7 @@ package struct HerdrWindowLocator {
         }
         guard candidates.count == 1 else {
             Log.claudeContext.info(
-                "go to session: \(candidates.count, privacy: .public) terminal windows show that herdr"
+                "pane read-back: \(candidates.count, privacy: .public) terminal windows show that herdr"
             )
             return nil
         }
