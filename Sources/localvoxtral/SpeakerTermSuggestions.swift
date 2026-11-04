@@ -265,15 +265,20 @@ final class SpeakerTermSuggestionModel {
     /// polishing model fix, confirmed across dictations. Called when the pane
     /// appears, so the list is there before anyone presses a button.
     ///
+    /// They pass the screen the model's answer passes: a learned term is
+    /// confirmed by being matched three times, which a term the recognizer
+    /// already spells right is too. On the owner's data (2026-11-04) both
+    /// refused chips that came from learned terms ("dashboard", "DeepSeek")
+    /// were of that kind.
+    ///
     /// Additive — a suggestion already on screen stays, and one the user has
-    /// added or refused never comes back.
-    func refreshLearnedSuggestions() {
-        let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
-        let learned = SpeakerTermSuggestions.filtered(
-            unsent(learnedTerms()),
-            terms: knownTerms,
-            dismissed: settings.polishDismissedTermSuggestions
-        ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
+    /// added or refused never comes back, also when they did so while the
+    /// dictations were being read.
+    func refreshLearnedSuggestions() async {
+        let candidates = learnedCandidates()
+        guard !candidates.isEmpty else { return }
+        let screened = TermSuggestionScreen.screened(candidates, dictations: await recentDictations())
+        let learned = learnedCandidates(from: screened)
         guard !learned.isEmpty else { return }
         suggestions = Array((suggestions + learned).prefix(SpeakerTermSuggestions.maxShown))
         // Never while a run is in flight: `.loading` is the row's progress
@@ -282,14 +287,25 @@ final class SpeakerTermSuggestionModel {
         if phase == .nothingFound { phase = .idle }
     }
 
+    /// The learned terms (or `terms`, screened from them) not known, refused
+    /// or already on screen.
+    private func learnedCandidates(from terms: [String]? = nil) -> [String] {
+        let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
+        return SpeakerTermSuggestions.filtered(
+            unsent(terms ?? learnedTerms()),
+            terms: knownTerms,
+            dismissed: settings.polishDismissedTermSuggestions
+        ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
+    }
+
     /// What the Text processing sidebar row shows: every chip waiting, from
     /// the moment one lands unseen until the pane is opened.
     var badgeCount: Int { hasUnseenSuggestions ? suggestions.count : 0 }
 
     func paneAppeared() {
         isPaneVisible = true
-        refreshLearnedSuggestions()
         hasUnseenSuggestions = false
+        Task { await refreshLearnedSuggestions() }
     }
 
     func paneDisappeared() {
@@ -402,7 +418,7 @@ final class SpeakerTermSuggestionModel {
             // for minutes while dictation taught the app new terms, must not
             // leave the free chips out (review, 2026-09-20). Runs AFTER the
             // phase leaves `.loading`, which is what lets it fill.
-            refreshLearnedSuggestions()
+            await refreshLearnedSuggestions()
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
             return .completed
         } catch {

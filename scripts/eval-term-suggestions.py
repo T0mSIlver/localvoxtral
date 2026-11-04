@@ -64,7 +64,8 @@ MAX_DICTATIONS = 120
 
 # --- export ---------------------------------------------------------------
 
-def export(store: Path, terms: Path | None, refused: Path | None, out: Path) -> None:
+def export(store: Path, terms: Path | None, refused: Path | None, out: Path,
+           learned: Path | None = None) -> None:
     """Newest dictations first, the way `DictationSessionStore.recentEntries`
     returns them. The SwiftData table is found by its columns, not its name."""
     db = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
@@ -81,6 +82,10 @@ def export(store: Path, terms: Path | None, refused: Path | None, out: Path) -> 
         "dictations": [{"raw": raw or "", "final": polished or raw or ""} for raw, polished in rows],
         "accepted": json.loads(terms.read_text()) if terms else [],
         "refused": json.loads(refused.read_text()) if refused else [],
+        # The project names the app sends as known (`polishProjectNames`, newest first).
+        "projects": [p["name"] for p in sorted(
+            json.loads(learned.read_text()).get("projects", []) if learned else [],
+            key=lambda p: p.get("lastSeen", ""), reverse=True) if p.get("name")][:30],
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(data, ensure_ascii=False, indent=1))
@@ -237,9 +242,40 @@ def api_key(model: str, env: dict[str, str] = os.environ) -> str:
             if line.startswith("MISTRAL_API_KEY=") and (value := line.split("=", 1)[1].strip().strip("\"'")):
                 return value
         sys.exit("no Vibe key: log in with vibe --setup or set VIBE_MISTRAL_API_KEY")
+    if model.startswith("claude"):
+        if value := env.get("ANTHROPIC_API_KEY"):
+            return value.strip()
+        return (Path.home() / ".config/localvoxtral/anthropic_api_key").read_text().strip()
     if value := env.get("MISTRAL_API_KEY"):
         return value.strip()
     return (Path.home() / ".config/localvoxtral/mistral_api_key").read_text().strip()
+
+
+ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
+
+
+ANTHROPIC_EFFORT, ANTHROPIC_MAX_TOKENS = "high", 16000
+
+
+def ask_anthropic(model: str, content: str, secret: str) -> tuple[str, dict, float]:
+    """The body `PolishWire.anthropicBody` sends for this request: one user
+    message, no system prompt, `output_config.effort` high for deep reasoning."""
+    body = {"model": model, "max_tokens": ANTHROPIC_MAX_TOKENS,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": content}]}],
+            "output_config": {"effort": ANTHROPIC_EFFORT}}
+    request = urllib.request.Request(
+        ANTHROPIC_ENDPOINT, data=json.dumps(body).encode(),
+        headers={"x-api-key": secret, "anthropic-version": "2023-06-01",
+                 "Content-Type": "application/json"},
+    )
+    started = time.monotonic()
+    with urllib.request.urlopen(request, timeout=600) as response:
+        reply = json.load(response)
+    text = "".join(c.get("text", "") for c in reply.get("content", []) if c.get("type") == "text")
+    usage = reply.get("usage", {})
+    return text, {"prompt_tokens": usage.get("input_tokens", 0),
+                  "completion_tokens": usage.get("output_tokens", 0),
+                  "stop_reason": reply.get("stop_reason")}, time.monotonic() - started
 
 
 def ask(model: str, content: str, secret: str) -> tuple[str, dict, float]:
@@ -261,11 +297,16 @@ def ask(model: str, content: str, secret: str) -> tuple[str, dict, float]:
 
 
 def run(args: argparse.Namespace) -> None:
+    global ANTHROPIC_EFFORT, ANTHROPIC_MAX_TOKENS
+    ANTHROPIC_EFFORT, ANTHROPIC_MAX_TOKENS = args.effort, args.max_tokens
     data = json.loads(Path(args.export).read_text())
     # Known and refused lists go out empty: the eval measures what the model
     # proposes on its own, and scores it against the owner's lists.
     known: list[str] = []
     dismissed: list[str] = []
+    if args.app_lists:  # what the app sends: Global terms and project names, and the refused list
+        known = data["accepted"] + data.get("projects", [])
+        dismissed = data["refused"]
     arms = {"base": instructions(args.base), "head": instructions(None)}
     if arms["base"] == arms["head"]:
         print("note: both arms carry the same instructions; the result is a noise measurement")
@@ -278,7 +319,8 @@ def run(args: argparse.Namespace) -> None:
         for arm, (prompt, heard, budget) in arms.items():  # interleaved, so drift hits both arms
             chosen = selected(data["dictations"], budget - len(prompt), heard)
             texts = [block(d, heard) for d in chosen]
-            reply, usage, seconds = ask(args.model, message(prompt, texts, known, dismissed), secret)
+            send = ask_anthropic if args.model.startswith("claude") else ask
+            reply, usage, seconds = send(args.model, message(prompt, texts, known, dismissed), secret)
             seen, terms = set(), []
             for term, forms in parse(reply):
                 if key(term) and key(term) not in seen:
@@ -290,12 +332,14 @@ def run(args: argparse.Namespace) -> None:
             spend += cost
             results[arm].append({"terms": terms, **row})
             with out.open("a") as log:
-                log.write(json.dumps({"arm": arm, "repeat": repeat, "base": args.base,
+                log.write(json.dumps({"arm": arm, "repeat": repeat, "base": args.base, "model": args.model,
+                                      "appLists": args.app_lists,
                                       "dictations": len(chosen), "terms": terms, "reply": reply,
                                       "usage": usage, "seconds": round(seconds, 1), **row},
                                      ensure_ascii=False) + "\n")
             print(f"{arm} #{repeat + 1}: {len(chosen)} dictations, {seconds:.0f} s, "
-                  f"{cost:.3f} EUR, " + ", ".join(f"{k} {v}" for k, v in row.items()))
+                  f"{cost:.3f} EUR, out {usage.get('completion_tokens')} tokens "
+                  f"({usage.get('stop_reason', '-')}), " + ", ".join(f"{k} {v}" for k, v in row.items()))
     for arm, rows in results.items():
         if len(rows) >= 2:
             first, second = ({key(t) for t, _ in r["terms"]} for r in rows[:2])
@@ -313,18 +357,24 @@ def main() -> None:
     ex.add_argument("--store", required=True, type=Path)
     ex.add_argument("--terms", type=Path, help="Global terms, as a JSON array")
     ex.add_argument("--refused", type=Path, help="refused suggestions, as a JSON array")
+    ex.add_argument("--learned", type=Path, help="learned-terms.json, for the project names")
     ex.add_argument("-o", "--output", required=True, type=Path)
     rn = sub.add_parser("run", help="replay both arms against an export")
     rn.add_argument("export")
     rn.add_argument("--base", default="origin/main", help="ref whose prompt is the baseline arm")
     rn.add_argument("--repeats", type=int, default=2)
-    rn.add_argument("--model", default="zai-glm-5-3")
+    rn.add_argument("--model", default="zai-glm-5-3",
+                    help="a Mistral API model, or claude-* through the Anthropic API")
+    rn.add_argument("--effort", default="high", help="claude-*: output_config.effort (the app: high)")
+    rn.add_argument("--max-tokens", type=int, default=16000, help="claude-*: max_tokens (the app: 16000)")
+    rn.add_argument("--app-lists", action="store_true",
+                    help="send the Known and Refused lists the app sends (default: empty)")
     rn.add_argument("--out", default="local-notes/term-suggest-eval/runs.jsonl")
     args = parser.parse_args()
     if args.self_check:
         self_check()
     elif args.command == "export":
-        export(args.store, args.terms, args.refused, args.output)
+        export(args.store, args.terms, args.refused, args.output, args.learned)
     elif args.command == "run":
         run(args)
     else:

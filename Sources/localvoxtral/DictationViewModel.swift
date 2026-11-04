@@ -788,7 +788,7 @@ final class DictationViewModel {
                         self?.learnedTermRevision += 1
                         // What keeps the sidebar badge honest between two
                         // openings of the pane; reads memory, never the disk.
-                        self?.termSuggestions.refreshLearnedSuggestions()
+                        await self?.termSuggestions.refreshLearnedSuggestions()
                     }
                 }
             )
