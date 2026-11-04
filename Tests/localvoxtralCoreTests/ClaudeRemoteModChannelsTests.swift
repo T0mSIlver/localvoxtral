@@ -293,6 +293,10 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
             told.set(told.value + 1)
             let count = told.value
             Task { @MainActor in
+                // The first attach happens inside the first poll. Its band
+                // waits until that poll is held, or it can reach the queue
+                // first and the poll answers without arming a hold (LVX-96).
+                if count == 1 { await fixture.clock.waitForSleeper(dueIn: 25) }
                 band.attached(sessionID: sessionID)
                 if count == 2 { toldAgain.fulfill() }
             }
@@ -315,7 +319,7 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         // and its next poll carries no challenge.
         let lost = poll(fixture, attach: attach, acked: 1)
         // Armed: the first poll's hold and its answer's expiry, and this
-        // poll's hold.
+        // poll's hold. No other timer exists, so the third is this poll's.
         await fixture.clock.waitForSleepers(3)
         let unchallenged = ClaudeRemoteModWire.PollRequest(
             sessionID: "sess-1", instance: instance, nonce: nonce, challenge: "", attach: attach, acked: 1
