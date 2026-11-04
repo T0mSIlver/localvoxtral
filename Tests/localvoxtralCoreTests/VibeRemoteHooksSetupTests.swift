@@ -267,8 +267,11 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [host.path(".vibe/localvoxtral/remote/post.sh")]
+        // Watcher off, as in VibeRemoteShimTests: it outlives the shim, and on
+        // Linux the wait below then never returns.
         process.environment = [
             "HOME": host.home.path, "PATH": "\(host.path("stub")):\(VibeTestPython.directory.path):/usr/bin:/bin",
+            "LOCALVOXTRAL_VIBE_WATCHER": "off",
         ]
         process.standardInput = try FileHandle(forReadingFrom: URL(fileURLWithPath: host.path("payload.json")))
         process.standardOutput = FileHandle.nullDevice
