@@ -651,7 +651,11 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
-        self.editSignalWatcher = EditSignalWatcher(monitor: dependencies.editKeyMonitor())
+        self.editSignalWatcher = EditSignalWatcher(
+            monitor: dependencies.editKeyMonitor(),
+            now: dependencies.clock.now,
+            sleepFor: dependencies.clock.sleep
+        )
         textInsertion.pasteRestoreSleep = dependencies.clock.sleep
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
         self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
