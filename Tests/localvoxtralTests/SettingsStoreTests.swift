@@ -53,19 +53,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(makeStore().opensWindowAtLaunch)
     }
 
-    // A stored value for the removed "Local Claude title fallback" toggle is
-    // simply IGNORED — there is no migration, because there is no longer any
-    // behaviour for it to select. Pinned so a future reader does not go looking
-    // for the migration that is deliberately absent.
-    func testAStoredTitleFallbackPreferenceIsIgnored() {
-        defaults.set(true, forKey: "settings.claude_local_title_marker_fallback_enabled")
-        XCTAssertNoThrow(makeStore())
-        XCTAssertTrue(
-            defaults.bool(forKey: "settings.claude_local_title_marker_fallback_enabled"),
-            "left where it is: nothing reads it, and rewriting a user's defaults to erase a dead key is not our business"
-        )
-    }
-
     // MARK: - User-added terminal apps
 
     /// The Settings → Terminals list persists as JSON in defaults and comes
@@ -295,12 +282,48 @@ final class SettingsStoreTests: XCTestCase {
         }
     }
 
-    func testRemovedCommitIntervalSettingIsCleanedUp() {
-        defaults.set(0.5, forKey: "settings.commit_interval_seconds")
+    // Keys a user's defaults still held after their settings were removed
+    // (the owner's MacBook had several in 2026-11). Literal, so a key dropped
+    // from the retired list by mistake fails here.
+    func testRetiredSettingsAreRemovedAtLaunch() {
+        let retired: [(key: String, value: Any)] = [
+            ("settings.commit_interval_seconds", 0.5),
+            ("settings.mlx_audio_endpoint_url", "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"),
+            ("settings.mlx_audio_model_name", "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"),
+            ("settings.mlx_audio_transcription_delay_ms", 900),
+            ("settings.claude_local_title_marker_fallback_enabled", true),
+            ("settings.speechd_step_cadence", "100ms"),
+            ("settings.speechd_cache_limit", "2gb"),
+            ("debug.dogfood_capture_enabled", true),
+            ("settings.quick_capture_shortcut_key_code", 41),
+            ("settings.quick_capture_shortcut_carbon_modifiers", 4096),
+            ("settings.quick_capture_shortcut_enabled", false),
+            ("settings.quick_capture_shortcut_chord", "lshift+rshift"),
+            ("settings.quick_capture_jev_enabled", true),
+            ("settings.quick_capture_router", "polishing_model"),
+            ("settings.quick_capture_project_lines", ["repo": "line"]),
+            ("settings.voice_memos_enabled", true),
+            ("settings.answer_agent_shortcut_key_code", 105),
+            ("settings.answer_agent_shortcut_carbon_modifiers", 2048),
+            ("settings.answer_agent_shortcut_enabled", true),
+            ("settings.answer_agent_shortcut_chord", "lshift+rshift"),
+            ("settings.spoken_abort_phrases", ["stop claude"]),
+            ("session_navigation.nicknames", ["opencode:ses_a": "payments"]),
+        ]
+        for (key, value) in retired {
+            defaults.set(value, forKey: key)
+        }
+        defaults.set(true, forKey: "settings.opens_window_at_launch")
 
         _ = makeStore()
 
-        XCTAssertNil(defaults.object(forKey: "settings.commit_interval_seconds"))
+        for (key, _) in retired {
+            XCTAssertNil(defaults.object(forKey: key), key)
+        }
+        XCTAssertTrue(
+            defaults.bool(forKey: "settings.opens_window_at_launch"),
+            "a live setting survives the sweep"
+        )
     }
 
     // MARK: - per-backend mode migration

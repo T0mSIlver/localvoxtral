@@ -1077,11 +1077,9 @@ final class SettingsStore {
         // produce an invalid state.
         realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
 
-        // The commit interval setting was removed. Clean up stale persisted
-        // values so future defaults migrations do not preserve dead state.
-        defaults.removeObject(forKey: "settings.commit_interval_seconds")
-        // So was the step interval: the helper sizes its steps itself (#639).
-        defaults.removeObject(forKey: "settings.speechd_step_cadence")
+        for key in Self.retiredKeys {
+            defaults.removeObject(forKey: key)
+        }
 
         realtimeAPIEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.realtimeAPIEndpointURL,
