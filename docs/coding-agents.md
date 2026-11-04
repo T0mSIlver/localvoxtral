@@ -55,7 +55,7 @@ Context**.
   the agent's screen and its session can reach the polisher to get
   technical spellings right. See
   [Polish context: what each toggle sends](#polish-context-what-each-toggle-sends).
-- **"Paste clipboard" macro** (on by default). Say "paste clipboard"
+- **Say "paste clipboard" to paste clipboard** (on by default). Say "paste clipboard"
   mid-dictation, and the clipboard content goes in as a code block when the
   text commits.
 

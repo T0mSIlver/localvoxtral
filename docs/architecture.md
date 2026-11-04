@@ -79,7 +79,7 @@ AppKit:
   stays in the app
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
-- the Claude session snapshot and its reducer (`ClaudeSessionState`)
+- the Claude session snapshot and its reducer (`ClaudeSessionSnapshot`, `ClaudeSessionReducer`)
 - the overlay's dragged-position geometry (`OverlayManualPlacement`,
   `OverlayManualPlacementResolver`); the `NSScreen` enumeration stays in the app
 - `DictationOutputMode`, the dogfood control socket's grammar and the WAV
@@ -130,7 +130,7 @@ Key subsystems:
 
 - Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),
   `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes),
-  `AudioDuckingController` + `SystemOutputVolumeControl` (fades other audio
+  `AudioDuckingController` + `SystemOutputVolumeControlling` (fades other audio
   down for the session and back up on every path that ends it)
 - Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
   (managed speechd / vLLM / any OpenAI-Realtime server) and
@@ -165,11 +165,12 @@ Key subsystems:
   lives in [under-the-hood.md](under-the-hood.md); keep it in sync when pins
   change.
 - Settings/config: `SettingsStore` (UserDefaults, plus a `SecretStoring` seam,
-  `KeychainSecretStore`, that keeps the three API keys out of the plist and in
+  `KeychainSecretStore`, that keeps the API keys out of the plist and in
   the login Keychain), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
-- Hotkey: `HotKeyManager` (Carbon, single global hotkey)
-- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral*/ClaudeContext/`,
+- Hotkey: `HotKeyManager` (Carbon: the dictation and action hotkeys), plus
+  `ModifierChordHotKeyMonitor` for modifier-only taps and chords
+- Claude Code session context (`Sources/ClaudeContextWire`, `Sources/localvoxtral*/ClaudeContext/`,
   `integrations/claude-code/`): off-screen context for dictation into Claude
   Code. One marketplace holds two plugins. They are structurally separate,
   never modes of each other. Both declare hooks only (no
@@ -233,10 +234,9 @@ Key subsystems:
     to run. `RemoteProjectTermRequests` marks a joined session, the next
     hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
     `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
-    is filed under the project the Mac recorded. A shim of a release that still
-    asked for a README or a draft (`X-Lvx-Readme`, `X-Lvx-Draft`, #745) gets
-    410 on `/v1/readme` and `/v1/draft*`, and a mod that opens `/inbox` gets
-    410 on `/v1/mod/inbox*`: every shim version fails open on it
+    is filed under the project the Mac recorded. Routes that only
+    older shims and mods call (`/v1/readme`, `/v1/draft*`, `/v1/mod/inbox*`)
+    answer 410, and every shim version fails open on it
     (`scripts/ci/test-remote-shim-removed-routes.sh`).
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
