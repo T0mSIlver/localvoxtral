@@ -193,9 +193,12 @@ final class RemoteProjectTermsTests: XCTestCase {
 
     /// The commit path: the dictation joined this session.
     @discardableResult
-    private func dictate(into session: String, agent: ProjectTermProposal.Agent = .claude) throws -> Bool {
+    private func dictate(
+        into session: String, agent: ProjectTermProposal.Agent = .claude,
+        excluding: @escaping ProjectTermProposal.Exclusions = { ["inkwell"] }
+    ) throws -> Bool {
         let snapshot = try XCTUnwrap(sessions.snapshot(sessionID: key(session, agent: agent)))
-        return requests.request(for: snapshot, excluding: ["inkwell"])
+        return requests.request(for: snapshot, excluding: excluding)
     }
 
     private var wanted: String { ClaudeRemoteHTTPCodec.termsHeaderValue }
@@ -253,12 +256,12 @@ final class RemoteProjectTermsTests: XCTestCase {
         let local = try XCTUnwrap(sessions.ingest(
             ClaudeHookRecord(event: .sessionStart, sessionID: "local-1", timestamp: 0, rawCwd: "/work/quill"),
             origin: .localAuthenticated(peerUID: 501)))
-        XCTAssertFalse(requests.request(for: local, excluding: []), "a local join is never the host's to answer")
+        XCTAssertFalse(requests.request(for: local, excluding: { [] }), "a local join is never the host's to answer")
 
         try hook("SessionStart", session: "s1")
         let snapshot = try XCTUnwrap(sessions.snapshot(sessionID: key("s1")))
         try hosts.revoke(hostID: hostID)
-        XCTAssertFalse(requests.request(for: snapshot, excluding: []))
+        XCTAssertFalse(requests.request(for: snapshot, excluding: { [] }))
     }
 
     // MARK: The answer
@@ -276,6 +279,20 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertEqual(project.terms.map(\.sources), [["agent:claude"], ["agent:claude"]])
         XCTAssertTrue(project.terms.allSatisfy(\.isUnconfirmedProposal))
         XCTAssertEqual(try answer(session: "s1").status, 409, "one answer per ask")
+    }
+
+    /// LVX-90: the host answers minutes after the mark. A suggestion the
+    /// user refused in between stays out of what the answer stores.
+    func testATermRefusedWhileTheHostRunsStaysOutOfItsAnswer() throws {
+        let refused = Mutex<[String]>([])
+        try hook("SessionStart", session: "s1", project: "quillmark")
+        try dictate(into: "s1", excluding: { refused.withLock { $0 } })
+        try hook("UserPromptSubmit", session: "s1", project: "quillmark")
+        refused.withLock { $0.append("glyph atlas") }
+
+        XCTAssertEqual(try answer(session: "s1").status, 200)
+        let project = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:quillmark" })
+        XCTAssertEqual(project.terms.map(\.term), ["Quillmark"])
     }
 
     /// #891: the answer's sentence lands on the project. A project answered
@@ -494,9 +511,9 @@ final class RemoteProjectTermsTests: XCTestCase {
         )
         proposer.attachRemote(requests)
 
-        XCTAssertNil(proposer.dictationCommitted(join: snapshot, enabled: false, excluding: []))
+        XCTAssertNil(proposer.dictationCommitted(join: snapshot, enabled: false, excluding: { [] }))
         XCTAssertNil(try hook("Stop", session: "s1").headers[termsHeader], "the setting is off")
-        XCTAssertNil(proposer.dictationCommitted(join: snapshot, enabled: true, excluding: []), "no local run")
+        XCTAssertNil(proposer.dictationCommitted(join: snapshot, enabled: true, excluding: { [] }), "no local run")
         XCTAssertEqual(try hook("Stop", session: "s1").headers[termsHeader], wanted)
     }
 
@@ -527,7 +544,7 @@ final class RemoteProjectTermsTests: XCTestCase {
             shipped, olderThan: RemoteProjectTermRequests.minimumPluginVersion
         ))
         let vibeVersion = try XCTUnwrap(VibeRemoteHooksFiles(
-            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", captureScript: ""
+            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", repositoryScript: ""
         ).version)
         XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
             vibeVersion, olderThan: RemoteProjectTermRequests.minimumVibeHooksVersion

@@ -36,7 +36,7 @@ package enum TermSuggestionScreen {
     ) -> [String] {
         let heardByKey = Dictionary(heard.map { (key($0.key), $0.value) }, uniquingKeysWith: +)
         let scored = candidates.compactMap { candidate -> (term: String, misses: Int)? in
-            guard let term = pattern(candidate) else { return nil }
+            guard suggestible(candidate), let term = pattern(candidate) else { return nil }
             // "v l l m" and "vllm" are mistakes for vLLM; "VLLM" is not.
             let wrongForms = (heardByKey[key(candidate)] ?? [])
                 .filter { $0.trimmed.caseFoldedForMatching != candidate.trimmed.caseFoldedForMatching }
@@ -58,6 +58,22 @@ package enum TermSuggestionScreen {
         return scored.enumerated()
             .sorted { ($0.element.misses, -$0.offset) > ($1.element.misses, -$1.offset) }
             .map(\.element.term)
+    }
+
+    /// Whether a candidate can be a term at all, whatever the transcripts say.
+    /// Two shapes on the owner's refused list never are (2026-11-04: 4 of his
+    /// 11 refusals, none of his 50 terms): fewer than two letters or digits
+    /// ("I"), and two words glued across a sentence break ("today.Then"), which
+    /// the recognizer writes when it drops the space after a full stop. A
+    /// lowercase package and a capitalized member ("os.Getenv") reads the
+    /// same and goes too: nobody dictates a function name (2026-09-27 persona
+    /// ruling). Dotted names stay when either side breaks the pattern:
+    /// "llama.cpp", "AGENTS.md", "Qwen3.5".
+    package static func suggestible(_ candidate: String) -> Bool {
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alphanumerics = trimmed.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        guard alphanumerics.count >= 2 else { return false }
+        return trimmed.range(of: #"^\p{Ll}+\.\p{Lu}\p{Ll}+$"#, options: .regularExpression) == nil
     }
 
     /// Drops a candidate the polish request already carries (#1442): a global

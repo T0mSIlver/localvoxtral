@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 // Characterization tests for issue #13 (punctuation inserted mid-word in Live
@@ -22,12 +23,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
     private var insertedChunks: [String] = []
 
     private func makeViewModel() -> DictationViewModel {
-        let suiteName = "localvoxtral.RealtimeAPILivePastePunctuationTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = .liveAutoPaste

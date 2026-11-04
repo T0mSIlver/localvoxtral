@@ -189,23 +189,22 @@ final class RepoIndexingParsingTests: XCTestCase {
     }
 
     func testBuildVocabularyBasenamesComponentsAndBranch() {
-        let vocab = RepoIndexing.buildVocabulary(
+        let terms = RepoIndexing.buildVocabularyTerms(
             paths: ["useAuth.ts", "Sources/App/UserSessionManager.swift"],
             branch: "feat/repo-vocabulary"
         )
-        XCTAssertTrue(vocab.terms.contains("useAuth.ts"))
-        XCTAssertTrue(vocab.terms.contains("UserSessionManager.swift"))
+        XCTAssertTrue(terms.contains("useAuth.ts"))
+        XCTAssertTrue(terms.contains("UserSessionManager.swift"))
         // Bare common-word components carry no technical signal — excluded
         // (they would capitalize ordinary prose as false hints).
-        XCTAssertFalse(vocab.terms.contains("Sources"))
-        XCTAssertFalse(vocab.terms.contains("App"))
+        XCTAssertFalse(terms.contains("Sources"))
+        XCTAssertFalse(terms.contains("App"))
         // A branch with separators is technical and included as a term.
-        XCTAssertTrue(vocab.terms.contains("feat/repo-vocabulary"))
-        XCTAssertEqual(vocab.branch, "feat/repo-vocabulary")
+        XCTAssertTrue(terms.contains("feat/repo-vocabulary"))
     }
 
     func testBuildVocabularyExcludesNonTechnicalTerms() {
-        let vocab = RepoIndexing.buildVocabulary(
+        let terms = RepoIndexing.buildVocabularyTerms(
             paths: [
                 "Tests/FooTests.swift",
                 "Resources/image.png",
@@ -214,20 +213,19 @@ final class RepoIndexingParsingTests: XCTestCase {
             ],
             branch: "main"
         )
-        XCTAssertTrue(vocab.terms.contains("FooTests.swift"))
-        XCTAssertTrue(vocab.terms.contains("image.png"))
-        XCTAssertTrue(vocab.terms.contains("readme.txt"))
+        XCTAssertTrue(terms.contains("FooTests.swift"))
+        XCTAssertTrue(terms.contains("image.png"))
+        XCTAssertTrue(terms.contains("readme.txt"))
         // Common-word components: excluded (would inject `- Tests: tests`
         // style false hints that capitalize ordinary prose).
-        XCTAssertFalse(vocab.terms.contains("Tests"))
-        XCTAssertFalse(vocab.terms.contains("Resources"))
-        XCTAssertFalse(vocab.terms.contains("docs"))
+        XCTAssertFalse(terms.contains("Tests"))
+        XCTAssertFalse(terms.contains("Resources"))
+        XCTAssertFalse(terms.contains("docs"))
         // Accepted loss (documented in `isTechnicalTerm`): bare names without
         // separators or internal capitals carry no machine-checkable signal.
-        XCTAssertFalse(vocab.terms.contains("Makefile"))
-        // A plain-word branch is excluded from TERMS but still reported.
-        XCTAssertFalse(vocab.terms.contains("main"))
-        XCTAssertEqual(vocab.branch, "main")
+        XCTAssertFalse(terms.contains("Makefile"))
+        // A plain-word branch is excluded from the terms.
+        XCTAssertFalse(terms.contains("main"))
     }
 
     func testIsTechnicalTermRule() {

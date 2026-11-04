@@ -150,7 +150,7 @@ final class RealtimeServerCommitTests: XCTestCase {
 
     // MARK: - vLLM
 
-    /// A voice memo: every chunk, then the final commit, with no run going.
+    /// A recorded file: every chunk, then the final commit, with no run going.
     func testAVLLMFinalCommitWithNoRunGoingIsAnswered() {
         let harness = Harness(.vllm)
         harness.sendAudio(chunks: 3)

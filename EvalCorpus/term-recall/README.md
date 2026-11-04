@@ -105,7 +105,7 @@ technical is English; French sentences are matched against it.
 
 ## Scoring
 
-`TermRecallScorer` in `localvoxtralCore` (tests: `TermRecallScoringTests`,
+`TermRecallScorer` in `Tests/localvoxtralTestSupport` (tests: `TermRecallScoringTests`,
 Linux) does all of it:
 
 - Words are lowercased and split on anything that is not a letter or digit,

@@ -431,4 +431,22 @@ extension ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Claude remote host setup cancelled")
         return false
     }
+
+    /// Why a check could not run at all.
+    ///
+    /// Deliberately NOT routed through `enrollmentFailureDetail`: that one is
+    /// written for an action that writes ("SSH setup exited with…"), and it is
+    /// keyed on an `EnrollmentAction` a check does not have. Verification can
+    /// only throw two things, and everything else here is a "should not happen"
+    /// that must still say something true.
+    static func verificationFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
+        switch failure.serviceError {
+        case .executionNotConfigured:
+            return "Checking the setup is not available in this build."
+        case .invalidHostAlias:
+            return "This host has no usable SSH alias, so there is nothing to check."
+        default:
+            return "The check could not run."
+        }
+    }
 }

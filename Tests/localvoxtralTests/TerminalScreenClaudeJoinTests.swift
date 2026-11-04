@@ -2,6 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Test clock — the registry never reads the wall clock itself, so TTL and
@@ -1285,10 +1286,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
     /// A context with polishing on (loopback), screen context on and
     /// Accessibility trusted, so every gate in front of the capture is open.
     private func makeScreenContext() -> SessionContextResolver {
-        let suiteName = "localvoxtral.TerminalScreenClaudeJoinTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.llmPolishingEnabled = true
         settings.terminalScreenContextEnabled = true

@@ -34,11 +34,11 @@ expect "" "a docs change on main waits for nothing" \
   main "" docs/install.md
 expect "waits:mac-llm" "a polish helper change waits for the LLM lane" \
   main "" PolishHelper/Sources/PolishHelper/main.swift
-expect "waits:mac-voxtral" "a speech helper change waits for the speechd lane" \
+expect "waits:mac-speech" "a speech helper change waits for the speechd lane" \
   main "" SpeechHelper/Package.swift
-expect "waits:mac-voxtral" "the STT filter alone earns the Voxtral label" \
+expect "waits:mac-speech" "the STT filter alone earns the speech label" \
   main "" Sources/localvoxtralCore/RealtimeAPIWebSocketClient.swift
-expect "waits:mac-llm waits:mac-voxtral" "both lane markers earn both labels" \
+expect "waits:mac-llm waits:mac-speech" "both lane markers earn both labels" \
   main "[run-llm-eval] [run-speechd-integration]" docs/install.md
 expect "waits:stack" "a base other than main is a stack" \
   t/717-wire-notification-type "" docs/install.md

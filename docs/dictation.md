@@ -1,7 +1,7 @@
 # Dictating
 
 Dictate into any app with one key, send the words to a coding agent
-session or the Inbox, and teach localvoxtral the names you say. Every
+session, and teach localvoxtral the names you say. Every
 setting is listed at the end, under [Settings](#settings).
 
 ## Shortcuts
@@ -33,8 +33,8 @@ holding one Shift while typing never starts a dictation. The hold delay
 starts once the last key of the chord is down, and a hold ends as soon as one
 of them goes up.
 
-**Keyboard shortcut.** You record one dictation shortcut, and the **Toggle**
-or **Push to Talk** setting decides how it behaves. A shortcut needs at least
+**Keyboard shortcut.** You record one dictation shortcut, and **Shortcut action**
+(**Toggle** or **Push to Talk**) decides how it behaves. A shortcut needs at least
 one modifier, except for a function key.
 
 F1 to F20 can be recorded on their own, so a spare F13 to F20 on a full-size
@@ -47,9 +47,8 @@ Settings.
 
 ### Record a chord of modifier keys
 
-To make **Answer the agent that needs you**, **Quick capture to Inbox** or
-**Copy last dictation** a chord of modifier keys, such as left Shift and
-right Shift together:
+To make **Copy last dictation** a chord of modifier keys, such as left
+Shift and right Shift together:
 
 1. Click the shortcut's field.
 2. Press the keys together.
@@ -96,9 +95,9 @@ It offers **Never**, the default, and **After 5 s**, **8 s**, **15 s** or
 commit run as usual.
 
 It applies only to Overlay Buffer dictations started by a tap: a tap of the
-modifier keys, a keyboard shortcut set to **Toggle**, or a destination
-shortcut. A held dictation stops on release, and Live Auto-Paste has typed
-its words already, so neither stops on silence.
+modifier keys or a keyboard shortcut set to **Toggle**. A held dictation
+stops on release, and Live Auto-Paste has typed its words already, so
+neither stops on silence.
 
 - The time counts from the last new words, not from the last sound you
   made.
@@ -125,7 +124,7 @@ Advanced**:
 
 Words then land in the focused app while you talk. The app applies
 dictionary replacements before typing, and never backspaces over text an app
-has already drawn. It has no overlay, so Tab does not apply.
+has already drawn. It has no overlay.
 
 ### Keeping words on their line
 
@@ -141,47 +140,11 @@ straight to the next line and stays there for the rest of the dictation.
 Lines can then end with empty space up to the width of that many letters.
 The committed text is the same either way.
 
-## Where the words go
-
-Press **Tab** during a dictation to send the words somewhere else, and
-**⇧Tab** to go back. The top of the overlay names where the words go, and
-"2 of 5" says how many places they could go, in this order:
-
-- **The app you started in**, named after its coding agent session when it
-  has one. A dictation goes here unless you press Tab.
-- **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
-  saved there and never typed anywhere.
-- **Each coding agent session that needs you**, oldest first, when
-  [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
-  is on. Picking one brings its pane forward, and your words go there when
-  you stop.
-
-**→** and **←** move the same way. None of these keys reach the app you are
-dictating into while the overlay is open. One Tab therefore always sends the
-dictation to the Inbox, and a second reaches the session that has waited
-longest.
-
-While you move, the overlay lists every destination under its top line. The
-list closes two seconds after your last move. A click on a destination in
-the list picks it, and a click on the name at the top opens the list.
-
-The optional **Quick capture to Inbox** shortcut under **Settings →
-Dictation → Output** starts a dictation with the Inbox already picked.
-Pressed during a dictation, it picks the Inbox the way Tab would. Pressed
-again, it stops. It can be a
-[chord of modifier keys](#record-a-chord-of-modifier-keys).
-
 ## Voice commands
 
 Some spoken phrases act instead of being typed:
 
 - "send it" presses Return (below);
-- "go to payments" brings a session forward
-  ([Go to a session by voice](agents.md#go-to-a-session-by-voice));
-- "send that to payments" sends the dictation to that session
-  ([Send a dictation to another session](agents.md#send-a-dictation-to-another-session));
-- "call this session payments" names the session
-  ([Name a session](agents.md#name-a-session));
 - "paste clipboard" inserts the clipboard as a code block
   ([Polishing](coding-agents.md#polishing)).
 
@@ -198,8 +161,8 @@ Dictation**; the Live Auto-Paste switch is under **Advanced**.
 **Your own phrases.** **Settings → Dictation → Output → Send phrases**
 replaces "send it" and "send now" with your list, separated by commas, in
 both modes. A phrase has at most four words. The app refuses a
-single common word ("go", "done", "enter"), since you say it in ordinary
-prompts.
+single word of two letters or fewer, or a common one ("go", "done", "enter"),
+since you say it in ordinary prompts.
 
 **Overlay Buffer stops on its own.** When the words end in a send phrase and
 the wait passes with no new words, the dictation stops as if you pressed
@@ -211,8 +174,6 @@ default.
 - Speaking again within the wait keeps the dictation going.
 - The key still stops it at once.
 - A held (push to talk) dictation stops only on release.
-- A quick capture stops the same way and goes to the Inbox without the
-  phrase. It never presses Return.
 - Live Auto-Paste does not wait: it presses Return when you finish the
   phrase.
 
@@ -282,7 +243,8 @@ Tick **Also delete the backups** there, and Delete All and Don't keep also
 delete every copy, and the switches empty their quarantine. Once History is
 empty, Delete All stays available while the copies hold something, and deletes
 them. A dictation you delete on its own stays in the copies until they rotate
-away.
+away. A dictation the **Keep dictations** period deletes leaves the copies a
+day later.
 
 ### History
 
@@ -369,7 +331,7 @@ dictations. Live Auto-Paste dictations get no record.
 
 ### Insights
 
-**Insights**, under History in the sidebar, counts the saved dictations over
+**Insights**, below History in the sidebar, counts the saved dictations over
 the last 7 days, the last 30, or all of them. The app computes all of it on
 this Mac from the history store. With history off, the pane is empty.
 
@@ -417,8 +379,8 @@ you made, and your coding agent.
 **Settings → Text Processing → About you** holds a few lines on your work in
 your own words. It also holds **Global terms**, the names and terms you say
 often in every project, spelled the way they should appear ("Qwen", "Claude
-Code", "vLLM"). Terms that belong to one project are in **Settings →
-Projects**, under that project.
+Code", "vLLM"). Terms that belong to one project are in the
+**Projects** pane, under that project.
 
 The app sends both to the polishing model with every dictation, whichever
 endpoint you chose. You never list how a name gets misheard; the polisher
@@ -428,7 +390,7 @@ The app fixes the casing of a multi-word or mixed-case term even in Live
 Auto-Paste with no polishing.
 
 Your project names go with every dictation too: each project in
-**Settings → Projects** and its repository's name, whichever session the
+the **Projects** pane and its repository's name, whichever session the
 dictation joins. So do the names of your coding agents' skills and commands,
 on this Mac and on your ssh hosts; a host sends them when a session starts
 there. Neither belongs in Global terms. When a Global term only repeats one,
@@ -464,7 +426,7 @@ These terms also show as tags in **Suggestions**, with no API credits. The
 app keeps terms per project, and a project is a git repository (see
 [One project per repository](#one-project-per-repository)).
 
-Every term is in **Settings → Projects**: click a project to see its terms,
+Every term is in the **Projects** pane: click a project to see its terms,
 or **No project** at the end of the list for terms learned outside any
 project and those of projects no longer listed. A long list has a search
 field. Each term shows how often it was applied and when it last was:
@@ -505,9 +467,7 @@ local Claude Code, Mistral Vibe or opencode session in a new project starts
 that agent once, headless, in the project's repository.
 
 The agent reads a few files and answers with up to 40 names you would say
-about the project, and one sentence on what the project is and has, which
-quick capture's classifier reads
-([Quick capture](coding-agents.md#quick-capture)). The names are the
+about the project. The names are the
 project's and its parts', the products, tools, services and models it uses,
 people, and words of its domain. The app drops any name written like code: a
 type or function name, a file name, a path, a flag or an environment
@@ -521,7 +481,7 @@ asked with an older version of the request is asked once more, and its new
 answer replaces the old names you never used or pinned. The app retries a run
 that fails a day later.
 
-The names show under the project's terms (**Settings → Projects**) as
+The names show under the project's terms in the **Projects** pane as
 "Proposed by Claude Code", "Proposed by Mistral Vibe" or "Proposed by
 opencode". They are suggestions:
 
@@ -571,12 +531,11 @@ login or Mistral key. Details are in
 
 ### One project per repository
 
-Learned terms, the coding agent's proposals and quick capture's project list
-are all kept per project. A project is a git repository, known by the
+Learned terms and the coding agent's proposals are kept per project. A project is a git repository, known by the
 repository its `origin` remote names (`github.com/owner/repository`, or the
 same on another host). Every checkout of it, on this Mac or on an ssh host,
 whatever its folder is called, shares one list of terms and one entry in
-**Settings → Projects**, under the repository's name. A checkout with no
+the **Projects** pane, under the repository's name. A checkout with no
 `origin` is a project of its own, under its folder's name. A fork is its own
 repository, since its `origin` is yours.
 
@@ -592,9 +551,8 @@ repository, since its `origin` is yours.
   hold keeps the higher count, and a pin stays.
 - **Projects left over from an older plugin** are not merged into their
   repository. Their terms expire 90 days after last use, unless you pinned
-  one, and the list then drops the project. Quick capture no longer offers
-  them as destinations. To remove one sooner, forget its terms under
-  **No project** in **Settings → Projects**.
+  one, and the list then drops the project. To remove one sooner, forget its
+  terms under **No project** in the **Projects** pane.
 
 ## Lower other audio while dictating
 
@@ -664,7 +622,8 @@ request is in [History](#history).
 ## Settings
 
 Open **Settings…** from the menu bar popover. Settings shares a window with
-History; the panes sit under the sidebar's Settings header.
+History, Insights and Projects, which sit above the sidebar's Settings
+header.
 
 - **General**: permission status for Microphone and Accessibility, with
   grant buttons, **Re-run setup**, and two startup switches. **Open
@@ -679,8 +638,7 @@ History; the panes sit under the sidebar's Settings header.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
   [send phrases](#press-return-with-send-it), the wait before pressing
   Return and the Overlay Buffer send phrase switch, the
-  [needs-you cue and its shortcut](agents.md#jump-to-it),
-  the [Quick capture to Inbox shortcut](#where-the-words-go),
+  [needs-you cue](agents.md#when-an-agent-needs-you),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and

@@ -90,7 +90,7 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
             },
             focusedDesktopSessionURL: { _ in
                 desktopReads?.increment()
-                return address
+                return ClaudeDesktopFocusRead(address: address)
             },
             focusedWindowID: { _ in 101 }
         )
@@ -761,7 +761,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         let calls = Calls()
         let address = await reader([.webArea(url: "https://claude.ai/epitaxy/local_a")], calls: calls)
             .focusedSessionURL(applicationPID: 1)
-        XCTAssertEqual(address, "https://claude.ai/epitaxy/local_a")
+        XCTAssertEqual(address, .address("https://claude.ai/epitaxy/local_a"))
         XCTAssertEqual(calls.reads, 1)
         XCTAssertEqual(calls.sleeps, [])
     }
@@ -773,7 +773,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         let address = await reader(
             [.noWebArea, .webArea(url: "https://claude.ai/epitaxy/local_a")], calls: calls
         ).focusedSessionURL(applicationPID: 1)
-        XCTAssertEqual(address, "https://claude.ai/epitaxy/local_a")
+        XCTAssertEqual(address, .address("https://claude.ai/epitaxy/local_a"))
         XCTAssertEqual(calls.reads, 2)
         XCTAssertEqual(calls.sleeps, [AXClaudeDesktopSessionURLReader.treeBuildWaitSeconds])
     }
@@ -781,18 +781,23 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
     func testOnlyOneRetry() async {
         let calls = Calls()
         let address = await reader([.noWebArea], calls: calls).focusedSessionURL(applicationPID: 1)
-        XCTAssertNil(address)
+        XCTAssertEqual(address, .refused(.noWebView))
         XCTAssertEqual(calls.reads, 2)
     }
 
     // Focus outside the primary pane's chat panel is a finished answer, not
     // a tree still being built.
     func testFocusOutsideThePrimaryChatIsNotRetried() async {
-        for place: ClaudeDesktopFocusPlace in [.secondaryPane, .primaryPaneOutsideChat, .outsidePanes] {
+        let places: [(ClaudeDesktopFocusPlace, ClaudeDesktopFocusRefusal)] = [
+            (.secondaryPane, .secondaryPane),
+            (.primaryPaneOutsideChat, .primaryPaneOutsideChat),
+            (.outsidePanes, .outsidePanes),
+        ]
+        for (place, refusal) in places {
             let calls = Calls()
             let address = await reader([.outsidePrimaryChat(place)], calls: calls)
                 .focusedSessionURL(applicationPID: 1)
-            XCTAssertNil(address)
+            XCTAssertEqual(address, .refused(refusal))
             XCTAssertEqual(calls.reads, 1)
             XCTAssertEqual(calls.sleeps, [])
         }
@@ -802,7 +807,7 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
     func testUnavailableIsNotRetried() async {
         let calls = Calls()
         let address = await reader([.unavailable], calls: calls).focusedSessionURL(applicationPID: 1)
-        XCTAssertNil(address)
+        XCTAssertEqual(address, .refused(.unavailable))
         XCTAssertEqual(calls.reads, 1)
         XCTAssertEqual(calls.sleeps, [])
     }
@@ -812,7 +817,39 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
         for bad: String? in [nil, "", "https://claude.ai/epitaxy/local_a\nX"] {
             let address = await reader([.webArea(url: bad)], calls: Calls())
                 .focusedSessionURL(applicationPID: 1)
-            XCTAssertNil(address)
+            XCTAssertEqual(address, .refused(.unavailable))
+        }
+    }
+
+    // Field, Oct 2026: 64 diagnostic records said only "focused web view address
+    // unavailable", whichever refusal it was, so they could not tell focus in
+    // the sidebar from a Desktop layout the rule no longer recognizes. Each
+    // refusal now reaches the dictation's abstention causes as itself.
+    func testEachRefusalIsNotedAsItsOwnCause() async {
+        let cases: [(ClaudeDesktopWebAreaLookup, String)] = [
+            (.outsidePrimaryChat(.secondaryPane), "focus is in the second pane of a split view"),
+            (.outsidePrimaryChat(.primaryPaneOutsideChat), "focus is in a session's terminal, files or changes panel"),
+            (.outsidePrimaryChat(.outsidePanes), "focus is outside every session pane"),
+            (.noWebArea, "focus is not inside a web view"),
+            (.unavailable, "focused web view address unavailable"),
+            (.webArea(url: nil), "focused web view address unavailable"),
+        ]
+        let target = TerminalScreenTarget(pid: 6060, bundleID: ClaudeDesktopAllowlist.bundleID)
+        for (lookup, cause) in cases {
+            let reader = reader([lookup], calls: Calls())
+            let resolver = ClaudeSessionJoinResolver(
+                registry: ClaudeSessionRegistry(
+                    now: { Date(timeIntervalSince1970: 2_000_000) }, isProcessAlive: { _ in true }
+                ),
+                focusedTerminalTTY: { _ in nil },
+                focusedDesktopSessionURL: { await reader.focusedSessionURL(applicationPID: $0) },
+                focusedWindowID: { _ in nil }
+            )
+            let (join, causes) = await ClaudeJoinAbstentionTap.collecting {
+                await resolver.resolve(target: target)
+            }
+            XCTAssertNil(join)
+            XCTAssertEqual(causes, ["desktopSession: \(cause)"], "\(lookup)")
         }
     }
 }

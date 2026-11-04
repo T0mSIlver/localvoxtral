@@ -38,10 +38,11 @@ public final class ClaudeIntegrationSettingsModel {
     public internal(set) var presentedPluginUpdate: PluginUpdatePresentation?
     public internal(set) var enrollmentConfirmation: EnrollmentConfirmation?
     public internal(set) var isPerformingEnrollmentAction = false
-    /// Step 3's verdicts. Empty until the user presses Check Setup — a check
-    /// nobody asked for would spawn ssh on opening a sheet.
+    /// The final check's verdicts. Empty until a setup run reaches it: a check
+    /// nobody asked for would spawn ssh on opening a sheet. No view renders
+    /// them; the run reports a failed check through its own step and alert,
+    /// and tests read them.
     public internal(set) var verificationChecks: [ClaudeRemoteEnrollmentService.VerificationCheck] = []
-    public internal(set) var isPerformingVerification = false
     public internal(set) var setupRun: RemoteHostSetupRun?
     public internal(set) var setupManualInstructions: String?
     var setupCancellationRequested = false
@@ -49,14 +50,14 @@ public final class ClaudeIntegrationSettingsModel {
     public var alert: DetailAlert?
 
     /// One busy flag for the sheet, so no two actions can interleave: a setup
-    /// run, a local panel edit, and a check all drive the same seams.
-    public var isEnrollmentBusy: Bool { isPerformingEnrollmentAction || isPerformingVerification }
+    /// run and a local panel edit drive the same seams.
+    public var isEnrollmentBusy: Bool { isPerformingEnrollmentAction }
 
     /// Whether THIS Mac currently holds the listener port.
     ///
     /// `.listening` and nothing else: `.portConflict` and `.failed` both mean
     /// the port is not ours, which is exactly the case a forwarded 401 must not
-    /// pass. Read at two different moments by `runVerification`, so it is one
+    /// pass. Read at two different moments by `performSetup`, so it is one
     /// property rather than two copies of the same expression.
     var listenerIsBound: Bool {
         guard let listener, listener.isListening else { return false }
@@ -197,6 +198,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// The bundled local plugin's `plugin.json` version, for the update
     /// comparison. Nil when the bundled manifest could not be read.
     let bundledPluginVersion: String?
+    /// The bundled mod's `plugin.json` version, compared on its own at launch.
+    /// Nil when the bundled manifest could not be read: the mod is then never
+    /// updated unattended.
+    let bundledModVersion: String?
     /// Reads and writes the `statusLine` key. Nil disables the row's actions.
     let statuslineService: @Sendable () -> ClaudeStatuslineInstallService?
     /// The hook command the statusline entry points at, e.g.
@@ -353,6 +358,7 @@ public final class ClaudeIntegrationSettingsModel {
         fetchMarketplaceListOutput: @escaping @Sendable () async -> String? = { nil },
         desiredMarketplacePath: @escaping @Sendable () -> String? = { nil },
         bundledPluginVersion: String? = nil,
+        bundledModVersion: String? = nil,
         statuslineService: @escaping @Sendable () -> ClaudeStatuslineInstallService? = { nil },
         statuslineHookCommand: @escaping @Sendable () -> String? = { nil },
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
@@ -383,6 +389,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.fetchMarketplaceListOutput = fetchMarketplaceListOutput
         self.desiredMarketplacePath = desiredMarketplacePath
         self.bundledPluginVersion = bundledPluginVersion
+        self.bundledModVersion = bundledModVersion
         self.statuslineService = statuslineService
         self.statuslineHookCommand = statuslineHookCommand
         self.opencodeService = opencodeService

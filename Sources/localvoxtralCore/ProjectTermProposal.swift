@@ -10,6 +10,12 @@ import Foundation
 /// prompt, and reading the answer. `ProjectTermProposalProcessRunner` runs
 /// the command and `ProjectTermProposer` decides when.
 package enum ProjectTermProposal {
+    /// The spellings a proposal never stores: the user's own terms, the
+    /// suggestions they refused, the project and skill names. Read when an
+    /// answer is stored, not when the run starts: a refusal made while the
+    /// agent runs must keep its term out of that answer (LVX-90).
+    package typealias Exclusions = @Sendable () -> [String]
+
     /// The agents that can propose. A Codex proposer is a follow-up to #716.
     package enum Agent: String, Sendable, Equatable, CaseIterable {
         case claude
@@ -175,8 +181,8 @@ package enum ProjectTermProposal {
         }
     }
 
-    /// The project's sentence is capped like the user's own line.
-    package static let maxLineCharacters = QuickCaptureProjects.maxUserLineCharacters
+    /// The project's sentence is capped at this many characters.
+    package static let maxLineCharacters = 200
 
     /// Bumped whenever the prompt asks for something new, so a project
     /// answered under an older one is asked once more
@@ -184,10 +190,11 @@ package enum ProjectTermProposal {
     /// (#891), 3 asks for names people say instead of the code's (#914).
     package static let promptRevision = 3
 
-    /// The terms, and since #891 one sentence quick capture's router reads:
-    /// a README says what a project is, rarely what it has. The people who
-    /// dictate say names, not identifiers (#914); the answer is filtered for
-    /// code shapes anyway (`acceptedTerms`).
+    /// The terms only. The people who dictate say names, not identifiers
+    /// (#914); the answer is filtered for code shapes anyway
+    /// (`acceptedTerms`). From #891 it also asked for one sentence about the
+    /// project, which only quick capture read; an older runner's answer may
+    /// still carry it.
     package static let prompt = """
         List the names someone would say aloud about this project that a \
         speech recognizer is likely to misspell. Picture a builder who talks \
@@ -196,21 +203,18 @@ package enum ProjectTermProposal {
         services, libraries and models it uses, people and teams, and words \
         of its domain. They never say class, function or variable names, file \
         names, paths, flags or environment variables: leave those out, and \
-        leave out common English words. Also describe the project in one \
-        sentence of at most \(maxLineCharacters) characters: what it is, then \
-        the features and parts someone would name when filing an idea for it. \
-        Read at most six files, the README first. Spell each name as the \
+        leave out common English words. Read at most six files, the README first. Spell each name as the \
         project's docs write it. Reply with JSON only: \
-        {"terms": [...], "description": "..."}, at most \(maxTerms) terms.
+        {"terms": [...]}, at most \(maxTerms) terms.
         """
 
     /// Replaces Claude Code's default system prompt, which costs a third more
     /// tokens and asks nothing this run needs (#609 spec measurements).
     package static let claudeSystemPrompt =
-        "You list the names people say when they talk about a code project, and describe it, for a dictation app. Reply only with the requested JSON."
+        "You list the names people say when they talk about a code project, for a dictation app. Reply only with the requested JSON."
 
     package static let claudeJSONSchema =
-        #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}"#
+        #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}"#
 
     /// Read, Glob and Grep only: no Bash, no MCP, no hooks. `disableAllHooks`
     /// is what keeps a project's `SessionStart` hook, and our own plugin's,
@@ -518,8 +522,7 @@ package enum ProjectTermProposal {
         }
     }
 
-    /// The last text message and the run's usage, or why there is none. The
-    /// terms run and quick-capture drafting (#812) both read this.
+    /// The last text message and the run's usage, or why there is none.
     package static func opencodeAnswer(
         stdout: Data, exitCode: Int32
     ) -> Result<(text: String, usage: Usage), Failure> {
@@ -612,7 +615,7 @@ package enum ProjectTermProposal {
         guard !line.isEmpty,
               line.range(of: #"https?://|www\.|\]\("#, options: [.regularExpression, .caseInsensitive]) == nil
         else { return nil }
-        return QuickCaptureProjects.clipped(line, to: maxLineCharacters)
+        return line.count > maxLineCharacters ? String(line.prefix(maxLineCharacters - 1)) + "…" : line
     }
 
     /// The agent's answer is untrusted text that repo contents can steer, so

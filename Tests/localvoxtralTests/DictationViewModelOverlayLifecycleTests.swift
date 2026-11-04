@@ -291,7 +291,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         }
 
         let settings = makeSettings(outputMode: .overlayBuffer)
-        settings.setDictationShortcut(SettingsStore.defaultDictationShortcut)
         settings.setOverlayBufferShortcut(nil)
         settings.setLivePasteShortcut(nil)
         // The subject is "no shortcuts left to register" — the modifier-only

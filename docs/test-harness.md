@@ -103,14 +103,20 @@ Limits to know before changing it:
 
 A build with the control socket, launched with `LOCALVOXTRAL_DOGFOOD_AUDIO_FILE` set to an
 absolute path dictates from that WAV in place of the microphone
-([`DogfoodAudioFileSource.swift`](../Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift)).
+([`DogfoodAudioFileSource.swift`](../Sources/localvoxtralCore/Dogfood/DogfoodAudioFileSource.swift)).
 An end-to-end check needs the same words on every run with nobody at the
 machine. A file gives that, and needs neither a loudspeaker nor a microphone
 grant.
 
 ```
-open --env LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/path/to/utterance.wav localvoxtral.app
+open --env LOCALVOXTRAL_DATA_HOME=/tmp/lv-data --env LOCALVOXTRAL_DOGFOOD_AUDIO_FILE=/path/to/utterance.wav localvoxtral.app
 ```
+
+Such a launch keeps its History, recordings and other stores in
+`LOCALVOXTRAL_DATA_HOME`. Without it, the app picks a new temporary folder
+instead of the owner's, and so does the harness bundle
+(`com.localvoxtral.e2e-harness`) however it is opened
+([`LocalvoxtralDataDirectory.swift`](../Sources/localvoxtralCore/LocalvoxtralDataDirectory.swift)).
 
 The file must be mono 16-bit PCM at 16 kHz, the format
 `scripts/record-agent-eval.sh` writes. The app refuses any other format

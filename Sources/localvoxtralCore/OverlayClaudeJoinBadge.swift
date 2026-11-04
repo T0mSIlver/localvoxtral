@@ -138,7 +138,7 @@ extension ClaudeJoinGate {
     package var silencesBadge: Bool {
         switch self {
         case .noPolishingEndpoint, .contextSettingsOff,
-             .browserWithoutSessionContext, .desktopWithoutSessionContext:
+             .browserWithoutSessionContext, .desktopWithoutSessionContext, .t3WithoutSessionContext:
             return true
         case .noResolver, .endpointNotPermitted, .accessibilityNotTrusted, .noFrontmostTarget:
             return false

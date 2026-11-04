@@ -44,12 +44,15 @@ extension DictationSessionController {
         // single choke point where every realtime event arrives on the main
         // actor; logging here captures exactly what the backend delivered
         // before FirstChunkPreprocessor / merge / insertion touch it. No-op
-        // unless the hidden `debug.log_realtime_deltas` toggle is set.
+        // unless the hidden `debug.log_realtime_deltas` toggle is set, and
+        // compiled out of release builds (LVX-80).
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         realtimeDeltaLog.record(
             event,
             isEnabled: settings.debugLogRealtimeDeltas,
             sink: dependencies.onRealtimeDeltaLogRecord
         )
+        #endif
 
         switch event {
         case .connected:
@@ -169,6 +172,13 @@ extension DictationSessionController {
         }
 
         transcript.appendPartial(processedDelta)
+        // The bundled speech helper never revises a delta and sends its one
+        // final at the stop, so early polish takes its pieces from the deltas
+        // there; every other backend settles its text with finals.
+        if let earlyPolishRun, sessionUsesManagedSpeechHelper, !isFinalizingStop,
+            let settled = transcript.settledStreamedText {
+            earlyPolishRun.settledTextChanged(settled)
+        }
         noteTranscriptTextForSilenceAutoStop()
         if isLiveAutoPasteModeEnabled {
             gateLivePartial(processedDelta)

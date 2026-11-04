@@ -27,7 +27,9 @@ DRAFT therefore gets no bundle at all, unless its body carries `[mac-lanes]`.
 
 **`mac-lanes` — the self-hosted Mac, same-repo PRs that are not drafts /
 pushes to main / dispatches only.** A draft gets `build-test` alone; marking it
-ready starts `mac-lanes`, and `[mac-lanes]` in a draft's body opts it in. One
+ready starts `mac-lanes`, and `[mac-lanes]` in a draft's body opts it in. That
+ready run skips `build-test` and `linux` when the head already passed them
+(`prior` job). One
 Mac serves every agent, and work in progress was most of its queue (#418). Everything a hosted runner cannot supply: packaging and
 launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 (an ad-hoc signature would invalidate the owner's Accessibility grant on every
@@ -300,7 +302,8 @@ It runs on a GitHub-hosted Mac, which has never had the app. In order: it
 requires a published stable release, hashes the published zip and checks it
 against the `.sha256` asset, renders the cask with `scripts/ci/render-cask.sh`,
 installs and zaps that cask from a throwaway local tap
-(`scripts/ci/verify-cask-install.sh`), pushes it with the
+(`scripts/ci/verify-cask-install.sh`, which runs `brew trust --tap` on it
+first: Homebrew 7 refuses to load a cask from an untrusted tap), pushes it with the
 `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap), and installs
 once more from the public tap. It refuses to move the tap to an older version.
 
@@ -311,6 +314,21 @@ leaves a good release and a tap on the previous version. Repair it with:
 ```bash
 gh workflow run cask.yml -f tag=v0.9.0
 ```
+
+## `release-freshness.yml`
+
+Goes red when `main` has a commit that has waited three days or more for a
+stable release (`scripts/ci/release-freshness.sh`, tested by
+`test-release-freshness.sh`; `RELEASE_FRESHNESS_DAYS` changes the limit). It
+runs at 12:30 UTC on a hosted Ubuntu runner and reads only git, because the
+release job runs on the Mac Mini's runner and cannot report its own absence.
+Two things silence it today: the daily release skips green when no commit
+has passed the e2e dictation check, and its job waits in the runner's queue
+until GitHub cancels it after a day. Between 2026-10-22 and 2026-11-03 both
+happened and nothing said so. A red run means: look at `gh run list -w
+release.yml`, at whether `mac-mini` is online and idle in
+`gh api repos/<owner>/<repo>/actions/runners`, and at whether UI Smoke ran on
+`main`.
 
 ## `dmg-test.yml`
 
@@ -434,7 +452,7 @@ look at the built site before merging. Build it locally with
 
 ## `pr-waits-labels.yml`
 
-Adds `waits:mac-llm`, `waits:mac-voxtral` and `waits:stack` to a same-repo PR
+Adds `waits:mac-llm`, `waits:mac-speech` and `waits:stack` to a same-repo PR
 on open, push, and body or base edits, from `scripts/ci/waits-labels.sh`,
 which runs the same lane filters `ci.yml` does. Hosted Ubuntu, a few seconds,
 not a required check. It only adds labels. What each label means and who

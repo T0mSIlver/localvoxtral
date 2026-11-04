@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// The microphone list must follow CoreAudio while the app is idle: a mic
@@ -113,12 +114,7 @@ final class MicrophoneHotPlugTests: XCTestCase {
     }
 
     private func makePipeline() -> (SessionAudioPipeline, SettingsStore) {
-        let suiteName = "localvoxtral.MicrophoneHotPlugTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let audio = SessionAudioPipeline(
             settings: settings,

@@ -66,8 +66,7 @@ AppKit:
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
 - the polishing server's wire dialect (`PolishWire.swift`, #1851):
   `LLMPolishingConfiguration` builds the URL, headers and body of every
-  request to the polishing model, polish and quick capture alike, and reads
-  its reply, in the OpenAI-compatible, Mistral or Anthropic shape;
+  request to the polishing model, and reads its reply, in the OpenAI-compatible, Mistral or Anthropic shape;
   `LLMPolishingService` stays in the app
 - which app an insertion targets (`PreferredTextInsertionTargetPolicy`);
   `TextInsertionService` stays in the app
@@ -80,7 +79,7 @@ AppKit:
   stays in the app
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
-- the Claude session snapshot and its reducer (`ClaudeSessionState`)
+- the Claude session snapshot and its reducer (`ClaudeSessionSnapshot`, `ClaudeSessionReducer`)
 - the overlay's dragged-position geometry (`OverlayManualPlacement`,
   `OverlayManualPlacementResolver`); the `NSScreen` enumeration stays in the app
 - `DictationOutputMode`, the dogfood control socket's grammar and the WAV
@@ -93,15 +92,10 @@ AppKit:
 - the learned terms: `LearnedTermStore` and the learner that fills it from
   the user's fixes (`CorrectionLearning`); the one-line notice it shows
   stays in the app
-- quick capture (`QuickCapture/`, #725, #918): the project descriptions a
-  classifier reads, the polishing model's routing mode and the Jev client,
-  the rule that sends a low or tied answer to the catch-all, the context a
-  first draft reads (`QuickCaptureContext`), the polishing model's first
-  draft sorted by kind (`QuickCaptureFirstDraft`), the agent's check of an
-  issue (`QuickCaptureDrafter`), and the Inbox (`QuickCaptureInboxModel`);
-  the voice memo folder watcher and its ledger (#925), and
-  `RealtimeFileTranscriber`, which streams a recorded file through a
-  realtime client. Decoding the memo (AVFoundation) stays in the app
+- the Projects pane's data (`Projects/`, #939): the listed projects
+  (`ListedProjects`), the pane's rows (`ProjectsPane`), the read of a
+  checkout's `origin` (`ProjectOriginLinker`) and what a host's hooks report
+  about its projects (`RemoteProjectReports`)
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
@@ -136,7 +130,7 @@ Key subsystems:
 
 - Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),
   `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes),
-  `AudioDuckingController` + `SystemOutputVolumeControl` (fades other audio
+  `AudioDuckingController` + `SystemOutputVolumeControlling` (fades other audio
   down for the session and back up on every path that ends it)
 - Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
   (managed speechd / vLLM / any OpenAI-Realtime server) and
@@ -171,11 +165,12 @@ Key subsystems:
   lives in [under-the-hood.md](under-the-hood.md); keep it in sync when pins
   change.
 - Settings/config: `SettingsStore` (UserDefaults, plus a `SecretStoring` seam,
-  `KeychainSecretStore`, that keeps the three API keys out of the plist and in
+  `KeychainSecretStore`, that keeps the API keys out of the plist and in
   the login Keychain), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
-- Hotkey: `HotKeyManager` (Carbon, single global hotkey)
-- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral*/ClaudeContext/`,
+- Hotkey: `HotKeyManager` (Carbon: the dictation and action hotkeys), plus
+  `ModifierChordHotKeyMonitor` for modifier-only taps and chords
+- Claude Code session context (`Sources/ClaudeContextWire`, `Sources/localvoxtral*/ClaudeContext/`,
   `integrations/claude-code/`): off-screen context for dictation into Claude
   Code. One marketplace holds two plugins. They are structurally separate,
   never modes of each other. Both declare hooks only (no
@@ -239,12 +234,10 @@ Key subsystems:
     to run. `RemoteProjectTermRequests` marks a joined session, the next
     hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
     `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
-    is filed under the project the Mac recorded. Quick capture (#745) asks
-    the same way (`RemoteQuickCaptureRequests`): `X-Lvx-Readme` for a
-    project's README summary and `X-Lvx-Draft` for a routed capture's draft,
-    both run by `hooks/capture.sh` and answered on `/v1/readme`,
-    `/v1/draft/words`, `/v1/draft/context`, `/v1/draft/check` (#918; an
-    older shim uses `/v1/draft/prompt`) and `/v1/draft`.
+    is filed under the project the Mac recorded. Routes that only
+    older shims and mods call (`/v1/readme`, `/v1/draft*`, `/v1/mod/inbox*`)
+    answer 410, and every shim version fails open on it
+    (`scripts/ci/test-remote-shim-removed-routes.sh`).
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

@@ -319,7 +319,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         // The other copy deletes the moment it can take the lock the copies
         // share, as its History Delete does.
         let directoryIO = InterleavingDirectoryIO { url in
-            guard let otherCopy = StoredFileLock.tryHolding(beside: folder) else { return }
+            guard let otherCopy = OtherCopyLock.tryHolding(beside: folder) else { return }
             withExtendedLifetime(otherCopy) {
                 try? FileManager.default.removeItem(at: url)
                 deletedDuringPatch.withLock { $0 = true }
@@ -470,6 +470,130 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             in: "export API_TOKEN='hunter22 battery staple' && make",
             keeping: "export API_TOKEN='<redacted>' && make"
         )
+    }
+
+    /// Config files and CLI output write secret names in lowercase, and YAML
+    /// and JSON put a colon after them (#1918). The AWS value is AWS's
+    /// documented example, joined at run time like the service keys.
+    func testRedactsLowercaseAndColonSecretAssignments() {
+        let awsSecret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+        assertRedacts(
+            awsSecret,
+            in: "[default]\naws_secret_access_key = \(awsSecret)\nregion = eu-west-3",
+            keeping: "aws_secret_access_key = "
+        )
+        assertRedacts("hunter2x", in: "password=hunter2x\nport=5432", keeping: "password=")
+        assertRedacts("vK8q2mZ9wQ", in: "api_key=vK8q2mZ9wQ make test", keeping: "api_key=")
+        assertRedacts(
+            "c0ffee-Shop.42",
+            in: #"{"token": "c0ffee-Shop.42", "user": "app"}"#,
+            keeping: #"{"token": "<redacted>", "user": "app"}"#
+        )
+        assertRedacts(
+            "s3cret pass phrase",
+            in: #"{"accessToken":"s3cret pass phrase"}"#,
+            keeping: #"{"accessToken":"<redacted>"}"#
+        )
+        assertRedacts("hunter2", in: "db:\n  password: hunter2\n  host: db", keeping: "  host: db")
+        assertRedacts(
+            "Pg-s3cret!",
+            in: "environment:\n  POSTGRES_PASSWORD: Pg-s3cret!\n  POSTGRES_DB: app",
+            keeping: "POSTGRES_PASSWORD: "
+        )
+    }
+
+    /// The password in a connection string sits between the user's colon and
+    /// the `@`; the user, host and path stay readable.
+    func testRedactsThePasswordInURLUserinfo() {
+        assertRedacts(
+            "s3cretpw",
+            in: "DATABASE_URL is postgres://app:s3cretpw@db:5432/app",
+            keeping: "postgres://app:<redacted>@db:5432/app"
+        )
+        assertRedacts(
+            "tok3n-xyz",
+            in: "git clone https://oauth2:tok3n-xyz@gitlab.example.com/team/repo.git",
+            keeping: "@gitlab.example.com/team/repo.git"
+        )
+    }
+
+    func testRedactsBasicAuthAndCredentialFlags() {
+        assertRedacts(
+            "s3cretPw",
+            in: "curl -u admin:s3cretPw https://api.example.com",
+            keeping: "curl -u admin:<redacted> https://api.example.com"
+        )
+        assertRedacts(
+            "YWRtaW46czNjcmV0UHc=",
+            in: "Authorization: Basic YWRtaW46czNjcmV0UHc=\nAccept: */*",
+            keeping: "Authorization: Basic "
+        )
+        assertRedacts("hunter22", in: "mysql --password hunter22 -h db", keeping: "-h db")
+        assertRedacts("abc123def", in: "tool login --token=abc123def --verbose", keeping: "--verbose")
+        assertRedacts(
+            "my long secret",
+            in: "deploy --api-key \"my long secret\" now",
+            keeping: "--api-key \"<redacted>\" now"
+        )
+    }
+
+    /// The lowercase and colon rules must not eat code that reads a secret,
+    /// a flag that names a file, or prose with a label.
+    func testLeavesCodeAndProseThatNameASecretAlone() {
+        let texts = [
+            "let password = readPassword(prompt)",
+            "the token: expired yesterday",
+            "Password: required for this step",
+            "gh auth login --with-token < token.txt",
+            "docker login --password-stdin registry.example.com",
+            "sort_key: created",
+            "https://user@example.com/repo.git and mailto:someone@example.com",
+            "basic setup is done",
+            // Keys that hold no secret: a sort or cache key, a tokenizer.
+            "GET /items?sort_key=created_at&order=desc",
+            "cache_key=abcdef123456 idempotency_key = req-2026-11-03",
+            #"{"tokenizer": "bert-base-uncased", "tokenizer_class": "LlamaTokenizer"}"#,
+        ]
+        for text in texts {
+            var count = 0
+            XCTAssertEqual(DiagnosticRecordRedaction.redacting(text, count: &count), text)
+            XCTAssertEqual(count, 0, text)
+        }
+    }
+
+    /// A query string's secret goes, and the parameter after it stays.
+    func testRedactsASecretInAQueryStringUpToTheNextParameter() {
+        assertRedacts(
+            "abc123secret",
+            in: "GET /v1/items?api_key=abc123secret&page=2",
+            keeping: "api_key=<redacted>&page=2"
+        )
+        // A '&' that starts no parameter is part of the secret.
+        assertRedacts("my&secret123", in: "password=my&secret123", keeping: "password=<redacted>")
+    }
+
+    /// A plural secret key holds secrets too; "tokenizer" does not.
+    func testRedactsAPluralQuotedSecretKey() {
+        assertRedacts("hunter2x9", in: #"{"passwords": "hunter2x9"}"#, keeping: #""passwords": "<redacted>""#)
+        assertRedacts("abc123tok", in: #"{"api_keys": "abc123tok"}"#, keeping: #""api_keys": "<redacted>""#)
+    }
+
+    /// The URL rule starts once per run of scheme characters: on a long
+    /// dotted or dashed run it used to retry after every dot, quadratic in
+    /// the run's length (80 KB took 10 s on Linux).
+    func testALongDottedRunIsLeftAloneAndStillAURLAfterItIsRedacted() {
+        var run = ""
+        while run.utf8.count < 40_000 { run += "a1b2.c3d4-" }
+        var count = 0
+        XCTAssertEqual(DiagnosticRecordRedaction.redacting(run, count: &count), run)
+        XCTAssertEqual(count, 0)
+        assertRedacts("s3cretpw", in: run + " postgres://app:s3cretpw@db/app", keeping: "postgres://app:<redacted>@db/app")
+    }
+
+    /// A value another rule already replaced is not counted a second time.
+    func testCountsAQuotedJWTUnderASecretNameOnce() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"
+        assertRedacts(jwt, in: #"{"id_token": "\#(jwt)"}"#, keeping: #""id_token": "<redacted>""#)
     }
 
     /// The harvest lists single terms, which have lost the `NAME=` that
@@ -755,5 +879,133 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         XCTAssertFalse(
             DiagnosticRecordRedaction.withholding(withheld, in: context, softWrapped: false).contains("tidy up"),
             "the agent source's harvest is taken from this text")
+    }
+
+    // MARK: - Matched entries and wrapped rows (LVX-63, LVX-64, LVX-65)
+
+    private func source(
+        _ name: String, entries: [String] = [], excerpt: String? = nil
+    ) -> DiagnosticRecord.Source {
+        .init(
+            source: name, harvest: [], harvestCount: 0,
+            entries: entries.map { .init(term: $0, heard: []) },
+            phoneticEntries: [], verificationEntries: [],
+            isFallbackOnly: false, renderedExcerpt: excerpt)
+    }
+
+    /// The matcher runs on the captured text, so `DB_PASSWORD=CrimsonFalcon71`
+    /// yields an entry whose term has lost the name that marked it.
+    func testAnEntryWhoseTermWasRedactedFromItsSourceIsDropped() {
+        let screen = "export DB_PASSWORD=CrimsonFalcon71\nrun PytestRunner"
+        var count = 0
+        let kept = DiagnosticRecordRedaction.redacting(screen, count: &count)
+        let entries: [DiagnosticRecord.Source.Entry] = [
+            .init(term: "CrimsonFalcon71", heard: ["crimson falcon 71"]),
+            .init(term: "PytestRunner", heard: ["pytest runner"]),
+        ]
+        XCTAssertEqual(
+            DiagnosticRecordRedaction.droppingEntries(entries, capturedText: screen, keptText: kept)
+                .map(\.term),
+            ["PytestRunner"])
+    }
+
+    func testAnEntryOfTheWithheldPromptIsDroppedAndNeighboursStay() {
+        var record = DiagnosticRecord.storeFixture(capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        var claude = source("claude", entries: ["ConfidentialRoadmapV2", "PytestRunner"])
+        claude.phoneticEntries = claude.entries
+        claude.verificationEntries = claude.entries
+        record.sources = [claude]
+        DiagnosticRecordRedaction.withholdPrompt("ConfidentialRoadmapV2", from: &record)
+        XCTAssertEqual(record.sources[0].entries.map(\.term), ["PytestRunner"])
+        XCTAssertEqual(record.sources[0].phoneticEntries.map(\.term), ["PytestRunner"])
+        XCTAssertEqual(record.sources[0].verificationEntries.map(\.term), ["PytestRunner"])
+    }
+
+    private let wrappedPrompt =
+        "Please keep the acquisition of RedPanda Labs confidential until the board meeting next Monday"
+    private let wrappedRows =
+        "Please keep the acquisit\nion of RedPanda Labs con\nfidential until the boa\nrd meeting next Monday"
+
+    /// The terminal source's excerpt and the user prompts quote the screen, so
+    /// they get the screen's soft-wrap pass.
+    func testAWrappedPriorPromptIsTakenOutOfTheTerminalExcerptAndUserPrompts() {
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: wrappedRows)
+        record.text.userPrompts = ["[Screen: reference only]\n---\n\(wrappedRows)\n---\nDictation: run tests"]
+        record.sources = [source("terminal", excerpt: wrappedRows)]
+        DiagnosticRecordRedaction.withholdPrompt(wrappedPrompt, from: &record)
+        XCTAssertFalse(record.screen?.sanitizedText?.contains("RedPanda") == true)
+        XCTAssertFalse(record.sources[0].renderedExcerpt?.contains("RedPanda") == true)
+        XCTAssertFalse(record.text.userPrompts[0].contains("RedPanda"))
+        XCTAssertTrue(record.text.userPrompts[0].contains("Dictation: run tests"))
+    }
+
+    /// A clipboard can hold millions of characters, so its excerpt keeps the
+    /// cheap pass: a prompt wrapped across rows is not looked for there.
+    func testAClipboardExcerptKeepsTheCheapPass() {
+        var record = DiagnosticRecord.storeFixture(capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let whole = "see: \(wrappedPrompt)"
+        let clipboardRows = "Please keep the acq\nuisition of RedPanda Labs con\nfidential until the boa\nrd meeting next Monday"
+        record.sources = [
+            source("clipboard", excerpt: clipboardRows),
+            source("claude", excerpt: whole),
+        ]
+        DiagnosticRecordRedaction.withholdPrompt(wrappedPrompt, from: &record)
+        XCTAssertEqual(record.sources[0].renderedExcerpt, clipboardRows)
+        XCTAssertEqual(
+            record.sources[1].renderedExcerpt,
+            "see: \(DiagnosticRecordRedaction.withheldPromptPlaceholder)")
+    }
+
+    /// A shorter prompt line that shares its start with a longer one is still
+    /// taken out whole: the soft-wrap pass must not consume the shared prefix
+    /// first and leave the line's tail behind.
+    func testALineSharingItsStartWithALongerPromptLineIsStillTakenOut() {
+        let prompt = "Please investigate the production deployment before changing any configuration.\n"
+            + "Please investigate the production ProjectZephyr"
+        let excerpt = "> Please investigate the production ProjectZephyr\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        record.text.userPrompts = [excerpt]
+        record.sources = [source("terminal", excerpt: excerpt)]
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        XCTAssertFalse(record.screen?.sanitizedText?.contains("ProjectZephyr") == true)
+        XCTAssertFalse(record.text.userPrompts[0].contains("ProjectZephyr"))
+        XCTAssertFalse(record.sources[0].renderedExcerpt?.contains("ProjectZephyr") == true)
+    }
+
+    /// The reverse of the shared-start case: the shorter line is a prefix of
+    /// a longer one that the screen wrapped. Whichever pass matches first, the
+    /// longer line goes whole.
+    func testAShorterPromptLineDoesNotLeaveTheTailOfAWrappedLongerOne() {
+        let prompt = "Please investigate the production ProjectZephyr tomorrow\n"
+            + "Please investigate the production"
+        let excerpt = "> Please investigate the production ProjectZephyr\n tomorrow\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        record.text.userPrompts = [excerpt]
+        record.sources = [source("terminal", excerpt: excerpt)]
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        for text in [record.screen?.sanitizedText, record.text.userPrompts[0], record.sources[0].renderedExcerpt] {
+            let text = text ?? ""
+            XCTAssertFalse(text.contains("ProjectZephyr"), text)
+            XCTAssertFalse(text.contains("tomorrow"), text)
+            XCTAssertTrue(text.contains("Done"), text)
+        }
+    }
+
+    /// Two prompt lines that overlap partway, one matched exactly and the
+    /// other across a row break, are masked as one stretch.
+    func testPartiallyOverlappingPromptLinesAreMaskedAsOneStretch() {
+        let prompt = "alpha beta gamma delta SecretOne\ngamma delta SecretOne epsilon zeta"
+        let excerpt = "> alpha beta gamma delta SecretOne\n  epsilon zeta\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        let text = record.screen?.sanitizedText ?? ""
+        XCTAssertFalse(text.contains("SecretOne"), text)
+        XCTAssertFalse(text.contains("epsilon"), text)
+        XCTAssertFalse(text.contains("zeta"), text)
+        XCTAssertTrue(text.contains("Done"), text)
     }
 }

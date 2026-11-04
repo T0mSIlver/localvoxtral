@@ -83,6 +83,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// frames queue behind it until it has emptied the queue (#1058).
         var isReplayingHandshakeQueue = false
         var pendingModelName = ""
+        /// The configuration's `contextBias`, sent with `pendingModelName` in
+        /// the socket's one `session.update`.
+        var pendingContextBias: [String] = []
         /// The open socket's ledger line: who serves it, the model it asked
         /// for, and the PCM bytes handed to it. Nil backend records nothing.
         var usageBackend: UsageEntry.Backend?
@@ -251,6 +254,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.base.isUserInitiatedDisconnect = false
         s.pendingMessages.removeAll(keepingCapacity: true)
         s.pendingModelName = modelName
+        s.pendingContextBias = configuration.contextBias
         s.hasReceivedSessionCreated = false
         s.hasBypassedSessionCreatedGate = false
         s.hasSentSessionUpdate = false
@@ -443,14 +447,19 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if !armed { watchdog.cancel() }
     }
 
+    /// The cause a rollover reports for a close that carried no error text.
+    private static let plainSocketCloseCause = "socket closed"
+
     private enum RolloverEnd {
         /// The session's stop came in and nothing was carried: the retiring
         /// socket's `done` answers it.
         case finalized
+        /// The same stop, but the retiring socket failed or timed out first.
+        case endedWithoutDone(usage: SocketUsage?)
         case switched(
             next: RealtimeConnectionGeneration, dial: RealtimeSessionConfiguration?, usage: SocketUsage?,
             carriedBytes: Int)
-        case noConfiguration(stopRequested: Bool)
+        case noConfiguration
     }
 
     /// The retiring socket answered (or will not): close it, open the next
@@ -473,7 +482,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             rollover.watchdog?.cancel()
             s.rollover = nil
             if rollover.stopRequested, rollover.carried.isEmpty {
-                return .finalized
+                if cause == nil { return .finalized }
+                // The retiring socket left without the `done` that answers
+                // the stop: the stop ends as a socket closed at stop does,
+                // and the controller keeps its missing-end warning.
+                let usage = takeUsageLocked(&s)
+                closeSocketLocked(&s, cancelTask: true)
+                return .endedWithoutDone(usage: usage)
             }
 
             #if DEBUG
@@ -484,7 +499,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             // Every socket the client opens latches one; nothing to dial
             // without it, and the carried audio has nowhere to go.
             guard let configuration = s.configuration else {
-                return .noConfiguration(stopRequested: rollover.stopRequested)
+                if rollover.stopRequested {
+                    // The stop's final commit had nowhere to go: no claim of
+                    // a final, the stop ends as a closed socket does.
+                    let usage = takeUsageLocked(&s)
+                    closeSocketLocked(&s, cancelTask: true)
+                    return .endedWithoutDone(usage: usage)
+                }
+                return .noConfiguration
             }
 
             let usage = takeUsageLocked(&s)
@@ -544,14 +566,20 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         switch end {
         case nil:
             return
-        case .noConfiguration(let stopRequested):
+        case .noConfiguration:
             Log.backends.error(
                 "realtime rollover has no configuration to dial; staying on connection \(retiring.description, privacy: .public), carried audio dropped"
             )
-            if stopRequested { emit(.transcriptionFinalized, from: retiring) }
         case .finalized:
             Log.backends.notice("realtime rollover ended by the stop, with no audio to carry")
             emit(.transcriptionFinalized, from: retiring)
+        case .endedWithoutDone(let usage):
+            recordUsage(usage)
+            Log.backends.error(
+                "realtime rollover ended by the stop, but connection \(retiring.description, privacy: .public) left without its done (\(cause ?? "", privacy: .public)); no final claimed"
+            )
+            if let cause, cause != Self.plainSocketCloseCause { emit(.error(cause), from: retiring) }
+            emit(.disconnected, from: retiring)
         case .switched(let next, let dial, let usage, let carriedBytes):
             if let resumedAfter {
                 logServerSilence(
@@ -859,13 +887,24 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     private func openSendGateLocked(_ s: inout State) {
         let modelName = s.pendingModelName
         if !s.hasSentSessionUpdate, !modelName.isEmpty,
-           let data = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "model": modelName]),
-           let text = String(data: data, encoding: .utf8) {
+           let text = Self.sessionUpdateFrame(model: modelName, contextBias: s.pendingContextBias) {
             s.hasSentSessionUpdate = true
             s.pendingMessages.insert(PendingFrame(text: text), at: 0)
             debugLog("queue event type=session.update")
         }
         s.isReplayingHandshakeQueue = true
+    }
+
+    /// The socket's one `session.update`. The term list rides it as
+    /// `context_bias`, the field Mistral's realtime API reads, only when the
+    /// model takes terms: every other server gets the frame it always did.
+    package static func sessionUpdateFrame(model: String, contextBias: [String]) -> String? {
+        var frame: [String: Any] = ["type": "session.update", "model": model]
+        if !contextBias.isEmpty { frame["context_bias"] = contextBias }
+        guard let data = try? JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Sends what queued before the gate opened, then whatever queued while
@@ -1094,7 +1133,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
         guard case .closed(let error, let usage, let generation, let unsentBytes) = decided else {
             if case .rollover(let retiring) = decided {
-                finishRollover(retiring: retiring, cause: errorMessage ?? "socket closed")
+                finishRollover(retiring: retiring, cause: errorMessage ?? Self.plainSocketCloseCause)
             }
             return
         }
@@ -1181,6 +1220,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
         s.pendingModelName = ""
+        s.pendingContextBias = []
         s.rollover?.watchdog?.cancel()
         s.rollover = nil
         s.socketAudioBytes = 0
@@ -1291,16 +1331,19 @@ extension RealtimeAPIWebSocketClient {
         hasReceivedSessionCreated: Bool = false,
         usageBackend: UsageEntry.Backend? = nil,
         usageModel: String = "",
-        modelName: String = ""
+        modelName: String = "",
+        contextBias: [String] = []
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
             s.pendingModelName = modelName
+            s.pendingContextBias = contextBias
             s.configuration = RealtimeSessionConfiguration(
                 endpoint: task.originalRequest?.url ?? URL(string: "ws://127.0.0.1/v1/realtime")!,
                 apiKey: "",
                 model: modelName,
-                usageBackend: usageBackend
+                usageBackend: usageBackend,
+                contextBias: contextBias
             )
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
@@ -1316,6 +1359,11 @@ extension RealtimeAPIWebSocketClient {
             startPingTimerLocked(&s)
             startSessionReadyTimerLocked(&s)
         }
+    }
+
+    /// A client whose socket opened without latching a configuration.
+    package func debugClearConfigurationForTesting() {
+        state.withLock { $0.configuration = nil }
     }
 
     package func debugHandleTerminalSocketErrorForTesting(

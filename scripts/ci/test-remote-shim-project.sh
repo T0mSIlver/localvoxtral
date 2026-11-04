@@ -17,7 +17,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 CLAUDE_SHIM="$ROOT_DIR/integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh"
-CAPTURE_SH="$ROOT_DIR/integrations/claude-code/plugins/localvoxtral-remote/hooks/capture.sh"
+REPOSITORY_SH="$ROOT_DIR/integrations/claude-code/plugins/localvoxtral-remote/hooks/repository.sh"
 VIBE_DIR_SRC="$ROOT_DIR/integrations/vibe/remote"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-shim-project-test.XXXXXX")"
@@ -84,7 +84,7 @@ chmod +x "$STUB/curl"
 # --- Vibe shim's private dir ---------------------------------------------------
 VIBE_DIR="$TMP_DIR/vibe"
 mkdir -p "$VIBE_DIR"
-cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$CAPTURE_SH" "$VIBE_DIR/"
+cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$REPOSITORY_SH" "$VIBE_DIR/"
 echo token >"$VIBE_DIR/token"
 echo 18473 >"$VIBE_DIR/port"
 TRANSCRIPT="$TMP_DIR/messages.jsonl"

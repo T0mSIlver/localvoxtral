@@ -20,10 +20,36 @@ package enum DiagnosticRecordRedaction {
     /// The remote-enrollment token: 43 base64url characters with no prefix.
     package static let tokenLength = 43
 
+    /// A lowercase config name for a secret: the secret word as one of its
+    /// snake, kebab or dotted segments (`aws_secret_access_key`, `db.password`,
+    /// `api_key`). A bare `key` is not one: `key: app.title` is everywhere.
+    private static let lowercaseSecretName =
+        #"(?:[a-z0-9]+[_.-])*(?:token|secret|password|passwd|pwd|credentials?|apikey)(?:[_.-][a-z0-9]+)*"#
+        + #"|(?:[a-z0-9]+[_.-])*(?:api|access|secret|private|signing|encryption|master|client|auth|license|account|service)[_.-]?key(?:[_.-][a-z0-9]+)*"#
+    private static let uppercaseSecretName =
+        #"[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*"#
+    /// Put before a value: a value an earlier rule already replaced is not
+    /// counted again.
+    private static let unlessRedacted = "(?!" + NSRegularExpression.escapedPattern(for: placeholder) + ")"
+
+    /// A value the label's quote opened, to its closing quote, or else
+    /// `unquoted`.
+    private static func quotedOr(_ unquoted: String) -> String {
+        #"(?:(?<=")[^"\n]+|(?<=')[^'\n]+|"# + unquoted + ")"
+    }
+
     /// Pattern and replacement template, applied in order. A replacement
     /// keeps the label in front of the secret (`Bearer `, `API_KEY=`) so a
     /// review still sees what was there.
-    private static let rules: [(NSRegularExpression, String)] = [
+    private static let rules: [(NSRegularExpression, String)] = rulePatterns.map { pattern, template in
+        // The patterns are literals; a typo is a crash on first use in any
+        // test that writes a record.
+        (try! NSRegularExpression(pattern: pattern), template)
+    }
+
+    /// The patterns, typed apart from the `map` so the concatenated ones
+    /// stay cheap to type-check.
+    private static let rulePatterns: [(String, String)] = [
         // A PEM private key, to its END line or, when the screen cut it off,
         // to the end of the text.
         (#"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)"#,
@@ -43,14 +69,45 @@ package enum DiagnosticRecordRedaction {
         // quote or the end of the line, whatever its length or spaces.
         (#"\b((?:[A-Z][A-Z0-9_]*)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?)(?:(?<=")[^"\n]+|(?<=')[^'\n]+|[^\s"']{6,})"#,
          "$1" + placeholder),
+        // The same in a config file's lowercase: `aws_secret_access_key = …`,
+        // `password=…`, `api_key=…` (#1918). The name is snake, kebab or
+        // dotted, never camelCase, and a value that opens a call or a
+        // subscript is code reading the secret: `let apiKey = settings.key`
+        // and `password = getpass()` stay.
+        (#"(?<![\w.-])((?:"# + lowercaseSecretName + #")[ \t]*=[ \t]*["']?)"#
+            + unlessRedacted + quotedOr(#"(?:[^\s"'()\[\]{}<>,;&]|&(?![A-Za-z0-9_.-]+=)){6,}(?![(\[\w])"#),
+         "$1" + placeholder),
+        // A YAML or `.env`-style colon after a lowercase or uppercase secret
+        // name: `password: hunter2`, `POSTGRES_PASSWORD: …`. Prose puts a
+        // colon after a word too ("the token: expired"), so an unquoted value
+        // must hold a digit or a symbol.
+        (#"(?<![\w.-])((?:"# + lowercaseSecretName + "|" + uppercaseSecretName + #"):[ \t]*["']?)"#
+            + unlessRedacted
+            + quotedOr(#"(?=[^\s"']*[0-9!@#$%^&*+/=_~])[^\s"'()\[\]{}<>,;]{6,}(?![(\[\w])"#),
+         "$1" + placeholder),
+        // A quoted JSON, YAML or TOML key in any case: `"token": "…"`,
+        // `"accessToken":"…"`, `'api-key' = '…'`.
+        (#"((["'])(?i:[a-z0-9_.-]*(?:token|secret|password|passwd|credentials?|api[_-]?key|access[_-]?key|private[_-]?key))(?:[_.-][A-Za-z0-9_.-]*|(?-i:[A-Z])[A-Za-z0-9_.-]*|s)?\2[ \t]*[:=][ \t]*["']?)"#
+            + unlessRedacted + quotedOr(#"[^\s"',}\]]{6,}"#),
+         "$1" + placeholder),
+        // The password in a URL's userinfo: `postgres://app:pw@db/app`.
+        (#"(?i)((?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}://[^\s:/@]+:)"# + unlessRedacted + #"[^\s/@]+(?=@)"#,
+         "$1" + placeholder),
+        // `Authorization: Basic <base64 user:password>`.
+        (#"(?i)(\bauthorization:[ \t]*basic[ \t]+)[A-Za-z0-9+/=]{8,}"#, "$1" + placeholder),
+        // curl's `-u user:password`.
+        (#"(?<!\S)((?:-u|--user)[ \t]+[^\s:]+:)"# + unlessRedacted + #"[^\s"'<>|&;]+"#,
+         "$1" + placeholder),
+        // A credential flag and its value: `--password hunter2`,
+        // `--token=…`, `--api-key "…"`. `--password-stdin` and
+        // `--token-file` name where the secret is, not the secret.
+        (#"(?<!\S)(--(?:[a-z0-9]+-)*(?:password|passwd|token|secret|api-key|access-key)(?:=|[ \t]+)["']?)"#
+            + unlessRedacted + quotedOr(#"[^\s"'<>|&;]+"#),
+         "$1" + placeholder),
         // 32 or more hex digits: API secrets, session ids, and also full
         // commit hashes, which a record can do without.
         (#"(?<![A-Za-z0-9])[0-9a-fA-F]{32,}(?![A-Za-z0-9])"#, placeholder),
-    ].map { pattern, template in
-        // The patterns are literals; a typo is a crash on first use in any
-        // test that writes a record.
-        (try! NSRegularExpression(pattern: pattern), template)
-    }
+    ]
 
     /// Redacts in place, returning how many runs were replaced.
     package static func redact(_ record: inout DiagnosticRecord) -> Int {
@@ -84,6 +141,30 @@ package enum DiagnosticRecordRedaction {
         guard !text.isEmpty else { return [] }
         var count = 0
         return ClipboardVocabulary.entities(inExcerpt: redacting(text, count: &count))
+    }
+
+    /// `entries` without those whose term the redaction took out of its
+    /// source. A matcher runs on the text as captured, so a term can be the
+    /// value of `DB_PASSWORD=…` or a line of the withheld prompt; once the
+    /// text is redacted nothing marks the bare term. A term that was in
+    /// `capturedText` and is not in `keptText` goes.
+    package static func droppingEntries(
+        _ entries: [DiagnosticRecord.Source.Entry], capturedText: String, keptText: String
+    ) -> [DiagnosticRecord.Source.Entry] {
+        entries.filter { entry in
+            entry.term.isEmpty || !capturedText.contains(entry.term) || keptText.contains(entry.term)
+        }
+    }
+
+    /// `droppingEntries` for a record whose texts are already withheld: the
+    /// captured text is what the person wrote, the kept text the same with
+    /// every `Withheld` taken out.
+    private static func droppingWithheldEntries(
+        _ entries: [DiagnosticRecord.Source.Entry], withheld: [Withheld], text: String
+    ) -> [DiagnosticRecord.Source.Entry] {
+        droppingEntries(
+            entries, capturedText: text,
+            keptText: withholding(withheld, in: text, softWrapped: false))
     }
 
     /// Replaces every maximal base64url run of exactly `tokenLength`
@@ -211,13 +292,31 @@ package enum DiagnosticRecordRedaction {
         }
 
         withholdOptional(&record.text.systemPrompt)
-        record.text.userPrompts = record.text.userPrompts.map(withhold)
+        // The user prompts quote the screen and the terminal source's excerpt
+        // is a cut of it, so both can hold a prompt soft-wrapped across rows
+        // (LVX-64). Both are bounded by the screen cap; a clipboard excerpt
+        // is not, and keeps the cheap pass.
+        record.text.userPrompts = record.text.userPrompts.map(withholdScreen)
         if var screen = record.screen {
             screen.sanitizedText = screen.sanitizedText.map(withholdScreen)
             record.screen = screen
         }
+        let withheldText = withheld.map(\.needles).joined(separator: "\n")
         for index in record.sources.indices {
-            withholdOptional(&record.sources[index].renderedExcerpt)
+            if record.sources[index].source == "terminal" {
+                record.sources[index].renderedExcerpt =
+                    record.sources[index].renderedExcerpt.map(withholdScreen)
+            } else {
+                withholdOptional(&record.sources[index].renderedExcerpt)
+            }
+            // A matched term may be an identifier of the withheld text
+            // (LVX-65); the harvest is taken from the withheld text already.
+            record.sources[index].entries = droppingWithheldEntries(
+                record.sources[index].entries, withheld: withheld, text: withheldText)
+            record.sources[index].phoneticEntries = droppingWithheldEntries(
+                record.sources[index].phoneticEntries, withheld: withheld, text: withheldText)
+            record.sources[index].verificationEntries = droppingWithheldEntries(
+                record.sources[index].verificationEntries, withheld: withheld, text: withheldText)
         }
     }
 
@@ -306,19 +405,30 @@ package enum DiagnosticRecordRedaction {
                     output = maskingToLineEnd(label, in: output, keeping: label, placeholder: value.placeholder)
                 }
             }
+            // The three line passes all look at `output` as it stands here
+            // and their ranges are replaced once, so no pass can hide a line
+            // from another by replacing its start first.
+            var spans: [PlaceholderSpan] = []
+            for (line, placeholder) in lines {
+                spans += occurrences(of: line, in: output).map { PlaceholderSpan(range: $0, placeholder: placeholder) }
+            }
             if softWrapped {
                 for value in withheld {
-                    output = withholdingWrapped(value.needles, in: output, placeholder: value.placeholder)
+                    spans += wrappedSpans(value.needles, in: output)
+                        .map { PlaceholderSpan(range: $0, placeholder: value.placeholder) }
                 }
             }
-            for (line, placeholder) in lines {
-                output = output.replacingOccurrences(of: line, with: placeholder)
-            }
+            // A cut line's anchor masks to the end of its row, except where
+            // the whole line was found: the rest of that row is not the line's.
+            let found = spans
             for (line, placeholder) in lines where line.count >= truncatedPrefixLength {
-                output = maskingToLineEnd(
-                    String(line.prefix(truncatedPrefixLength)), in: output, placeholder: placeholder)
+                for anchor in occurrences(of: String(line.prefix(truncatedPrefixLength)), in: output)
+                where !found.contains(where: { $0.range.overlaps(anchor) }) {
+                    let end = output[anchor.lowerBound...].firstIndex(where: \.isNewline) ?? output.endIndex
+                    spans.append(PlaceholderSpan(range: anchor.lowerBound..<end, placeholder: placeholder))
+                }
             }
-            return output
+            return replacing(spans, in: output)
         }
 
         return withhold
@@ -337,20 +447,72 @@ package enum DiagnosticRecordRedaction {
     package static func withholdingWrapped(
         _ prompt: String, in text: String, placeholder: String = withheldPromptPlaceholder
     ) -> String {
+        replacing(
+            wrappedSpans(prompt, in: text).map { PlaceholderSpan(range: $0, placeholder: placeholder) },
+            in: text)
+    }
+
+    /// A stretch of text to replace, and with what.
+    private struct PlaceholderSpan {
+        var range: Range<String.Index>
+        var placeholder: String
+    }
+
+    /// Every non-overlapping occurrence of `needle`, as `replacingOccurrences`
+    /// would find them.
+    private static func occurrences(of needle: String, in text: String) -> [Range<String.Index>] {
+        var found: [Range<String.Index>] = []
+        var from = text.startIndex
+        while from < text.endIndex, let range = text.range(of: needle, range: from..<text.endIndex) {
+            found.append(range)
+            from = range.upperBound > range.lowerBound ? range.upperBound : text.index(after: from)
+        }
+        return found
+    }
+
+    /// `text` with every span replaced by its placeholder; spans that overlap
+    /// or touch are one stretch and take the placeholder of the one that
+    /// starts first (the longer, on a tie).
+    private static func replacing(_ spans: [PlaceholderSpan], in text: String) -> String {
+        guard !spans.isEmpty else { return text }
+        let ordered = spans.sorted {
+            $0.range.lowerBound != $1.range.lowerBound
+                ? $0.range.lowerBound < $1.range.lowerBound
+                : $0.range.upperBound > $1.range.upperBound
+        }
+        var merged: [PlaceholderSpan] = []
+        for span in ordered {
+            if let last = merged.last, span.range.lowerBound <= last.range.upperBound {
+                merged[merged.count - 1].range =
+                    last.range.lowerBound..<max(last.range.upperBound, span.range.upperBound)
+            } else {
+                merged.append(span)
+            }
+        }
+        var output = text
+        for span in merged.reversed() {
+            output.replaceSubrange(span.range, with: span.placeholder)
+        }
+        return output
+    }
+
+    /// The stretches of `text` `withholdingWrapped` masks, found against
+    /// `text` as given.
+    private static func wrappedSpans(_ prompt: String, in text: String) -> [Range<String.Index>] {
         let needles = prompt.split(whereSeparator: \.isNewline)
             .map { $0.filter(isSpelled) }
             .filter { $0.count >= minimumLineLength }
             .map(Array.init)
-            .sorted { $0.count > $1.count }
-        var output = text
+        guard !needles.isEmpty else { return [] }
+        let indices = text.indices.filter { isSpelled(text[$0]) }
+        let haystack = indices.map { text[$0] }
+
+        var spans: [Range<Int>] = []
         for needle in needles {
-            let indices = output.indices.filter { isSpelled(output[$0]) }
-            let haystack = indices.map { output[$0] }
             let anchor = min(needle.count, truncatedPrefixLength)
             let starts = Set(Array(stride(from: 0, to: needle.count - anchor, by: anchor))
                 + [needle.count - anchor])
 
-            var spans: [Range<Int>] = []
             for start in starts.sorted() {
                 let key = needle[start..<start + anchor]
                 var position = 0
@@ -371,21 +533,8 @@ package enum DiagnosticRecordRedaction {
                     spans.append(lower..<upper)
                 }
             }
-
-            var merged: [Range<Int>] = []
-            for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
-                if let last = merged.last, span.lowerBound <= last.upperBound {
-                    merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, span.upperBound)
-                } else {
-                    merged.append(span)
-                }
-            }
-            for span in merged.reversed() {
-                let range = indices[span.lowerBound]..<output.index(after: indices[span.upperBound - 1])
-                output.replaceSubrange(range, with: placeholder)
-            }
         }
-        return output
+        return spans.map { indices[$0.lowerBound]..<text.index(after: indices[$0.upperBound - 1]) }
     }
 
     /// A character a terminal shows as written: not whitespace, which wraps

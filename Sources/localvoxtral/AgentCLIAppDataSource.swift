@@ -9,17 +9,13 @@ import Foundation
 final class AgentCLIAppDataSource: AgentCLIDataSource {
     private weak var viewModel: DictationViewModel?
     private weak var sessions: ClaudeSessionRegistry?
-    /// Brings the app's window up on the Inbox.
-    private let openInbox: @MainActor () -> Void
 
     init(
         viewModel: DictationViewModel,
-        sessions: ClaudeSessionRegistry? = nil,
-        openInbox: @escaping @MainActor () -> Void = {}
+        sessions: ClaudeSessionRegistry? = nil
     ) {
         self.viewModel = viewModel
         self.sessions = sessions
-        self.openInbox = openInbox
     }
 
     func historyKept() async -> Bool {
@@ -208,24 +204,6 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             state: AgentCLIInstallState.read(bundledBinary: binary),
             target: try? FileManager.default.destinationOfSymbolicLink(atPath: AgentCLIInstallState.linkPath)
         )
-    }
-
-    func captures() async -> [QuickCaptureItem]? {
-        viewModel?.quickCapture?.model.items
-    }
-
-    func openCapture(_ id: UUID) async -> Bool? {
-        guard let inbox = viewModel?.quickCapture else { return nil }
-        guard inbox.model.items.contains(where: { $0.id == id }) else { return false }
-        inbox.revealed = id
-        openInbox()
-        return true
-    }
-
-    func markCaptureFiled(
-        _ id: UUID, url: String
-    ) async -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal>? {
-        viewModel?.quickCapture?.model.markFiled(id, url: url)
     }
 
     /// History keeps the text with the clipboard placeholder, never the

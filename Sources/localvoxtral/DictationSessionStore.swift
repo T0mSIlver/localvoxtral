@@ -2,76 +2,6 @@ import Foundation
 import os
 import SwiftData
 
-/// One saved dictation as a value. `DictationSessionRecord` is a SwiftData
-/// model bound to the context that fetched it, so nothing outside the store
-/// ever holds one: reads come back as these.
-struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
-    let id: UUID
-    let startedAt: Date
-    let finishedAt: Date
-    let rawText: String
-    let polishedText: String?
-    let polishingDurationSeconds: Double?
-    let provider: String
-    let model: String
-    let outputMode: String
-    let targetAppBundleID: String?
-    let status: DictationSessionStatus
-    let commitSucceeded: Bool
-    let polishProfile: String?
-    let polishContextSummary: String?
-    var projectKey: String? = nil
-    var projectName: String? = nil
-    var joinedAgent: String? = nil
-    /// Where a quick capture went; nil for every other dictation.
-    var quickCaptureDestination: String? = nil
-    /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
-    var editOutcome: String? = nil
-    var polishPromptTokens: Int? = nil
-    var stoppedAt: Date? = nil
-    var polishBackend: String? = nil
-    var polishModel: String? = nil
-
-    /// What the dictation ended up as, the transcript when nothing changed it.
-    var finalText: String { polishedText ?? rawText }
-
-    /// `polishedText` holds whatever the commit path turned the transcript
-    /// into, and that is not always a model's work: with polishing off, the
-    /// replacement dictionary and the clipboard marker land there too. The
-    /// commit path stores it only when it differs, but a record written by an
-    /// older build may hold an equal copy.
-    var textWasChanged: Bool {
-        guard let polishedText else { return false }
-        return polishedText != rawText
-    }
-
-    /// A polish request answered for this dictation. Only the polish path
-    /// records a duration.
-    var polishRan: Bool { polishingDurationSeconds != nil && status != .llmFailed }
-
-    /// This entry with `polishedText` replaced, for the in-memory copy that
-    /// may hold what History must not (the clipboard payload).
-    func replacingPolishedText(_ text: String?) -> DictationHistoryEntry {
-        DictationHistoryEntry(
-            id: id, startedAt: startedAt, finishedAt: finishedAt, rawText: rawText,
-            polishedText: text, polishingDurationSeconds: polishingDurationSeconds,
-            provider: provider, model: model, outputMode: outputMode,
-            targetAppBundleID: targetAppBundleID, status: status,
-            commitSucceeded: commitSucceeded, polishProfile: polishProfile,
-            polishContextSummary: polishContextSummary, projectKey: projectKey,
-            projectName: projectName, joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome,
-            polishPromptTokens: polishPromptTokens, stoppedAt: stoppedAt,
-            polishBackend: polishBackend, polishModel: polishModel)
-    }
-
-    /// What "Copy last dictation" copies, nil when there is no text.
-    var textToCopy: String? {
-        LastDictationCopy.text(
-            rawText: rawText, polishedText: polishedText, polishFailed: status == .llmFailed)
-    }
-}
-
 extension DictationHistoryEntry {
     init(_ record: DictationSessionRecord) {
         self.init(
@@ -129,27 +59,6 @@ extension DictationHistoryEntry {
         record.polishModel = polishModel
         return record
     }
-}
-
-/// Which saved dictations a read wants.
-struct DictationHistoryQuery: Equatable, Sendable {
-    enum Filter: String, CaseIterable, Identifiable, Sendable {
-        case all
-        /// The text never reached the target app, so the history is the only
-        /// place it still exists.
-        case notInserted
-        case polishFailed
-
-        var id: String { rawValue }
-    }
-
-    /// Matched against the transcript and the polished text, ignoring case and
-    /// diacritics. Empty matches everything.
-    var searchText = ""
-    var filter = Filter.all
-    /// Only dictations that started at or after this. Nil is all of them.
-    var since: Date?
-    var limit = 500
 }
 
 @MainActor
@@ -328,42 +237,13 @@ final class DictationSessionStore {
         }
     }
 
-    /// Marks where a quick capture went (#725). A record History no longer
-    /// holds changes nothing.
-    @discardableResult
-    func setQuickCaptureDestination(_ destination: String, id: UUID) -> Task<Void, Never> {
-        enqueueWrite("mark quick capture \(id)") { context in
-            let records = try context.fetch(
-                FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
-            for record in records { record.quickCaptureDestination = destination }
-            return records.count
-        }
-    }
-
-    /// A quick capture's polished words (#970). The record was written with
-    /// the raw words before the Inbox polished them.
-    @discardableResult
-    func setQuickCapturePolish(_ polishedText: String, seconds: Double, id: UUID) -> Task<Void, Never> {
-        enqueueWrite("polish quick capture \(id)") { context in
-            let records = try context.fetch(
-                FetchDescriptor<DictationSessionRecord>(
-                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
-            for record in records {
-                record.polishedText = polishedText
-                record.polishingDurationSeconds = seconds
-            }
-            return records.count
-        }
-    }
-
     @discardableResult
     func delete(id: UUID) -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
         // The record goes first: a save that fails keeps the dictation with its
         // audio, and a file that will not go is retried by the next sweep.
-        return enqueueWrite("delete dictation \(id)") { context in
+        return enqueueWrite("delete dictation \(id)", deletes: true) { context in
             let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.id == id }, in: context)
             try context.save()
@@ -391,7 +271,7 @@ final class DictationSessionStore {
         #if DEBUG
         let afterSave = debugAfterDeleteAllSave
         #endif
-        return enqueueWrite("delete all dictations") { context in
+        return enqueueWrite("delete all dictations", deletes: true) { context in
             let deleted = try Self.deleteRecords(matching: nil, in: context)
             try context.save()
             #if DEBUG
@@ -415,11 +295,14 @@ final class DictationSessionStore {
     /// (`DictationHistoryRetention.cutoff(now:)`) with its audio and
     /// diagnostic record, then sweeps the attachments whose dictation is gone.
     /// A snapshot of the store comes first when something will go.
+    /// `expiringBackups` also deletes them from the snapshots after a day:
+    /// a 7-, 30- or 90-day retention, not Don't keep, whose backups go only
+    /// when the user ticks "Also delete the backups" (#1916).
     @discardableResult
-    func trim(olderThan cutoff: Date) -> Task<Void, Never> {
+    func trim(olderThan cutoff: Date, expiringBackups: Bool = false) -> Task<Void, Never> {
         guard !isFailing else { return skipWhileFailing("trim dictations") }
         let attachments = attachments
-        return enqueueWrite("trim dictations") { context in
+        return enqueueWrite("trim dictations", deletes: true) { context in
             let expired = #Predicate<DictationSessionRecord> { $0.startedAt < cutoff }
             if try context.fetchCount(FetchDescriptor(predicate: expired)) > 0 {
                 attachments.snapshotBeforeDelete()
@@ -433,6 +316,9 @@ final class DictationSessionStore {
                 attachments.diagnostics?.remove(deleted)
             }
             try attachments.sweepOrphans(context: context)
+            // The backups keep no dictation past the setting either, after a
+            // day's grace that spares the snapshot just taken (#1916).
+            if expiringBackups { attachments.backups?.expireDictations(startedBefore: cutoff) }
             return deleted.count
         }
     }
@@ -573,11 +459,15 @@ final class DictationSessionStore {
         return ids
     }
 
+    /// `deletes`: the write removes dictations, so the file is scrubbed of
+    /// their text once it is saved.
     private func enqueueWrite(
         _ label: String,
+        deletes: Bool = false,
         _ body: @escaping @Sendable (ModelContext) throws -> Int
     ) -> Task<Void, Never> {
         let container = modelContainer
+        let scrubbed = deletes ? storeURL : nil
         let previous = lastWrite
         let task = Task.detached { [weak self] in
             await previous?.value
@@ -589,6 +479,7 @@ final class DictationSessionStore {
                 Log.persistence.info(
                     "History: \(label, privacy: .public) changed \(changed, privacy: .public) record(s)"
                 )
+                if changed > 0, let scrubbed { Self.scrubDeletedText(in: scrubbed) }
                 await self?.noteAccess(failure: nil)
             } catch {
                 changed = 0
@@ -603,6 +494,22 @@ final class DictationSessionStore {
         }
         lastWrite = task
         return task
+    }
+
+    /// The rows are gone; a scrub that fails leaves their text in free
+    /// space until the next one, and says so.
+    private nonisolated static func scrubDeletedText(in url: URL) {
+        let started = DispatchTime.now().uptimeNanoseconds
+        do {
+            try SQLiteFile(readWrite: url).scrubFreedSpace()
+            let milliseconds = (DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            Log.persistence.info(
+                "History: scrubbed deleted text from the store in \(milliseconds, privacy: .public) ms")
+        } catch {
+            Log.persistence.error(
+                "History: scrubbing deleted text from the store failed; it stays in free space until the next delete: \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     // MARK: - Reads

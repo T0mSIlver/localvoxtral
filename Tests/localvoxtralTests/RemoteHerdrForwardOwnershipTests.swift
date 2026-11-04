@@ -25,10 +25,7 @@ final class RemoteHerdrForwardOwnershipTests: XCTestCase, RemoteHerdrJoinFixture
     }
 
     private func makeViewModel() -> DictationViewModel {
-        let suiteName = "localvoxtral.RemoteHerdrJoinTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
         retainForTestProcessLifetime(viewModel)

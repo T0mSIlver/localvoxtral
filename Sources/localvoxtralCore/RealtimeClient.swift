@@ -10,8 +10,9 @@ package struct RealtimeSessionConfiguration: Sendable {
     /// its socket is always `.mistral`.
     package let usageBackend: UsageEntry.Backend?
     /// The terms the session's model takes at start, already cut by its
-    /// `DictationModelCapabilities`; empty for a model that takes none. Only
-    /// the Mistral client sends them today.
+    /// `DictationModelCapabilities`; empty for a model that takes none. The
+    /// Mistral client sends them in its `session.update`, and so does the
+    /// OpenAI-compatible client, as `context_bias`, when the list is not empty.
     package let contextBias: [String]
 
     package init(

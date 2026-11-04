@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -8,25 +9,19 @@ import XCTest
 @MainActor
 final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
     private var defaults: UserDefaults!
-    private var defaultsSuiteName = ""
 
     private static let onboardingKey = "settings.onboarding_completed"
-    private static let legacyBackendModeKey = "settings.backend_mode"
+    private static let dictationModeKey = "settings.dictation_backend_mode"
     private static let polishingEnabledKey = "settings.llm_polishing_enabled"
     private static let modifierOnlyKey = "settings.modifier_only_hotkey_enabled"
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.SettingsStoreOutOfBoxDefaultsTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
-        self.defaults = defaults
+        defaults = makeTestDefaults()
     }
 
     override func tearDown() async throws {
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 
@@ -165,7 +160,7 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         // gesture, and taking Right Command from them is exactly what the seed
         // promises never to do.
         defaults.set(false, forKey: Self.onboardingKey)
-        defaults.set(BackendMode.managedLocal.rawValue, forKey: Self.legacyBackendModeKey)
+        defaults.set(BackendMode.managedLocal.rawValue, forKey: Self.dictationModeKey)
 
         let store = makeStore()
 
@@ -173,9 +168,9 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: Self.modifierOnlyKey))
     }
 
-    func testExistingInstall_detectedByLegacyBackendModeKey_keepsTheGestureOff() {
+    func testExistingInstall_detectedByDictationModeKey_keepsTheGestureOff() {
         // A pre-onboarding install: no onboarding flag, but configured settings.
-        defaults.set(BackendMode.managedLocal.rawValue, forKey: Self.legacyBackendModeKey)
+        defaults.set(BackendMode.managedLocal.rawValue, forKey: Self.dictationModeKey)
 
         let store = makeStore()
 

@@ -196,7 +196,7 @@ final class VibeRemoteShimTests: XCTestCase {
             let request = try request(index)
             XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: request.headers), .vibe)
             XCTAssertEqual(request.headers["authorization"], "Bearer \(Self.token)")
-            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.20.0")
+            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.22.0")
 
             // Nothing from the session log but the last user message is sent.
             let body = try captured("body", index)
@@ -523,11 +523,48 @@ final class VibeRemoteShimTests: XCTestCase {
 
     // MARK: - Unified Harness payloads
 
+    /// The environment for a run whose `ps` answers from a table the real
+    /// `ps` printed just before, in its own format. A Unified Harness payload
+    /// carries no session id, so compact.py names the session after the Vibe
+    /// process it finds with `ps`, and sends nothing when `ps` misses its
+    /// 0.5 s budget. Real `ps` on a loaded runner can miss it (LVX-19, two
+    /// `ps` calls on macOS), so these tests read a recorded table instead of
+    /// racing the budget. Every other `ps` call goes to the real one.
+    private func recordedProcessTable() throws -> [String: String] {
+        let dir = root.appendingPathComponent("recorded-ps")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let record = Process()
+        record.executableURL = URL(fileURLWithPath: "/bin/sh")
+        record.arguments = ["-c", """
+            ps -ax -o pid=,ppid=,tty= >table && ps -ax -o pid=,lstart= >lstart && command -v ps >real
+            """]
+        record.currentDirectoryURL = dir
+        record.environment = ["PATH": "/usr/bin:/bin"]
+        try record.runUntilExit()
+        XCTAssertEqual(record.terminationStatus, 0, "the real ps printed no table")
+        let real = try String(contentsOf: dir.appendingPathComponent("real"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stub = """
+        #!/bin/sh
+        case "$*" in
+        "-ax -o pid=,ppid=,tty=") exec cat '\(dir.path)/table' ;;
+        "-o lstart= -p "*) exec awk -v pid="$4" '$1 == pid { sub(/^ *[0-9]+ +/, ""); print }' '\(dir.path)/lstart' ;;
+        esac
+        exec '\(real)' "$@"
+
+        """
+        let ps = dir.appendingPathComponent("ps")
+        try Data(stub.utf8).write(to: ps)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ps.path)
+        return ["PATH": "\(dir.path):\(stubDir.path):\(VibeTestPython.directory.path):/usr/bin:/bin"]
+    }
+
     // As `_foreign_hooks.py` builds them in mistralai-vibe-local-harness 0.5.1:
     // no session id, no parent, no transcript path, group-qualified tools.
 
     func testAUnifiedTurnEndIsSentUnderAnIdNamedAfterTheVibeProcess() throws {
-        let run = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8))
+        let table = try recordedProcessTable()
+        let run = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8), environment: table)
         XCTAssertEqual(run.exitCode, 0)
         XCTAssertEqual(run.output, Data())
         XCTAssertEqual(dialCount, 1, "this runner names no session log, so there is no prompt record")
@@ -541,7 +578,7 @@ final class VibeRemoteShimTests: XCTestCase {
         XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: try request(1).headers), .vibe)
 
         // The same process is the same session on its next hook.
-        _ = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8))
+        _ = try runShim(Data(#"{"cwd":"/srv/app","hook_event_name":"post_agent"}"#.utf8), environment: table)
         XCTAssertEqual(try parsedBody(2, event: "Stop").record.sessionID, first.sessionID)
     }
 
@@ -550,7 +587,7 @@ final class VibeRemoteShimTests: XCTestCase {
         {"cwd":"/srv/app","hook_event_name":"post_tool","tool_name":"file_system.read_file",\
         "tool_call_id":"c1","tool_input":{"path":"src/main.py","offset":0},"tool_status":"success",\
         "tool_output":null,"tool_output_text":"whole file","tool_error":null,"duration_ms":0}
-        """.utf8))
+        """.utf8), environment: try recordedProcessTable())
         XCTAssertEqual(run.exitCode, 0)
         XCTAssertEqual(dialCount, 1)
         XCTAssertFalse(try captured("body", 1).contains("whole file"), "the file never crosses")
@@ -576,7 +613,9 @@ final class VibeRemoteShimTests: XCTestCase {
     }
 
     /// compact.py run directly, as post.sh runs it, with a chosen start pid.
-    private func runCompactor(_ payload: String, startPID: Int32) throws -> URL {
+    private func runCompactor(
+        _ payload: String, startPID: Int32, environment: [String: String]? = nil
+    ) throws -> URL {
         let work = root.appendingPathComponent("work-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         let input = work.appendingPathComponent("payload")
@@ -587,6 +626,7 @@ final class VibeRemoteShimTests: XCTestCase {
         process.standardInput = try FileHandle(forReadingFrom: input)
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        if let environment { process.environment = environment }
         try process.runUntilExit()
         return work
     }
@@ -613,7 +653,7 @@ final class VibeRemoteShimTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: named.appendingPathComponent("plan").path), "\(start)")
         }
         // The control: started from a real process, the same payload is planned.
-        let work = try runCompactor(unified, startPID: getpid())
+        let work = try runCompactor(unified, startPID: getpid(), environment: try recordedProcessTable())
         XCTAssertTrue(FileManager.default.fileExists(atPath: work.appendingPathComponent("plan").path))
     }
 

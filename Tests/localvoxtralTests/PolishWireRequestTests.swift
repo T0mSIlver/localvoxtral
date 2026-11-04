@@ -4,8 +4,8 @@ import XCTest
 @testable import localvoxtral
 
 /// What every polish-model request puts on the wire (#1851): URL, method,
-/// timeout, headers and body, for polish, the quick-capture router and the
-/// quick-capture first draft, on each server shape.
+/// timeout, headers and body, for polish, term suggestions and the warmup, on
+/// each server shape.
 ///
 /// `Fixtures/PolishWireRequests.json` pins the OpenAI-compatible and Mistral
 /// requests. The body is compared as JSON with sorted keys, since key order
@@ -105,46 +105,10 @@ final class PolishWireRequestTests: XCTestCase {
         usageFeature: nil
     )
 
-    private static let options = [
-        QuickCaptureOption(id: "quill", projectKey: "/w/quill", description: "Project quill."),
-        QuickCaptureOption(id: QuickCaptureRouting.catchAllID, projectKey: nil, description: "Anything else."),
-    ]
-
-    private static let capture = "make the quill export faster"
-
-    // MARK: - Capture
+    // MARK: - Requests
 
     private func polishRequest(_ request: LLMPolishingRequest, _ configuration: LLMPolishingConfiguration) throws -> URLRequest {
         try LLMPolishingService.makeURLRequest(request: request, configuration: configuration)
-    }
-
-    /// The router's request, as the Inbox wires it, answered by a stub.
-    private func classifierRequest(_ configuration: LLMPolishingConfiguration) async throws -> URLRequest {
-        try await recording {
-            _ = try? await QuickCaptureInboxViewModel.chatClassifier(
-                polishing: configuration, session: StubHTTPProtocol.session()
-            ).classify(capture: Self.capture, options: Self.options)
-        }
-    }
-
-    /// The first draft's request, as the Inbox wires it, answered by a stub.
-    private func firstDraftRequest(_ configuration: LLMPolishingConfiguration) async throws -> URLRequest {
-        try await recording {
-            _ = await QuickCaptureInboxViewModel.firstDrafter(
-                polishing: configuration, session: StubHTTPProtocol.session()
-            ).firstDraft(capture: Self.capture, projectName: "quill", context: QuickCaptureContext())
-        }
-    }
-
-    private func recording(_ send: () async throws -> Void) async throws -> URLRequest {
-        let previous = StubHTTPProtocol.reply.withLock { $0 }
-        StubHTTPProtocol.reply.withLock { $0 = .http(500, "{}") }
-        StubHTTPProtocol.recorded.withLock { $0 = [] }
-        defer { StubHTTPProtocol.reply.withLock { $0 = previous } }
-        try await send()
-        let requests = StubHTTPProtocol.recorded.withLock { $0 }
-        XCTAssertEqual(requests.count, 1)
-        return try XCTUnwrap(requests.first)
     }
 
     // MARK: - OpenAI-compatible and Mistral: pinned
@@ -165,49 +129,27 @@ final class PolishWireRequestTests: XCTestCase {
         for (name, request, configuration) in polishCases {
             snapshots[name] = try snapshot(polishRequest(request, configuration))
         }
-        let quickCaptureCases: [(String, LLMPolishingConfiguration)] = [
-            ("managed", Self.managed),
-            ("external", Self.external),
-            ("external-bare", Self.externalBare),
-            ("mistral", Self.mistral),
-            ("mistral-glm", Self.mistralGLM),
-            ("mistral-without-reasoning", Self.mistralWithoutReasoning),
-        ]
-        for (name, configuration) in quickCaptureCases {
-            snapshots["quick-capture-route-\(name)"] = try snapshot(await classifierRequest(configuration))
-            snapshots["quick-capture-first-draft-\(name)"] = try snapshot(await firstDraftRequest(configuration))
-        }
         try assertFixture(snapshots)
     }
 
     // MARK: - Anthropic
 
-    /// Quick capture on an `api.anthropic.com` server sends #1850's Messages
+    /// A polish on an `api.anthropic.com` server sends #1850's Messages
     /// request, not a chat/completions one Anthropic has no route for.
-    func testQuickCaptureOnAnAnthropicServerSendsMessagesRequests() async throws {
-        let route = try await classifierRequest(Self.anthropic)
-        let draft = try await firstDraftRequest(Self.anthropic)
-        for (name, urlRequest, maxTokens) in [("route", route, 4096), ("first draft", draft, 16_384)] {
-            XCTAssertEqual(urlRequest.url?.absoluteString, "https://api.anthropic.com/v1/messages", name)
-            XCTAssertEqual(urlRequest.value(forHTTPHeaderField: "x-api-key"), "anthropic-key", name)
-            XCTAssertEqual(urlRequest.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01", name)
-            XCTAssertNil(urlRequest.value(forHTTPHeaderField: "Authorization"), name)
-            let body = try XCTUnwrap(
-                JSONSerialization.jsonObject(with: XCTUnwrap(urlRequest.httpBody)) as? [String: Any], name)
-            XCTAssertEqual(Set(body.keys), ["model", "max_tokens", "messages", "output_config", "system"], name)
-            XCTAssertEqual(body["model"] as? String, "claude-sonnet-5-5", name)
-            XCTAssertEqual(body["max_tokens"] as? Int, maxTokens, name)
-            XCTAssertEqual(body["output_config"] as? [String: String], ["effort": "low"], name)
-            let system = try XCTUnwrap(body["system"] as? [[String: Any]], name)
-            XCTAssertEqual(system.count, 1, name)
-            XCTAssertEqual(system[0]["cache_control"] as? [String: String], ["type": "ephemeral"], name)
-            let messages = try XCTUnwrap(body["messages"] as? [[String: Any]], name)
-            XCTAssertEqual(messages.count, 1, name)
-            XCTAssertEqual(messages[0]["role"] as? String, "user", name)
-            let blocks = try XCTUnwrap(messages[0]["content"] as? [[String: Any]], name)
-            XCTAssertEqual(blocks.count, 1, name)
-            XCTAssertTrue((blocks[0]["text"] as? String)?.contains(Self.capture) == true, name)
-        }
+    func testPolishOnAnAnthropicServerSendsAMessagesRequest() throws {
+        let urlRequest = try polishRequest(Self.polish, Self.anthropic)
+        XCTAssertEqual(urlRequest.url?.absoluteString, "https://api.anthropic.com/v1/messages")
+        XCTAssertEqual(urlRequest.value(forHTTPHeaderField: "x-api-key"), "anthropic-key")
+        XCTAssertEqual(urlRequest.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+        XCTAssertNil(urlRequest.value(forHTTPHeaderField: "Authorization"))
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(urlRequest.httpBody)) as? [String: Any])
+        XCTAssertEqual(Set(body.keys), ["model", "max_tokens", "messages", "output_config", "system"])
+        XCTAssertEqual(body["model"] as? String, "claude-sonnet-5-5")
+        XCTAssertEqual(body["output_config"] as? [String: String], ["effort": "low"])
+        let system = try XCTUnwrap(body["system"] as? [[String: Any]])
+        XCTAssertEqual(system.count, 1)
+        XCTAssertEqual(system[0]["text"] as? String, "You polish dictated text.")
     }
 
     // MARK: - Snapshot

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtral
 
@@ -66,9 +67,7 @@ final class AnthropicAPIModeTests: XCTestCase {
     }
 
     func testAStoredAnthropicDictationModeReadsAsUnset() {
-        let suiteName = "localvoxtral.AnthropicAPIModeTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         defaults.set("anthropic_api", forKey: "settings.dictation_backend_mode")
         defaults.set("anthropic_api", forKey: "settings.polishing_backend_mode")
 
@@ -99,9 +98,7 @@ final class AnthropicAPIModeTests: XCTestCase {
     }
 
     private func makeSettings() -> SettingsStore {
-        let suiteName = "localvoxtral.AnthropicAPIModeTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.onboardingCompleted = true
         return settings
