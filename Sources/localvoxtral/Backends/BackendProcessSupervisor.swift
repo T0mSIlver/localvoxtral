@@ -392,6 +392,12 @@ final class BackendProcessSupervisor {
             }
         }
 
+        if let diagnostic = Self.publicDiagnostic(line) {
+            Log.backends.notice(
+                "[\(self.configuration.name, privacy: .public) \(source, privacy: .public)] \(diagnostic, privacy: .public)"
+            )
+            return
+        }
         Log.backends.info(
             "\(Self.publicOutputLogDescription(name: self.configuration.name, source: source, line: line), privacy: .public) \(line, privacy: .private)"
         )
@@ -402,6 +408,14 @@ final class BackendProcessSupervisor {
     /// public (#936). The text stays in `recentOutput` for the failure alert.
     nonisolated static func publicOutputLogDescription(name: String, source: String, line: String) -> String {
         "[\(name) \(source)] \(line.count) characters"
+    }
+
+    /// speechd's step diagnostics (`UtteranceStepStats` in SpeechHelper), which by
+    /// contract hold only numbers and fixed words: logged whole at notice level, so a
+    /// field stall still says afterwards whether the helper was slow (LVX-33). Nil for
+    /// every other line.
+    nonisolated static func publicDiagnostic(_ line: String) -> String? {
+        line.hasPrefix("speechd diag: ") ? line : nil
     }
 
     private func handleProcessExit(pid: pid_t, status: Int32) {
