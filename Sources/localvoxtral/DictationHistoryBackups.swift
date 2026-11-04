@@ -160,13 +160,9 @@ struct DictationHistoryBackups: Sendable {
         let graceStart = now().addingTimeInterval(-Self.expiryGrace)
         for snapshot in snapshots() where snapshot.dictations > 0 && snapshot.takenAt < graceStart {
             do {
-                let file = try SQLiteFile(readWrite: snapshot.url)
-                let deleted = try file.deleteRows(
-                    of: DictationHistoryStoreFile.entityTable, where: Self.startedAtColumn,
-                    isBelow: cutoff.timeIntervalSinceReferenceDate)
+                let (deleted, left) = try Self.deleteRows(in: snapshot.url, startedBefore: cutoff)
                 guard deleted > 0 else { continue }
                 expired += deleted
-                let left = try file.rowCount(of: DictationHistoryStoreFile.entityTable)
                 if left == 0 {
                     Self.removeFiles(at: snapshot.url)
                     removed += 1
@@ -186,6 +182,26 @@ struct DictationHistoryBackups: Sendable {
                 "History: expired \(expired, privacy: .public) dictation(s) from the snapshots; deleted \(removed, privacy: .public) snapshot(s)"
             )
         }
+    }
+
+    /// Deletes the rows that started before `cutoff` from one snapshot and
+    /// closes it, the deletion folded into the file itself. A snapshot is a
+    /// copy of a WAL store, so the delete lands in its `-wal` file first, and
+    /// SQLite writes nothing back once the file is renamed under an open
+    /// connection: the rename must come after this returns, and the
+    /// snapshot leaves WAL mode so no `-wal` is left under the old name.
+    private static func deleteRows(in url: URL, startedBefore cutoff: Date) throws -> (deleted: Int, left: Int) {
+        let file = try SQLiteFile(readWrite: url)
+        let deleted = try file.deleteRows(
+            of: DictationHistoryStoreFile.entityTable, where: startedAtColumn,
+            isBelow: cutoff.timeIntervalSinceReferenceDate)
+        let left = try file.rowCount(of: DictationHistoryStoreFile.entityTable)
+        try file.leaveWAL()
+        file.close()
+        // Out of WAL mode and closed, nothing uses these; macOS's SQLite
+        // keeps the `-shm` after leaving WAL.
+        for suffix in ["-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + suffix) }
+        return (deleted, left)
     }
 
     /// Deletes every snapshot: the user deleted all of History or chose

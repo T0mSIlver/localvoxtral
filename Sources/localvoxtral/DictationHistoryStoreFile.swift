@@ -211,6 +211,22 @@ final class SQLiteFile {
 
     deinit { sqlite3_close(db) }
 
+    /// Closes the database now; later calls fail.
+    func close() {
+        sqlite3_close(db)
+        db = nil
+    }
+
+    /// Leaves WAL mode: the WAL goes into the database file, and its
+    /// `-wal` and `-shm` files are deleted, which macOS's SQLite otherwise
+    /// keeps after a close. The file alone then holds every write.
+    func leaveWAL() throws {
+        let mode = try strings("PRAGMA journal_mode = DELETE", column: 0)
+        guard mode.first?.lowercased() == "delete" else {
+            throw SQLiteFileError(description: "journal_mode stayed \(mode.first ?? "unknown")")
+        }
+    }
+
     func rowCount(of table: String) throws -> Int {
         try strings("SELECT count(*) FROM \(table)", column: 0).first.flatMap { Int($0) } ?? 0
     }

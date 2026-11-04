@@ -122,6 +122,11 @@ final class DictationHistoryBackupsTests: XCTestCase {
         // A 5-day retention, six days in: "old" expires, "recent" stays.
         await store.trim(olderThan: clock.now().addingTimeInterval(-86_400 * 5), expiringBackups: true).value
 
+        // An edited snapshot leaves no WAL behind: one under the old name
+        // would keep the deleted rows and lose them from the renamed file.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: backups.directoryURL.path)
+            .filter { $0.hasSuffix("-wal") || $0.hasSuffix("-shm") }
+        XCTAssertEqual(leftovers, [])
         var days: [Double] = []
         var texts: [[String]] = []
         for snapshot in backups.snapshots() where snapshot.dictations > 0 {
