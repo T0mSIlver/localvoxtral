@@ -832,4 +832,21 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             record.sources[1].renderedExcerpt,
             "see: \(DiagnosticRecordRedaction.withheldPromptPlaceholder)")
     }
+
+    /// A shorter prompt line that shares its start with a longer one is still
+    /// taken out whole: the soft-wrap pass must not consume the shared prefix
+    /// first and leave the line's tail behind.
+    func testALineSharingItsStartWithALongerPromptLineIsStillTakenOut() {
+        let prompt = "Please investigate the production deployment before changing any configuration.\n"
+            + "Please investigate the production ProjectZephyr"
+        let excerpt = "> Please investigate the production ProjectZephyr\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        record.text.userPrompts = [excerpt]
+        record.sources = [source("terminal", excerpt: excerpt)]
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        XCTAssertFalse(record.screen?.sanitizedText?.contains("ProjectZephyr") == true)
+        XCTAssertFalse(record.text.userPrompts[0].contains("ProjectZephyr"))
+        XCTAssertFalse(record.sources[0].renderedExcerpt?.contains("ProjectZephyr") == true)
+    }
 }

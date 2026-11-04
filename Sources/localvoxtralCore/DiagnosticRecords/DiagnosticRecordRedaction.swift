@@ -348,13 +348,16 @@ package enum DiagnosticRecordRedaction {
                     output = maskingToLineEnd(label, in: output, keeping: label, placeholder: value.placeholder)
                 }
             }
+            // Exact lines first: the soft-wrap pass would otherwise consume
+            // the start a shorter line shares with a longer one and leave the
+            // shorter line's tail.
+            for (line, placeholder) in lines {
+                output = output.replacingOccurrences(of: line, with: placeholder)
+            }
             if softWrapped {
                 for value in withheld {
                     output = withholdingWrapped(value.needles, in: output, placeholder: value.placeholder)
                 }
-            }
-            for (line, placeholder) in lines {
-                output = output.replacingOccurrences(of: line, with: placeholder)
             }
             for (line, placeholder) in lines where line.count >= truncatedPrefixLength {
                 output = maskingToLineEnd(
