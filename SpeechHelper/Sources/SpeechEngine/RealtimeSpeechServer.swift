@@ -39,14 +39,16 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
         stepMilliseconds: Int = 80,
-        utteranceLimit: UtteranceLimit = UtteranceLimit()
+        utteranceLimit: UtteranceLimit = UtteranceLimit(),
+        termBoost: TermBoostSettings? = nil
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let engine = try await SpeechModelLoader.load(
             modelID: modelID,
             modelRevision: modelRevision,
             modelDirectory: modelDirectory,
-            engine: engine
+            engine: engine,
+            termBoost: termBoost
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -319,6 +321,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // The client left mid-flush: `close` queued the session drop and cache
                 // clear behind this work, and nobody is left to answer.
                 guard finished else { return }
+                if !ctx.terms.terms.isEmpty, let boosted = session.boostedTokenCount {
+                    FileHandle.standardError.write(Data(
+                        ("speechd: utterance done: \(session.decodedTokenCount) tokens, \(boosted) boosted, "
+                            + "\(ctx.terms.terms.count) terms\n").utf8))
+                }
                 // Use the append-only emitted text (== sum of every delta), so the final
                 // payload can never contradict what was streamed on the wire.
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
@@ -441,7 +448,8 @@ enum SpeechModelLoader {
         modelID: String?,
         modelRevision: String?,
         modelDirectory: String?,
-        engine: SpeechASREngineKind?
+        engine: SpeechASREngineKind?,
+        termBoost: TermBoostSettings? = nil
     ) async throws -> SpeechASREngine {
         switch SpeechASREngineKind.resolve(
             named: engine, modelID: modelID, modelDirectory: modelDirectory
@@ -453,7 +461,7 @@ enum SpeechModelLoader {
                 modelDirectory: modelDirectory,
                 fromDirectory: { try VoxtralRealtimeModel.fromDirectory($0) },
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
-            ))
+            ), termBoost: termBoost)
         case .nemotron:
             return NemotronASREngine(model: try await loadModel(
                 modelID: modelID,
@@ -473,7 +481,7 @@ enum SpeechModelLoader {
                     guard model.isBuffered else { return model }
                     return try await NemotronASRModel.fromPretrained(id, computeDType: .float16)
                 }
-            ))
+            ), termBoost: termBoost)
         }
     }
 

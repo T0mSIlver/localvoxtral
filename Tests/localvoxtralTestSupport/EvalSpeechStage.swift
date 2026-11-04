@@ -288,6 +288,7 @@ package enum EvalSpeechStage {
         pcm: Data,
         client: any RealtimeClient,
         endpoint: Endpoint,
+        contextBias: [String] = [],
         timeout: TimeInterval,
         allowsEmptyTranscript: Bool = false,
         clock: SessionClock = .live
@@ -330,7 +331,8 @@ package enum EvalSpeechStage {
             configuration: .init(
                 endpoint: endpoint.url,
                 apiKey: endpoint.apiKey,
-                model: endpoint.model
+                model: endpoint.model,
+                contextBias: contextBias
             )
         )
         let answered = await firstAnswer.value(timeout: timeout, clock: clock)
