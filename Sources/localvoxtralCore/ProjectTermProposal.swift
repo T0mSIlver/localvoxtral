@@ -10,6 +10,12 @@ import Foundation
 /// prompt, and reading the answer. `ProjectTermProposalProcessRunner` runs
 /// the command and `ProjectTermProposer` decides when.
 package enum ProjectTermProposal {
+    /// The spellings a proposal never stores: the user's own terms, the
+    /// suggestions they refused, the project and skill names. Read when an
+    /// answer is stored, not when the run starts: a refusal made while the
+    /// agent runs must keep its term out of that answer (LVX-90).
+    package typealias Exclusions = @Sendable () -> [String]
+
     /// The agents that can propose. A Codex proposer is a follow-up to #716.
     package enum Agent: String, Sendable, Equatable, CaseIterable {
         case claude

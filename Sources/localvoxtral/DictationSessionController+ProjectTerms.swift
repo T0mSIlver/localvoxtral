@@ -49,10 +49,16 @@ extension DictationSessionController {
             projectTermProposalTask = nil
             return
         }
+        // The names as this commit sees them, plus the user's lists as saved
+        // when the answer lands: a term refused while the agent runs stays
+        // out of its answer (LVX-90).
+        let atCommit = settings.polishSpeakerTerms + settings.polishDismissedTermSuggestions
+            + polishProjectNames() + polishSkillNames()
+        let saved = settings.savedTermExclusions
         projectTermProposalTask = projectTermProposer?.dictationCommitted(
             join: join?.snapshot,
             enabled: settings.projectTermProposalsEnabled,
-            excluding: settings.polishSpeakerTerms + settings.polishDismissedTermSuggestions + polishProjectNames() + polishSkillNames()
+            excluding: { atCommit + saved() }
         )
     }
 }

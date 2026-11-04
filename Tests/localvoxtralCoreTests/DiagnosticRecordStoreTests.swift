@@ -319,7 +319,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         // The other copy deletes the moment it can take the lock the copies
         // share, as its History Delete does.
         let directoryIO = InterleavingDirectoryIO { url in
-            guard let otherCopy = StoredFileLock.tryHolding(beside: folder) else { return }
+            guard let otherCopy = OtherCopyLock.tryHolding(beside: folder) else { return }
             withExtendedLifetime(otherCopy) {
                 try? FileManager.default.removeItem(at: url)
                 deletedDuringPatch.withLock { $0 = true }

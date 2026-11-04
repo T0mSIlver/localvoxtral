@@ -46,3 +46,4 @@ Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .claude/skills/l
 Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .codex/skills/localvoxtral-doctor/SKILL.md none
 Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .config/opencode/skills/localvoxtral-doctor/SKILL.md none
 Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .vibe/skills/localvoxtral-doctor/SKILL.md none
+Tests/localvoxtralTests/DictationPipelineTests.swift contentsOfDirectory( none

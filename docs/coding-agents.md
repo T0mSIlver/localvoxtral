@@ -74,6 +74,8 @@ page. That needs **Send diff, recent
 files and prompts** in **Settings → Context**. When the polisher is not
 on this Mac (the Mistral API, say), it also needs **Send context to non-local
 polishing servers**. With either off, Claude Desktop gets the standard prompt.
+T3 Code works the same way: it gets the agent-tuned prompt when the dictation
+joined the thread's Claude Code session.
 
 ### Repo vocabulary
 
@@ -144,7 +146,8 @@ servers** is the only toggle that lifts that limit.
   session and, for a Claude Code session with the localvoxtral mod, what
   its prompt box holds unsent. It needs one of these: a joined Claude Code or opencode session in
   a supported terminal, a Claude Code Remote Control session in the focused
-  browser tab, or a Claude Code session focused in Claude Desktop's Code tab.
+  browser tab, a Claude Code session focused in Claude Desktop's Code tab, or
+  a Claude Code thread focused in T3 Code.
   For a session on a remote host, only the session request and the short
   excerpts its hooks report go, and no files are read from that host.
 - **Send context to non-local polishing servers**, when on, also sends the
@@ -251,6 +254,10 @@ What you set up depends on where the session runs:
 - **Claude Desktop's Code tab**, with the session on your Mac or on an ssh
   host: nothing on this Mac. An ssh host needs
   [Keep the tunnel open](remote-claude-context.md#keep-the-tunnel-open-for-sessions-with-no-terminal).
+- **A T3 Code thread** running Claude Code, on your Mac or on a machine T3
+  Code connects to: nothing on this Mac. Dictate into the thread's message
+  box. A thread on another machine needs the remote plugin on that machine
+  and a tunnel to this Mac, as for Claude Desktop.
 
 ## Connect opencode, Mistral Vibe and Codex
 

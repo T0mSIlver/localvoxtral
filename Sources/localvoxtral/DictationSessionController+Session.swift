@@ -62,6 +62,7 @@ extension DictationSessionController {
         sessionHasStallBackfill = false
         stallBackfillTasks.forEach { $0.cancel() }
         stallBackfillTasks = []
+        stallBackfillsInFlight = []
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
     }

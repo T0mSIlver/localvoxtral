@@ -355,6 +355,7 @@ final class VibeHookPublisherRunTests: XCTestCase {
         let inherited = publisher(variables: [
             "CLAUDE_CODE_BRIDGE_SESSION_ID": "session_inherited",
             "CLAUDE_CODE_HOST_SESSION_ID": "local_inherited",
+            "T3CODE_THREAD_ID": "thread_inherited",
             "HERDR_PANE_ID": "w1:p2",
         ])
         XCTAssertEqual(inherited.runVibe(stdin: payload(event: "post_agent"), vibe: vibe), .published)
@@ -370,6 +371,7 @@ final class VibeHookPublisherRunTests: XCTestCase {
         XCTAssertEqual(snapshot.process?.agentStartMicros, 1_700_000_000_000_123, "Vibe's, not the wrapper's")
         XCTAssertNil(snapshot.process?.bridgeSessionID)
         XCTAssertNil(snapshot.process?.desktopSessionID)
+        XCTAssertNil(snapshot.process?.t3ThreadID)
         XCTAssertEqual(snapshot.process?.herdrPaneID, "w1:p2", "the pane handle is the terminal's, and is kept")
     }
 

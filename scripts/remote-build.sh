@@ -163,8 +163,10 @@ set -euo pipefail
 # Optional: a lock per build host, so runs on one Mac go one at a time:
 #   git config localvoxtral.<build host>.lock /path/to/<host>.lock
 # (LV_LOCK_DIR overrides it). A run that sends work to the host waits for
-# that directory, then holds it until it exits; scripts/lib/build-host-lock.sh
-# has the recipe for taking it by hand.
+# that directory, then holds it until it exits. For heavy work outside this
+# script, take the same lock with scripts/build-host-lock.sh, never around a
+# run of this script: it takes the lock itself, and refuses one taken by hand
+# from its own worktree.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"

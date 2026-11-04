@@ -33,20 +33,20 @@ package struct HerdrFocusSocket: Sendable {
 /// Reads back whether a herdr-hosted session's pane is the one a terminal
 /// window shows (#1012), right before a Return into it. Both read-backs must
 /// agree: herdr's focused pane is the session's, the terminal's focused tty
-/// is the window that shows that herdr, and the registry still resolves that
+/// is a window that shows that herdr, and the registry still resolves that
 /// pane to the session asked for (#1601). It focuses nothing and types
 /// nothing.
 @MainActor
 package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
-    private let windowTTY: (HerdrPaneFocusTarget) async -> String?
+    private let windowShows: (HerdrPaneFocusTarget, String) async -> Bool
     private let openSocket: (HerdrPaneFocusTarget) async -> HerdrFocusSocket?
     private let panes: any HerdrPaneQuerying
     private let focusedTTY: (String) async -> String?
     private let paneSessionID: (HerdrPaneFocusTarget) -> String?
 
     /// - Parameters:
-    ///   - windowTTY: the one local terminal tty showing that herdr
-    ///     (`HerdrWindowLocator`), nil when none or several do.
+    ///   - windowShows: whether the terminal tty shows that herdr's focused
+    ///     pane (`HerdrWindowLocator`).
     ///   - openSocket: the local socket, or a lease on the join's forward.
     ///   - focusedTTY: a terminal's focused tty, read as the join reads it.
     ///   - paneSessionID: the session the registry resolves the pane to, as
@@ -54,13 +54,13 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
     ///     when none or several. One opencode TUI hosts several sessions in
     ///     one pane, and focusing the pane cannot pick among them.
     package init(
-        windowTTY: @escaping (HerdrPaneFocusTarget) async -> String?,
+        windowShows: @escaping (HerdrPaneFocusTarget, String) async -> Bool,
         openSocket: @escaping (HerdrPaneFocusTarget) async -> HerdrFocusSocket?,
         panes: any HerdrPaneQuerying,
         focusedTTY: @escaping (String) async -> String?,
         paneSessionID: @escaping (HerdrPaneFocusTarget) -> String?
     ) {
-        self.windowTTY = windowTTY
+        self.windowShows = windowShows
         self.openSocket = openSocket
         self.panes = panes
         self.focusedTTY = focusedTTY
@@ -69,8 +69,8 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
 
     package func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID: String) async -> Bool {
         guard case .herdrPane(let target) = SessionPaneFocusRoute.of(session),
-              let tty = await windowTTY(target),
-              await focusedTTY(bundleID) == tty,
+              let tty = await focusedTTY(bundleID),
+              await windowShows(target, tty),
               let socket = await openSocket(target)
         else { return false }
         defer { socket.release() }
@@ -119,28 +119,36 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
         return true
     }
 
-    /// Asked after herdr's awaits: the window that shows the target is still
-    /// `tty` (the client did not switch machine) and the terminal's front
-    /// tab is still that tty.
+    /// Asked after herdr's awaits: `tty` still shows the target (the client
+    /// did not switch machine) and the terminal's front tab is still that tty.
     private func stillShows(_ target: HerdrPaneFocusTarget, on tty: String, bundleID: String) async -> Bool {
-        guard await windowTTY(target) == tty else { return false }
+        guard await windowShows(target, tty) else { return false }
         return await focusedTTY(bundleID) == tty
     }
 }
 
-/// Finds the terminal window on this Mac that shows a given herdr, with the
-/// join's own process-table evidence and never a window title (herdr has no
-/// client introspection). Exactly one candidate tty, or none.
+/// Says whether a terminal tty on this Mac shows a given herdr's focused
+/// pane, with the join's own process-table evidence and never a window title
+/// (herdr has no client introspection).
 ///
-/// - A local herdr: the one live local herdr socket is the pane's, the
-///   saved-machine state shows Local (with machines saved, only for a lone
-///   client surface, as the local join arm requires), and one tty runs a
-///   herdr client.
+/// - A local herdr: the one live local herdr socket is the pane's, the tty
+///   runs a whole-view herdr client of THAT socket's session in its
+///   foreground (`herdr --session <name>` attaches another server), and the
+///   saved-machine state shows Local (with machines saved, only for a lone client surface,
+///   as the local join arm requires). Several client windows are fine with no
+///   machines saved: herdr keeps ONE focus per server, not per client, so
+///   every whole-view client of that server shows the same focused pane
+///   (herdr `server/clients.rs`: a client holds size, theme and keys, no
+///   workspace, tab or pane; LVX-99). An attach (`herdr terminal attach`)
+///   or `--remote` client shows something else and never counts. Residual:
+///   a client started with its own `HERDR_SOCKET_PATH` reads as the default
+///   session, as it does for the join arm.
 /// - A remote herdr: a tty whose foreground ssh goes to exactly that
 ///   enrolled host with a plain herdr client of that socket's session and no
 ///   competing herdr view (the remote join arm's argv checks), or the lone
 ///   local herdr client whose saved-machine selection names that host and
-///   session (the federated arm's checks).
+///   session (the federated arm's checks). The tty must be the ONE such
+///   candidate: two ssh windows may reach two servers of that host.
 @MainActor
 package struct HerdrWindowLocator {
     private let herdrClientTTYs: @Sendable () -> [String]?
@@ -148,6 +156,7 @@ package struct HerdrWindowLocator {
     private let sshConnection: @Sendable (String) -> SSHDestinationTTYProbeResult
     private let federation: @Sendable () -> HerdrMachineFederation
     private let liveLocalHerdrSockets: () -> Set<String>
+    private let wholeViewClientSession: @Sendable (String) -> String?
     private let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     private let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
 
@@ -156,12 +165,16 @@ package struct HerdrWindowLocator {
     ///     client job; nil when the process table cannot be read.
     ///   - sshClientTTYs: the ttys whose foreground job is an ssh.
     ///   - sshConnection: the join's ssh probe for one tty.
+    ///   - wholeViewClientSession: the herdr session a whole-view client in a
+    ///     tty's foreground shows, nil when it runs none
+    ///     (`HerdrClientTTYProbe.wholeViewSessionName`).
     package init(
         herdrClientTTYs: @escaping @Sendable () -> [String]?,
         sshClientTTYs: @escaping @Sendable () -> [String]?,
         sshConnection: @escaping @Sendable (String) -> SSHDestinationTTYProbeResult,
         federation: @escaping @Sendable () -> HerdrMachineFederation,
         liveLocalHerdrSockets: @escaping () -> Set<String>,
+        wholeViewClientSession: @escaping @Sendable (String) -> String?,
         enrolledHosts: @escaping @MainActor (String) -> [ClaudeRemoteHost],
         canonicalizedEnrolledHosts: @escaping @MainActor (String) async -> [ClaudeRemoteHost]
     ) {
@@ -170,36 +183,42 @@ package struct HerdrWindowLocator {
         self.sshConnection = sshConnection
         self.federation = federation
         self.liveLocalHerdrSockets = liveLocalHerdrSockets
+        self.wholeViewClientSession = wholeViewClientSession
         self.enrolledHosts = enrolledHosts
         self.canonicalizedEnrolledHosts = canonicalizedEnrolledHosts
     }
 
-    package func windowTTY(for target: HerdrPaneFocusTarget) async -> String? {
-        let candidates: Set<String>
+    package func windowShows(_ target: HerdrPaneFocusTarget, tty: String) async -> Bool {
         switch target {
         case .local(_, let socketPath):
-            candidates = localCandidates(socketPath: socketPath)
+            let shows = localWindowShows(socketPath: socketPath, tty: tty)
+            if !shows { Log.claudeContext.info("pane read-back: the focused terminal does not show that local herdr") }
+            return shows
         case .remote(let hostID, _, let remoteSocketPath):
-            candidates = await remoteCandidates(hostID: hostID, remoteSocketPath: remoteSocketPath)
+            let candidates = await remoteCandidates(hostID: hostID, remoteSocketPath: remoteSocketPath)
+            guard candidates == [tty] else {
+                Log.claudeContext.info(
+                    "pane read-back: \(candidates.count, privacy: .public) terminal windows show that herdr, and the focused one must be the only one"
+                )
+                return false
+            }
+            return true
         }
-        guard candidates.count == 1 else {
-            Log.claudeContext.info(
-                "pane read-back: \(candidates.count, privacy: .public) terminal windows show that herdr"
-            )
-            return nil
-        }
-        return candidates.first
     }
 
-    private func localCandidates(socketPath: String) -> Set<String> {
-        guard liveLocalHerdrSockets() == [socketPath], let clients = herdrClientTTYs() else { return [] }
+    private func localWindowShows(socketPath: String, tty: String) -> Bool {
+        guard liveLocalHerdrSockets() == [socketPath], let clients = herdrClientTTYs(),
+              clients.contains(tty),
+              let session = wholeViewClientSession(tty),
+              HerdrSessionSocket.isSocket(socketPath, ofSessionNamed: session)
+        else { return false }
         switch federation() {
         case .notFederated:
-            return Set(clients)
+            return true
         case .showingLocal:
-            return clients.count == 1 ? Set(clients) : []
+            return clients.count == 1
         case .showingMachine, .unreadable:
-            return []
+            return false
         }
     }
 

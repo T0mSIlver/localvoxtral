@@ -4,7 +4,6 @@ import SwiftUI
 struct DictationSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    let dictationShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
 
     /// The Trigger group's Learn more: what a tap and a hold do.

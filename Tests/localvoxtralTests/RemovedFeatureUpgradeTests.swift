@@ -5,7 +5,7 @@ import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// An upgrade over what quick capture and agent control left in UserDefaults:
-/// nothing reads the old keys, they are not rewritten or deleted, the kept settings keep
+/// launch removes the old keys (`SettingsStore.retiredKeys`), the kept settings keep
 /// their values, and no removed shortcut registers a hotkey. The data files
 /// (`quick-captures.json`, `voice-memos.json`, a learned-term file with
 /// Inbox fields) are covered by `testRuntimeServicesOverRemovedFeatureLeftovers…`
@@ -49,7 +49,7 @@ final class RemovedFeatureUpgradeTests: XCTestCase {
         for (key, value) in keys { defaults.set(value, forKey: key) }
     }
 
-    func testStoredQuickCaptureKeysAreLeftAloneAndKeptSettingsKeepTheirValues() {
+    func testStoredRemovedFeatureKeysAreRemovedAndKeptSettingsKeepTheirValues() {
         let defaults = makeTestDefaults()
         let before = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         before.setOverlayBufferShortcut(optionF13)
@@ -69,11 +69,12 @@ final class RemovedFeatureUpgradeTests: XCTestCase {
         XCTAssertTrue(after.agentAttentionEnabled)
         XCTAssertTrue(after.llmPolishingEnabled)
         XCTAssertEqual(after.spokenSendTriggerPhrases, ["ship it", "send it"], "\"send it\" keeps its phrases")
-        for (key, value) in Self.removedFeatureKeys {
-            XCTAssertNotNil(defaults.object(forKey: key), "\(key) is still stored")
-            XCTAssertEqual(
-                defaults.object(forKey: key) as? NSObject, value as? NSObject, "\(key) was not rewritten")
+        for key in Self.removedFeatureKeys.keys where key != "settings.jev_api_key" {
+            XCTAssertNil(defaults.object(forKey: key), "\(key) was removed at launch")
         }
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.jev_api_key"), "never-stored",
+            "the app never wrote a Jev key to defaults, so one found there is not ours to erase")
     }
 
     /// Quick capture's chord was the same both-Shifts gesture as the kept Copy

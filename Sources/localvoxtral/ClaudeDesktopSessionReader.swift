@@ -276,7 +276,7 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         )
     }
 
-    private static func copy(_ element: AXUIElement, _ attribute: String) -> Result<AnyObject?, AXLookupError> {
+    static func copy(_ element: AXUIElement, _ attribute: String) -> Result<AnyObject?, AXLookupError> {
         AXUIElementSetMessagingTimeout(element, TerminalScreenAXReader.messagingTimeoutSeconds)
         var value: AnyObject?
         switch AXUIElementCopyAttributeValue(element, attribute as CFString, &value) {
@@ -289,11 +289,11 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         }
     }
 
-    private static func string(_ element: AXUIElement, _ attribute: String) -> Result<String?, AXLookupError> {
+    static func string(_ element: AXUIElement, _ attribute: String) -> Result<String?, AXLookupError> {
         copy(element, attribute).map { $0 as? String }
     }
 
-    private static func element(_ element: AXUIElement, _ attribute: String) -> Result<AXUIElement?, AXLookupError> {
+    static func element(_ element: AXUIElement, _ attribute: String) -> Result<AXUIElement?, AXLookupError> {
         copy(element, attribute).map { value in
             guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
             return unsafeDowncast(value, to: AXUIElement.self)
@@ -302,12 +302,12 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
 
     /// Chromium's `AXDOMClassList`: the element's class tokens, empty when it
     /// has none.
-    private static func classList(_ element: AXUIElement) -> Result<[String], AXLookupError> {
+    static func classList(_ element: AXUIElement) -> Result<[String], AXLookupError> {
         copy(element, "AXDOMClassList").map { ($0 as? [String]) ?? [] }
     }
 
     /// `AXURL` arrives as a CFURL from Chromium; a string is accepted too.
-    private static func address(_ element: AXUIElement) -> Result<String?, AXLookupError> {
+    static func address(_ element: AXUIElement) -> Result<String?, AXLookupError> {
         copy(element, "AXURL").map { value in
             if let url = value as? URL { return url.absoluteString }
             return value as? String

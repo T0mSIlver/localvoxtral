@@ -124,7 +124,7 @@ esac
 # its next hook. Written when the recorded version differs, and refreshed on
 # SessionStart and UserPromptSubmit so that a live session's record outlasts
 # the age-out below.
-PLUGIN_VERSION=1.47.0
+PLUGIN_VERSION=1.48.0
 VERSION_DIR="$STAMP_DIR/plugin-version"
 if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   if [ "$EVENT" = "SessionEnd" ]; then
@@ -307,7 +307,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.47.0
+X-Lvx-Plugin-Version: 1.48.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -465,12 +465,10 @@ lvx_ppid() {
   return 1
 }
 
-lvx_claude_is_desktop_session() {
-  [ -d /proc/self ] || return 0
-  [ -n "${HOME:-}" ] || return 1
-  # Physical, because the kernel reports the daemon's exe with every symlink
-  # resolved, and a dotfiles setup often links ~ or ~/.claude.
-  _lvx_srv="$(cd "$HOME/.claude/remote/srv" && pwd -P)" || return 1
+# The exe of the Claude process's parent: the hook's first non-shell ancestor
+# is Claude, and a session an app runs is that app's direct child. At most
+# three shells are skipped (Claude Code runs a hook through `sh -c`).
+lvx_claude_parent_exe() {
   _lvx_pid="${PPID:-}"
   _lvx_shells=0
   while :; do
@@ -485,11 +483,36 @@ lvx_claude_is_desktop_session() {
     _lvx_pid="$(lvx_ppid "$_lvx_pid")" || return 1
   done
   _lvx_parent="$(lvx_ppid "$_lvx_pid")" || return 1
-  _lvx_parent_exe="$(readlink "/proc/$_lvx_parent/exe")" || return 1
+  readlink "/proc/$_lvx_parent/exe"
+}
+
+lvx_claude_is_desktop_session() {
+  [ -d /proc/self ] || return 0
+  [ -n "${HOME:-}" ] || return 1
+  # Physical, because the kernel reports the daemon's exe with every symlink
+  # resolved, and a dotfiles setup often links ~ or ~/.claude.
+  _lvx_srv="$(cd "$HOME/.claude/remote/srv" && pwd -P)" || return 1
+  _lvx_parent_exe="$(lvx_claude_parent_exe)" || return 1
   # `(deleted)`: the daemon keeps running its sessions after an update
   # replaces its binary.
   case "$_lvx_parent_exe" in
   "$_lvx_srv/"*/server | "$_lvx_srv/"*"/server (deleted)") return 0 ;;
+  esac
+  return 1
+}
+
+# Whether this hook's Claude is the one a T3 Code thread runs: a direct child
+# of T3 Code's server, `~/.t3/runtime/versions/<version>/t3` (measured on
+# Linux, 2026-11-04, T3 Code 0.1.7-nightly). Every process in the thread
+# inherits T3CODE_THREAD_ID, so a `claude -p` started from it would otherwise
+# report the thread too and make the window's join ambiguous (#657's lesson).
+lvx_claude_is_t3_thread() {
+  [ -d /proc/self ] || return 0
+  [ -n "${HOME:-}" ] || return 1
+  _lvx_t3="$(cd "$HOME/.t3/runtime/versions" && pwd -P)" || return 1
+  _lvx_parent_exe="$(lvx_claude_parent_exe)" || return 1
+  case "$_lvx_parent_exe" in
+  "$_lvx_t3/"*/t3 | "$_lvx_t3/"*"/t3 (deleted)") return 0 ;;
   esac
   return 1
 }
@@ -508,6 +531,11 @@ lvx_claude_is_desktop_session() {
   # window shows. Only from the session itself (see above).
   if [ -n "${CLAUDE_CODE_HOST_SESSION_ID:-}" ] && lvx_claude_is_desktop_session; then
     lvx_env_header 'X-Lvx-Env-Desktop-Session-Id' "${CLAUDE_CODE_HOST_SESSION_ID:-}"
+  fi
+  # T3 Code's thread id, matched against the thread T3 Code's window shows
+  # (LVX-55). Only from the thread's own Claude (see above).
+  if [ -n "${T3CODE_THREAD_ID:-}" ] && lvx_claude_is_t3_thread; then
+    lvx_env_header 'X-Lvx-Env-T3-Thread-Id' "${T3CODE_THREAD_ID:-}"
   fi
   lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
   lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"

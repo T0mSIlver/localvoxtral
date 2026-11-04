@@ -3,14 +3,14 @@ import Foundation
 /// Turns the app's state into the widgets' snapshot (#630). The history and
 /// learned-term parts are counted off the main actor; the rest is read from
 /// the settings and the helpers when the snapshot is written.
-enum WidgetSnapshotAssembler {
+package enum WidgetSnapshotAssembler {
     /// History read for one snapshot: the trend's twelve weeks, which cover
     /// the Dictation widget's thirty days.
-    static func historyStart(now: Date) -> Date {
+    package static func historyStart(now: Date) -> Date {
         DictationLearningTrend.start(now: now)
     }
 
-    static func engineState(_ status: ManagedBackendStatus) -> WidgetSnapshot.EngineState {
+    package static func engineState(_ status: ManagedBackendStatus) -> WidgetSnapshot.EngineState {
         switch status {
         case .preparingModel(let progress):
             return .downloading(downloadedBytes: progress.downloadedBytes, totalBytes: progress.totalBytes, paused: false)
@@ -23,7 +23,7 @@ enum WidgetSnapshotAssembler {
         }
     }
 
-    static func engineMode(_ mode: BackendMode) -> WidgetSnapshot.EngineMode {
+    package static func engineMode(_ mode: BackendMode) -> WidgetSnapshot.EngineMode {
         switch mode {
         case .managedLocal: return .managedLocal
         case .mistralAPI: return .mistralAPI
@@ -32,7 +32,7 @@ enum WidgetSnapshotAssembler {
         }
     }
 
-    static func mistralSpend(_ entries: [UsageEntry], now: Date, calendar: Calendar) -> WidgetSnapshot.MistralSpend {
+    package static func mistralSpend(_ entries: [UsageEntry], now: Date, calendar: Calendar) -> WidgetSnapshot.MistralSpend {
         let today = calendar.startOfDay(for: now)
         let month = now.addingTimeInterval(-30 * 86_400)
         var spend = WidgetSnapshot.MistralSpend()
@@ -70,15 +70,25 @@ enum WidgetSnapshotAssembler {
     /// What the history adds: day totals, each period's Insights lists, the
     /// vocabulary trend and the last dictation. `entries` is newest first,
     /// as the store returns them. Pure; runs detached.
-    struct History: Sendable {
-        var dictation: WidgetSnapshot.Dictation
-        var weeklyShares: [Double?]
-        var lastDictation: WidgetSnapshot.LastDictation?
+    package struct History: Sendable {
+        package var dictation: WidgetSnapshot.Dictation
+        package var weeklyShares: [Double?]
+        package var lastDictation: WidgetSnapshot.LastDictation?
         /// Bundle ids the lists name, for the main actor to turn into app names.
-        var bundleIDs: Set<String>
+        package var bundleIDs: Set<String>
+
+        package init(
+            dictation: WidgetSnapshot.Dictation, weeklyShares: [Double?],
+            lastDictation: WidgetSnapshot.LastDictation?, bundleIDs: Set<String>
+        ) {
+            self.dictation = dictation
+            self.weeklyShares = weeklyShares
+            self.lastDictation = lastDictation
+            self.bundleIDs = bundleIDs
+        }
     }
 
-    static func history(
+    package static func history(
         entries: [DictationHistoryEntry],
         terms: [String],
         now: Date,
@@ -91,7 +101,7 @@ enum WidgetSnapshotAssembler {
                 words: TranscriptDiff.wordRanges(in: $0.finalText).count,
                 // A quick capture is polished in the Inbox after its record
                 // is written: its polish is not in its duration (#970).
-                polishingSeconds: $0.outputMode == DictationSessionRecord.quickCaptureOutputMode
+                polishingSeconds: $0.outputMode == DictationHistoryEntry.quickCaptureOutputMode
                     ? nil : $0.polishingDurationSeconds
             )
         }
@@ -149,7 +159,7 @@ enum WidgetSnapshotAssembler {
     }
 
     /// Swaps the bundle ids `history` left in for app names.
-    static func named(_ history: History, names: [String: String]) -> History {
+    package static func named(_ history: History, names: [String: String]) -> History {
         var history = history
         func rename(_ detail: inout WidgetSnapshot.PeriodDetail) {
             detail.topApps = detail.topApps.map { .init(name: names[$0.name] ?? $0.name, dictations: $0.dictations) }
@@ -164,7 +174,7 @@ enum WidgetSnapshotAssembler {
     }
 
     /// Terms first seen in the last seven days, newest first, each spelling once.
-    static func termsLearnedThisWeek(_ terms: LearnedTerms, now: Date) -> [String] {
+    package static func termsLearnedThisWeek(_ terms: LearnedTerms, now: Date) -> [String] {
         let weekStart = now.addingTimeInterval(-7 * 86_400)
         var seen: Set<String> = []
         return terms.projects.flatMap(\.terms)

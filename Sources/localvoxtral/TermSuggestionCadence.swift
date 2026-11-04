@@ -73,9 +73,9 @@ final class TermSuggestionCadence {
     /// runs count too: a user who just pressed it has nothing new to find
     /// fifty dictations early.
     ///
-    /// `countAtStart` is the counter when a background run read the history:
-    /// dictations saved while it waited for an answer were not read, so they
-    /// stay counted. Nil for the button, which reads everything there is.
+    /// `countAtStart` is the counter when the run started, the button's
+    /// included: dictations saved while it waited for an answer were not
+    /// read, so they stay counted. Nil only for a stop.
     func runFinished(_ outcome: SpeakerTermSuggestionModel.RunOutcome, countAtStart: Int? = nil) {
         let count = settings.termSuggestionDictationsSinceRun
         switch outcome {

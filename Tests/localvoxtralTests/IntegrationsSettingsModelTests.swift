@@ -30,6 +30,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     private func makeModel(
         fetchPluginListOutput: @escaping @Sendable () async -> String? = { nil },
         bundledPluginVersion: String? = nil,
+        bundledModVersion: String? = nil,
         pluginService: any ClaudePluginInstalling = StubListPluginService(),
         statusline: ClaudeStatuslineInstallService? = nil,
         statuslineHookCommand: (@Sendable () -> String?)? = nil,
@@ -54,6 +55,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
             },
             fetchPluginListOutput: fetchPluginListOutput,
             bundledPluginVersion: bundledPluginVersion,
+            bundledModVersion: bundledModVersion,
             statuslineService: { statusline },
             statuslineHookCommand: statuslineHookCommand ?? { nil },
             opencodeService: { opencode },
@@ -182,6 +184,66 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         // Current now: a second launch touches nothing.
         await model.updateOutdatedPluginAtLaunch()
         XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+    }
+
+    /// A listing with the plugin at `plugin` and, when given, the mod at `mod`.
+    private static func listing(plugin: String, mod: String?) -> String {
+        var entries = ["{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(plugin)\",\"scope\":\"user\",\"enabled\":true}"]
+        if let mod {
+            entries.append("{\"id\":\"localvoxtral-mod@localvoxtral\",\"version\":\"\(mod)\",\"scope\":\"user\",\"enabled\":true}")
+        }
+        return "[" + entries.joined(separator: ",") + "]"
+    }
+
+    /// LVX-98: a mod change shipped under an unchanged plugin version must
+    /// still reach an installed mod, through the mod's own update only.
+    @MainActor
+    func testLaunchUpdatesABehindModWhenThePluginIsCurrent() async {
+        let modVersion = Mutex("1.10.0")
+        let service = RecordingPluginService(onUpdateMod: { modVersion.withLock { $0 = "1.12.0" } })
+        let model = makeModel(
+            fetchPluginListOutput: { Self.listing(plugin: "1.3.0", mod: modVersion.withLock { $0 }) },
+            bundledPluginVersion: "1.3.0",
+            bundledModVersion: "1.12.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["updateMod"])
+
+        // Current now: a second launch touches nothing.
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["updateMod"])
+    }
+
+    /// A behind plugin's update already updates the mod: one update, not two.
+    @MainActor
+    func testLaunchUpdatesBothBehindPluginsInOneUpdate() async {
+        let service = RecordingPluginService()
+        let model = makeModel(
+            fetchPluginListOutput: { Self.listing(plugin: "1.2.0", mod: "1.10.0") },
+            bundledPluginVersion: "1.3.0",
+            bundledModVersion: "1.12.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+    }
+
+    /// The mod is never installed unattended, and a newer or unreadable
+    /// version is not "behind".
+    @MainActor
+    func testLaunchLeavesAMissingOrCurrentModAlone() async {
+        for (mod, bundledMod) in [(String?.none, "1.12.0"), ("1.12.0", "1.12.0"), ("1.13.0", "1.12.0"), ("1.10.0", nil)] {
+            let service = RecordingPluginService()
+            let model = makeModel(
+                fetchPluginListOutput: { Self.listing(plugin: "1.3.0", mod: mod) },
+                bundledPluginVersion: "1.3.0",
+                bundledModVersion: bundledMod,
+                pluginService: service
+            )
+            await model.updateOutdatedPluginAtLaunch()
+            XCTAssertEqual(service.calls.withLock { $0 }, [], "mod \(String(describing: mod)), bundled \(String(describing: bundledMod))")
+        }
     }
 
     @MainActor
@@ -549,10 +611,16 @@ private final class RecordingPluginService: ClaudePluginInstalling, Sendable {
     let calls = Mutex<[String]>([])
     private let fails: Bool
     private let onUpdate: @Sendable () -> Void
+    private let onUpdateMod: @Sendable () -> Void
 
-    init(fails: Bool = false, onUpdate: @escaping @Sendable () -> Void = {}) {
+    init(
+        fails: Bool = false,
+        onUpdate: @escaping @Sendable () -> Void = {},
+        onUpdateMod: @escaping @Sendable () -> Void = {}
+    ) {
         self.fails = fails
         self.onUpdate = onUpdate
+        self.onUpdateMod = onUpdateMod
     }
 
     func installPlugin() throws { calls.withLock { $0.append("install") } }
@@ -561,6 +629,11 @@ private final class RecordingPluginService: ClaudePluginInstalling, Sendable {
         calls.withLock { $0.append("update") }
         if fails { throw Failure() }
         onUpdate()
+    }
+    func updateInstalledMod() throws {
+        calls.withLock { $0.append("updateMod") }
+        if fails { throw Failure() }
+        onUpdateMod()
     }
     func uninstallPlugin() throws { calls.withLock { $0.append("uninstall") } }
 }

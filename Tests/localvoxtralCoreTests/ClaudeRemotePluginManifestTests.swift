@@ -1278,7 +1278,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// repositories for it. `$CLAUDE_CODE_HOST_SESSION_ID` is sent only from a
     /// process tree the test runner is not, and has tests of its own (#657).
     private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
-        [.hookParentPID, .sshConnection, .project, .repository, .branch, .desktopSessionID]
+        [.hookParentPID, .sshConnection, .project, .repository, .branch, .desktopSessionID, .t3ThreadID]
 
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
@@ -1687,7 +1687,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// daemon. With `nested`, the hook's Claude is a `claude -p` started from
     /// a shell inside the session instead: daemon → claude → sh → claude.
     private func desktopTreeLauncher(
-        nested: Bool, event: String, symlinkedHome: Bool = false
+        nested: Bool, event: String, symlinkedHome: Bool = false,
+        daemonPath: String = ".claude/remote/srv/0123abcd/server",
+        sessionVariable: (name: String, value: String)? = nil
     ) throws -> (
         launcher: ShimLauncher, environment: [String: String], root: URL
     ) {
@@ -1695,13 +1697,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("desktop-tree-\(UUID().uuidString)")
         let home = root.appendingPathComponent("home")
-        let daemonDirectory = home.appendingPathComponent(".claude/remote/srv/0123abcd")
+        let daemon = home.appendingPathComponent(daemonPath)
+        let daemonDirectory = daemon.deletingLastPathComponent()
         let binDirectory = root.appendingPathComponent("bin")
         for directory in [daemonDirectory, binDirectory] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         let shell = URL(fileURLWithPath: "/bin/sh").resolvingSymlinksInPath()
-        let daemon = daemonDirectory.appendingPathComponent("server")
         let claude = binDirectory.appendingPathComponent("claude")
         try FileManager.default.copyItem(at: shell, to: daemon)
         try FileManager.default.copyItem(at: shell, to: claude)
@@ -1718,7 +1720,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let sessionBody = nested
             ? #"/bin/sh -c '"$LVX_FAKE_CLAUDE" -c "$LVX_CLAUDE_BODY"; :'; :"#
             : claudeBody
-        let environment = [
+        var environment = [
             "HOME": homeSeenByShim.path,
             "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
             "LVX_SHIM": shimURL.path,
@@ -1728,6 +1730,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "LVX_CLAUDE_BODY": claudeBody,
             "LVX_SESSION_BODY": sessionBody,
         ]
+        if let sessionVariable {
+            environment.removeValue(forKey: "CLAUDE_CODE_HOST_SESSION_ID")
+            environment[sessionVariable.name] = sessionVariable.value
+        }
         let launcher = ShimLauncher(
             executable: daemon,
             arguments: ["-c", #""$LVX_FAKE_CLAUDE" -c "$LVX_SESSION_BODY"; :"#]
@@ -1736,10 +1742,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     private func desktopHeaders(
-        nested: Bool, symlinkedHome: Bool = false
+        nested: Bool, symlinkedHome: Bool = false,
+        daemonPath: String = ".claude/remote/srv/0123abcd/server",
+        sessionVariable: (name: String, value: String)? = nil
     ) throws -> ClaudeRemoteSessionEnvironment? {
         let tree = try desktopTreeLauncher(
-            nested: nested, event: "SessionStart", symlinkedHome: symlinkedHome
+            nested: nested, event: "SessionStart", symlinkedHome: symlinkedHome,
+            daemonPath: daemonPath, sessionVariable: sessionVariable
         )
         defer { try? FileManager.default.removeItem(at: tree.root) }
         let run = try runShimCapturingHeaders(
@@ -1761,6 +1770,40 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             try desktopHeaders(nested: false, symlinkedHome: true)?.desktopSessionID, desktopID,
             "a symlinked home must not lose the id"
         )
+    }
+
+    // MARK: T3 Code thread id (LVX-55)
+    //
+    // T3 Code runs each thread's Claude as a direct child of its server,
+    // `~/.t3/runtime/versions/<version>/t3` (measured on Linux, 2026-11-04),
+    // and every process under it inherits T3CODE_THREAD_ID. Same tree as the
+    // Desktop tests, with T3's server at the top.
+
+    private let t3ThreadID = "1ee24371-ab04-46f6-9d0e-4a845f8ee58f"
+    private let t3ServerPath = ".t3/runtime/versions/0.1.7-nightly.20261104.4151/t3"
+
+    func testTheT3ThreadItselfSendsItsThreadID() throws {
+        let headers = try desktopHeaders(
+            nested: false, daemonPath: t3ServerPath, sessionVariable: ("T3CODE_THREAD_ID", t3ThreadID)
+        )
+        XCTAssertEqual(headers?.t3ThreadID, t3ThreadID)
+        XCTAssertNil(headers?.desktopSessionID)
+        let linked = try desktopHeaders(
+            nested: false, symlinkedHome: true, daemonPath: t3ServerPath,
+            sessionVariable: ("T3CODE_THREAD_ID", t3ThreadID)
+        )
+        XCTAssertEqual(linked?.t3ThreadID, t3ThreadID, "a symlinked home must not lose the id")
+    }
+
+    /// A `claude -p` started inside the thread inherits its id and must not
+    /// claim the thread; nor does a Claude under Desktop's daemon.
+    func testOnlyAClaudeUnderT3sServerSendsTheThreadID() throws {
+        let child = try desktopHeaders(
+            nested: true, daemonPath: t3ServerPath, sessionVariable: ("T3CODE_THREAD_ID", t3ThreadID)
+        )
+        XCTAssertNil(child?.t3ThreadID)
+        let underDesktop = try desktopHeaders(nested: false, sessionVariable: ("T3CODE_THREAD_ID", t3ThreadID))
+        XCTAssertNil(underDesktop?.t3ThreadID)
     }
 
     /// A `claude -p` started from a Desktop session inherits the session's

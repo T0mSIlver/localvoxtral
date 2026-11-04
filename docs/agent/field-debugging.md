@@ -136,7 +136,8 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   its own flag: `--probe-surface --desktop` probes the session focused inside
   the running Claude Desktop, with the Desktop arm's Accessibility read wired
   in (it is withheld otherwise, because it switches Electron's accessibility
-  tree on).
+  tree on). `--probe-surface --t3` does the same for the thread focused in
+  T3 Code (LVX-55).
 
   Two limits to read the output with. **The registry is the app's saved
   copy**: live session records live in the running app, built from hook

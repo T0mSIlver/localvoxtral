@@ -143,7 +143,7 @@ final class AgentProjectActivityTests: XCTestCase {
     func testWorkListsTheProjectFor30DaysThenItGoes() {
         var learned = LearnedTerms()
         XCTAssertTrue(learned.recordAgentActivity(project: toklen, remote: remote, at: now, now: now))
-        XCTAssertEqual(learned.listedProjects(now: now).map(\.key), [remote.key])
+        XCTAssertEqual(ListedProjects.projects(from: learned, now: now).map(\.keys), [[toklen.key, remote.key]])
 
         let later = now.addingTimeInterval(31 * 86_400)
         learned.prune(now: later)
@@ -159,7 +159,7 @@ final class AgentProjectActivityTests: XCTestCase {
 
         let later = now.addingTimeInterval(31 * 86_400)
         learned.prune(now: later)
-        XCTAssertEqual(learned.listedProjects(now: later).map(\.key), [remote.key])
+        XCTAssertEqual(ListedProjects.projects(from: learned, now: later).map(\.keys), [[toklen.key, remote.key]])
     }
 
     func testNewerWorkMovesTheProjectFirstWithoutRelinking() {
