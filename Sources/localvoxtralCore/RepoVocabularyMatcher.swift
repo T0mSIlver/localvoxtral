@@ -452,9 +452,12 @@ package enum RepoVocabularyMatcher {
     /// therefore tied distance-one fuzzy hits and must all abstain. Only when
     /// those tiers leave NOTHING, try one broader aligned match (which applies
     /// its own score margin) and otherwise abstain.
+    /// `exactOnly` terms pre-apply on an exact span but are never
+    /// nominated, so they spend none of the nomination cap (LVX-92).
     package static func groundedCandidates(
         transcript: String,
-        vocabulary: RepoVocabulary
+        vocabulary: RepoVocabulary,
+        exactOnly: Set<String> = []
     ) -> GroundingOutcome {
         let hits = rankedHits(transcript: transcript, vocabulary: vocabulary)
         // A lone word that merely normalizes to a term is not evidence the
@@ -590,7 +593,8 @@ package enum RepoVocabularyMatcher {
         let offerLimit = nominationCap(forTranscript: transcript)
         var verificationCandidates: [ReplacementEntry] = []
         var seenVerification = Set<VerificationKey>()
-        for entry in demoted + phoneticVerification + alignedVerification {
+        for entry in demoted + phoneticVerification + alignedVerification
+        where !exactOnly.contains(entry.replaceWith) {
             for heard in entry.matches where !addsUnspokenExtension(
                 term: entry.replaceWith, heard: heard, transcript: transcript
             ) {
