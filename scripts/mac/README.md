@@ -607,6 +607,9 @@ fiddlier and breaks when the log file is rotated/recreated.)
 ./scripts/remote-build.sh disk        # df + per-work-dir du and last-used ages
 ./scripts/remote-build.sh gc          # reclaim stale work dirs now (also runs
                                       # automatically after every build/test)
+./scripts/remote-build.sh gc --idle 6 # reclaim work dirs idle 6 h or more
+./scripts/remote-build.sh remove      # delete this worktree's work dir now; a dir
+                                      # in use and its EvalRecordings are kept
 ssh <gate-destination> 'ensure speechd' # warm the on-demand STT server
 ssh <gate-destination> 'reap work/localvoxtral-<id>' # scoped stale-test cleanup
 ssh <gate-destination> 'echo pwned'   # must print "denied command"
