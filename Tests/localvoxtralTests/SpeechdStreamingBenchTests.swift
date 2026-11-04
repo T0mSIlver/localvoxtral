@@ -29,6 +29,14 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         /// helper's synthetic noise, which decodes to no words and so cannot show
         /// when text appears (#486).
         let audio: String?
+        /// A checkpoint directory, relative to the repo root, instead of a catalog
+        /// repo: benches a model before it is published.
+        let modelDirectory: String?
+        /// `--transcription-delay-ms` for the helper. Absent means its default.
+        let transcriptionDelayMs: Int?
+        /// An agent-dictation manifest, relative to the repo root: transcribe its
+        /// recordings (`--transcribe`) instead of running the timing bench.
+        let transcribeManifest: String?
     }
 
     /// About twenty seconds of plain dictation. The bench loops it to fill the run.
@@ -68,16 +76,29 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             return
         }
 
-        let model = config.model.flatMap(SpeechModelCatalog.option(forRepoID:))
-            ?? SpeechModelCatalog.defaultOption
-        if let requested = config.model, requested != model.repoID {
-            XCTFail("\(requested) is not in SpeechModelCatalog; nothing to benchmark")
+        var arguments: [String]
+        if let directory = config.modelDirectory {
+            print("BENCH model_dir=\(directory)")
+            arguments = ["--model-dir", repoRoot.appendingPathComponent(directory).path]
+        } else {
+            let model = config.model.flatMap(SpeechModelCatalog.option(forRepoID:))
+                ?? SpeechModelCatalog.defaultOption
+            if let requested = config.model, requested != model.repoID {
+                XCTFail("\(requested) is not in SpeechModelCatalog; nothing to benchmark")
+                return
+            }
+            print("BENCH model=\(model.repoID)")
+            arguments = ["--model", model.repoID, "--model-revision", model.revision]
+        }
+        if let delay = config.transcriptionDelayMs {
+            arguments.append(contentsOf: ["--transcription-delay-ms", "\(delay)"])
+        }
+        if let manifest = config.transcribeManifest {
+            try runTranscription(binary: binary, arguments: arguments
+                + ["--transcribe", repoRoot.appendingPathComponent(manifest).path])
             return
         }
-        print("BENCH model=\(model.repoID)")
-        var arguments = [
-            "--model", model.repoID,
-            "--model-revision", model.revision,
+        arguments += [
             "--bench",
             "--seconds", "\(config.seconds)",
             "--cadence-ms", "\(config.cadenceMilliseconds)",
@@ -90,7 +111,8 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         if let spokenWAV {
             arguments.append(contentsOf: ["--wav", spokenWAV.path])
         } else if let wavPath = config.wavPath, !wavPath.isEmpty {
-            arguments.append(contentsOf: ["--wav", wavPath])
+            let path = wavPath.hasPrefix("/") ? wavPath : repoRoot.appendingPathComponent(wavPath).path
+            arguments.append(contentsOf: ["--wav", path])
         }
         if let cacheLimitMB = config.cacheLimitMB {
             arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
@@ -159,6 +181,32 @@ final class SpeechdStreamingBenchTests: XCTestCase {
                 "spoken audio decoded to no text; the timing columns measured nothing"
             )
         }
+    }
+
+    /// `--transcribe`: relays the helper's TRANSCRIBE lines and checks it finished.
+    private func runTranscription(binary: URL, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = arguments
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        let stdoutLog = BenchLineLog()
+        let stderrLog = BenchLineLog()
+        let stdoutReader = PipeLineReader(fileHandle: stdout.fileHandleForReading, onLine: stdoutLog.append)
+        let stderrReader = PipeLineReader(fileHandle: stderr.fileHandleForReading, onLine: stderrLog.append)
+        try process.run()
+        stdoutReader.start()
+        stderrReader.start()
+        process.waitUntilExit()
+        stdoutReader.waitUntilFinished()
+        stderrReader.waitUntilFinished()
+        let lines = stdoutLog.snapshot()
+        for line in lines { print(line) }
+        for line in stderrLog.snapshot() { print("speechd transcribe stderr: \(line)") }
+        XCTAssertEqual(process.terminationStatus, 0, "speechd --transcribe failed")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("TRANSCRIBE done ") }, "missing TRANSCRIBE done")
     }
 
     private static func makeSpokenWAV(_ phrase: String) throws -> URL {

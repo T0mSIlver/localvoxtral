@@ -1,103 +1,104 @@
 {
-  "pins": [
+  "originHash" : "cfd7e9c85c9bbebabb8a70d1864afeb9cf19ca18cd2d68ed65e6d436986d68a3",
+  "pins" : [
     {
-      "identity": "eventsource",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/mattt/EventSource.git",
-      "state": {
-        "revision": "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
-        "version": "1.5.1"
+      "identity" : "eventsource",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mattt/EventSource.git",
+      "state" : {
+        "revision" : "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
+        "version" : "1.5.1"
       }
     },
     {
-      "identity": "mlx-audio-swift",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/Blaizzy/mlx-audio-swift.git",
-      "state": {
-        "revision": "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+      "identity" : "mlx-audio-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/T0mSIlver/mlx-audio-swift.git",
+      "state" : {
+        "revision" : "f1971902c8893af4a55e0e4cf5b4c68ff6f2ee21"
       }
     },
     {
-      "identity": "mlx-swift",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/ml-explore/mlx-swift.git",
-      "state": {
-        "revision": "19601207e9a0de51e03ee6ec0c3c5f3784275075",
-        "version": "0.32.3"
+      "identity" : "mlx-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ml-explore/mlx-swift.git",
+      "state" : {
+        "revision" : "19601207e9a0de51e03ee6ec0c3c5f3784275075",
+        "version" : "0.32.3"
       }
     },
     {
-      "identity": "swift-asn1",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/apple/swift-asn1.git",
-      "state": {
-        "revision": "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2",
-        "version": "1.7.3"
+      "identity" : "swift-asn1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-asn1.git",
+      "state" : {
+        "revision" : "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2",
+        "version" : "1.7.3"
       }
     },
     {
-      "identity": "swift-collections",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/apple/swift-collections.git",
-      "state": {
-        "revision": "98ef3c98609a1e31b7e157b5b619579001a789d6",
-        "version": "1.7.1"
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "revision" : "98ef3c98609a1e31b7e157b5b619579001a789d6",
+        "version" : "1.7.1"
       }
     },
     {
-      "identity": "swift-crypto",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/apple/swift-crypto.git",
-      "state": {
-        "revision": "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
-        "version": "4.5.2"
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
+        "version" : "4.5.2"
       }
     },
     {
-      "identity": "swift-huggingface",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/huggingface/swift-huggingface.git",
-      "state": {
-        "revision": "0ece9a1ef443309d26a69af9897ee8ad82f43a9a",
-        "version": "0.12.0"
+      "identity" : "swift-huggingface",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-huggingface.git",
+      "state" : {
+        "revision" : "0ece9a1ef443309d26a69af9897ee8ad82f43a9a",
+        "version" : "0.12.0"
       }
     },
     {
-      "identity": "swift-jinja",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/huggingface/swift-jinja.git",
-      "state": {
-        "revision": "4588064a20f3fc093c95f2f7d3359999bf30cae5",
-        "version": "2.5.1"
+      "identity" : "swift-jinja",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-jinja.git",
+      "state" : {
+        "revision" : "4588064a20f3fc093c95f2f7d3359999bf30cae5",
+        "version" : "2.5.1"
       }
     },
     {
-      "identity": "swift-numerics",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/apple/swift-numerics",
-      "state": {
-        "revision": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
-        "version": "1.1.1"
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
       }
     },
     {
-      "identity": "swift-transformers",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/huggingface/swift-transformers.git",
-      "state": {
-        "revision": "150169bfba0889c229a2ce7494cf8949f18e6906",
-        "version": "1.1.9"
+      "identity" : "swift-transformers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-transformers.git",
+      "state" : {
+        "revision" : "150169bfba0889c229a2ce7494cf8949f18e6906",
+        "version" : "1.1.9"
       }
     },
     {
-      "identity": "yyjson",
-      "kind": "remoteSourceControl",
-      "location": "https://github.com/ibireme/yyjson.git",
-      "state": {
-        "revision": "8b4a38dc994a110abaec8a400615567bd996105f",
-        "version": "0.12.0"
+      "identity" : "yyjson",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ibireme/yyjson.git",
+      "state" : {
+        "revision" : "8b4a38dc994a110abaec8a400615567bd996105f",
+        "version" : "0.12.0"
       }
     }
   ],
-  "version": 2
+  "version" : 3
 }
