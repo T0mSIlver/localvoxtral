@@ -135,6 +135,15 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
             ClaudeSurfaceProbe.invocation(arguments: ["localvoxtral", "--probe-surface", "--desktop", "--json"]),
             .run(ClaudeSurfaceProbe.Options(json: true, desktop: true))
         )
+        XCTAssertEqual(
+            ClaudeSurfaceProbe.invocation(arguments: ["localvoxtral", "--probe-surface", "--t3"]),
+            .run(ClaudeSurfaceProbe.Options(t3: true))
+        )
+        guard case .usageError = ClaudeSurfaceProbe.invocation(
+            arguments: ["localvoxtral", "--probe-surface", "--t3", "--desktop"]
+        ) else {
+            return XCTFail("one app at a time")
+        }
     }
 
     func testUnrecognizedOptionIsAUsageErrorRatherThanASilentDefault() async {

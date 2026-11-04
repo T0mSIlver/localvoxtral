@@ -12,6 +12,7 @@ package enum ClaudeJoinGate: String, Equatable, Sendable {
     case noFrontmostTarget = "gate: no frontmost supported terminal"
     case browserWithoutSessionContext = "gate: browser target without session context"
     case desktopWithoutSessionContext = "gate: Claude Desktop target without session context"
+    case t3WithoutSessionContext = "gate: T3 Code target without session context"
 }
 
 /// How far one dictation's join got: stopped by a gate before the resolver
