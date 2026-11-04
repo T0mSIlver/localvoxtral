@@ -272,13 +272,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // step — our no-backspace insertion path would duplicate it).
                 let delta = ctx.deltas.emit(fullText: session.text)
                 if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
-                let stepMilliseconds = Double(stepTime.components.seconds) * 1_000
-                    + Double(stepTime.components.attoseconds) / 1e15
-                if let line = ctx.stepStats.record(
-                    milliseconds: stepMilliseconds, samples: batch, producedText: !delta.isEmpty
-                ) {
-                    FileHandle.standardError.write(Data((line + "\n").utf8))
-                }
+                Self.recordStep(ctx, stepTime, batch, producedText: !delta.isEmpty)
                 self.reportEarlyStopIfNeeded(session, connection, ctx)
             }
             return
@@ -294,7 +288,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
                 guard !ctx.feed.isClosed else { return }  // nobody to answer
                 let session = self.ensureSession(ctx)
-                for batch in ctx.feed.flushRemainder() { session.step(batch) }
+                for batch in ctx.feed.flushRemainder() {
+                    let textBefore = session.text
+                    let stepTime = ContinuousClock().measure { session.step(batch) }
+                    Self.recordStep(ctx, stepTime, batch, producedText: session.text != textBefore)
+                }
                 self.reportGrownSteps(ctx)
                 // The remainder can be what crosses the limit (Nemotron then drops it).
                 // Check before finish(), which ends every Voxtral stream and would
@@ -331,6 +329,19 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 break
             }
         }
+    }
+
+    /// One step into the utterance's stats, and the slow-step line the first time one
+    /// is slow. Must be called on `inferenceQueue`.
+    private static func recordStep(
+        _ ctx: Connection, _ duration: Duration, _ samples: [Float], producedText: Bool
+    ) {
+        let milliseconds = Double(duration.components.seconds) * 1_000
+            + Double(duration.components.attoseconds) / 1e15
+        guard let line = ctx.stepStats.record(
+            milliseconds: milliseconds, samples: samples, producedText: producedText
+        ) else { return }
+        FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 
     /// The utterance's step summary, once, for the helper log. Must be called on
