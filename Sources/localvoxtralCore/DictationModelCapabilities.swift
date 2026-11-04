@@ -22,7 +22,7 @@ package struct DictationModelCapabilities: Equatable, Sendable {
         self.termBias = termBias
     }
 
-    /// A model that takes audio and nothing else: every local model today,
+    /// A model that takes audio and nothing else: Voxtral locally,
     /// and an External URL server, whose model the app can't vouch for.
     package static let audioOnly = DictationModelCapabilities(termBias: .none)
 

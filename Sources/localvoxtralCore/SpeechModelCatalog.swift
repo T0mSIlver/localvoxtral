@@ -20,8 +20,9 @@ package struct SpeechModelOption: Equatable, Sendable {
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
     package let sizeOnDiskGB: Double
-    /// What the model takes besides audio. Neither shipped engine biases its
-    /// decoding yet (#316, #521).
+    /// What the model takes besides audio. Voxtral's decoder has no logits hook
+    /// yet (LVX-12); Nemotron boosts the session's terms while it decodes
+    /// (LVX-2).
     package let capabilities: DictationModelCapabilities
 }
 
@@ -56,7 +57,7 @@ package enum SpeechModelCatalog {
             displayName: "Nemotron 3.5 ASR Streaming 0.6B (8-bit)",
             engine: .nemotron,
             sizeOnDiskGB: 0.8,
-            capabilities: .audioOnly
+            capabilities: DictationModelCapabilities(termBias: .sessionList(maxTerms: 100))
         ),
     ]
 

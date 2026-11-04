@@ -39,14 +39,16 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
         stepMilliseconds: Int = 80,
-        utteranceLimit: UtteranceLimit = UtteranceLimit()
+        utteranceLimit: UtteranceLimit = UtteranceLimit(),
+        termBoost: TermBoostSettings? = nil
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let engine = try await SpeechModelLoader.load(
             modelID: modelID,
             modelRevision: modelRevision,
             modelDirectory: modelDirectory,
-            engine: engine
+            engine: engine,
+            termBoost: termBoost
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -301,6 +303,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // read as the model stopping early.
                 self.reportEarlyStopIfNeeded(session, connection, ctx)
                 session.finish()
+                if !ctx.terms.terms.isEmpty, let boosted = session.boostedTokenCount {
+                    FileHandle.standardError.write(Data(
+                        ("speechd: utterance done: \(session.decodedTokenCount) tokens, \(boosted) boosted, "
+                            + "\(ctx.terms.terms.count) terms\n").utf8))
+                }
                 let tail = ctx.deltas.emit(fullText: session.text)
                 if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }
                 // Use the append-only emitted text (== sum of every delta), so the final
@@ -400,7 +407,8 @@ enum SpeechModelLoader {
         modelID: String?,
         modelRevision: String?,
         modelDirectory: String?,
-        engine: SpeechASREngineKind?
+        engine: SpeechASREngineKind?,
+        termBoost: TermBoostSettings? = nil
     ) async throws -> SpeechASREngine {
         switch SpeechASREngineKind.resolve(
             named: engine, modelID: modelID, modelDirectory: modelDirectory
@@ -420,7 +428,7 @@ enum SpeechModelLoader {
                 modelDirectory: modelDirectory,
                 fromDirectory: { try NemotronASRModel.fromDirectory($0) },
                 fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
-            ))
+            ), termBoost: termBoost)
         }
     }
 

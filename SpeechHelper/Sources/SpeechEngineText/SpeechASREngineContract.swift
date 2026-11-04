@@ -28,6 +28,9 @@ public protocol SpeechASRStreamingSession: AnyObject, Sendable {
     var text: String { get }
     /// Tokens decoded so far, for the helper's log line only.
     var decodedTokenCount: Int { get }
+    /// Tokens the engine chose because of the session's terms, or nil when the
+    /// engine does not bias toward terms. For the helper's log line only.
+    var boostedTokenCount: Int? { get }
     /// Why the session stopped decoding before the client's final commit, or
     /// nil while it is still decoding. Each engine classifies its own stop:
     /// Voxtral's decoder counts tokens, Nemotron's RNN-T never ends a stream
@@ -44,8 +47,7 @@ public protocol SpeechASREngine: Sendable {
     ///   - utteranceLimit: how long one session may run before it stops decoding
     ///     and reports `UtteranceStop.lengthLimit` (#314).
     ///   - terms: the connection's `context_bias` list. An engine that can bias
-    ///     its decoding toward them does; neither shipped engine can yet
-    ///     (LVX-2, LVX-12), so both ignore it.
+    ///     its decoding toward them does (Nemotron); Voxtral ignores it (LVX-12).
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,

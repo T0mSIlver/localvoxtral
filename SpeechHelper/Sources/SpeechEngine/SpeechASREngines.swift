@@ -60,6 +60,9 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
     var decodedTokenCount: Int { session.tokens.count }
 
+    /// Voxtral's decoder has no logits hook yet, so it ignores the terms.
+    var boostedTokenCount: Int? { nil }
+
     var utteranceStop: UtteranceStop? {
         // `session.tokens` hands out a copy of the whole array — never touch it
         // while the session is still decoding.
@@ -76,25 +79,34 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
 final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
     private let model: NemotronASRModel
+    private let termBoost: NemotronASRTermBoostConfig
 
-    init(model: NemotronASRModel) {
+    init(model: NemotronASRModel, termBoost: TermBoostSettings?) {
         self.model = model
+        self.termBoost = termBoost.map {
+            NemotronASRTermBoostConfig(
+                firstTokenBoost: $0.firstTokenBoost,
+                continuationBoost: $0.continuationBoost,
+                margin: $0.margin
+            )
+        } ?? NemotronASRTermBoostConfig()
     }
 
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms _: SessionTerms
+        terms: SessionTerms
     ) -> SpeechASRStreamingSession {
-        NemotronASRSession(
-            session: model.makeStreamSession(
-                language: nil,
-                chunkMs: NemotronChunkLadder.chunkMilliseconds(
-                    forTranscriptionDelayMs: transcriptionDelayMs
-                )
-            ),
-            utteranceLimit: utteranceLimit
+        let session = model.makeStreamSession(
+            language: nil,
+            chunkMs: NemotronChunkLadder.chunkMilliseconds(
+                forTranscriptionDelayMs: transcriptionDelayMs
+            )
         )
+        if !terms.terms.isEmpty {
+            session.setBoostTerms(terms.terms, config: termBoost)
+        }
+        return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
     }
 }
 
@@ -124,6 +136,8 @@ final class NemotronASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     var text: String { session.text }
 
     var decodedTokenCount: Int { session.tokens.count }
+
+    var boostedTokenCount: Int? { session.boostedTokenCount }
 
     var utteranceStop: UtteranceStop? { cap.stop }
 
