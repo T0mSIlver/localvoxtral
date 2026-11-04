@@ -58,6 +58,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// frames queue behind it until it has emptied the queue (#1058).
         var isReplayingHandshakeQueue = false
         var pendingModelName = ""
+        /// The configuration's `contextBias`, sent with `pendingModelName` in
+        /// the socket's one `session.update`.
+        var pendingContextBias: [String] = []
         /// The open socket's ledger line: who serves it, the model it asked
         /// for, and the PCM bytes handed to it. Nil backend records nothing.
         var usageBackend: UsageEntry.Backend?
@@ -225,6 +228,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.base.isUserInitiatedDisconnect = false
         s.pendingMessages.removeAll(keepingCapacity: true)
         s.pendingModelName = modelName
+        s.pendingContextBias = configuration.contextBias
         s.hasReceivedSessionCreated = false
         s.hasBypassedSessionCreatedGate = false
         s.hasSentSessionUpdate = false
@@ -826,13 +830,24 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     private func openSendGateLocked(_ s: inout State) {
         let modelName = s.pendingModelName
         if !s.hasSentSessionUpdate, !modelName.isEmpty,
-           let data = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "model": modelName]),
-           let text = String(data: data, encoding: .utf8) {
+           let text = Self.sessionUpdateFrame(model: modelName, contextBias: s.pendingContextBias) {
             s.hasSentSessionUpdate = true
             s.pendingMessages.insert(PendingFrame(text: text), at: 0)
             debugLog("queue event type=session.update")
         }
         s.isReplayingHandshakeQueue = true
+    }
+
+    /// The socket's one `session.update`. The term list rides it as
+    /// `context_bias`, the field Mistral's realtime API reads, only when the
+    /// model takes terms: every other server gets the frame it always did.
+    package static func sessionUpdateFrame(model: String, contextBias: [String]) -> String? {
+        var frame: [String: Any] = ["type": "session.update", "model": model]
+        if !contextBias.isEmpty { frame["context_bias"] = contextBias }
+        guard let data = try? JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Sends what queued before the gate opened, then whatever queued while
@@ -1142,6 +1157,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
         s.pendingModelName = ""
+        s.pendingContextBias = []
         s.rollover?.watchdog?.cancel()
         s.rollover = nil
         s.socketAudioBytes = 0
@@ -1252,16 +1268,19 @@ extension RealtimeAPIWebSocketClient {
         hasReceivedSessionCreated: Bool = false,
         usageBackend: UsageEntry.Backend? = nil,
         usageModel: String = "",
-        modelName: String = ""
+        modelName: String = "",
+        contextBias: [String] = []
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
             s.pendingModelName = modelName
+            s.pendingContextBias = contextBias
             s.configuration = RealtimeSessionConfiguration(
                 endpoint: task.originalRequest?.url ?? URL(string: "ws://127.0.0.1/v1/realtime")!,
                 apiKey: "",
                 model: modelName,
-                usageBackend: usageBackend
+                usageBackend: usageBackend,
+                contextBias: contextBias
             )
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
