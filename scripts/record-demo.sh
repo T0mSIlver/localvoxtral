@@ -21,13 +21,11 @@ set -euo pipefail
 #   3 needsyou  payments raises a permission request (STAGED: the plugin's
 #               Notification hook event, sent by this script with payments'
 #               real session id, pid and pane), then the real app: banner and
-#               sound, orange dot, a tap, Tab Tab to payments, "yes, go ahead,
-#               send it" lands in payments, which comes forward
-#   4 goto      "go to docs" brings the docs pane forward
-#   5 learned   hold, dictate "Qwen" (heard "Quen"), fix it by hand and submit:
+#               sound, orange dot
+#   4 learned   hold, dictate "Qwen" (heard "Quen"), fix it by hand and submit:
 #               the "Learned" toast; then Settings > Projects with the terms
 #               the agents proposed during setup (`localvoxtral terms propose`)
-#   6 history   Settings > History, then Insights, on twelve weeks of
+#   5 history   Settings > History, then Insights, on twelve weeks of
 #               dictations seeded into the demo's own data folder
 #
 # Each beat checks what it needs (the session joined, the banner, the pane
@@ -106,8 +104,6 @@ DEMO_MIC_UID="${DEMO_MIC_UID:-}"
 # the hand fix teaches.
 LINE_LIVE="Add an item potency key to the refund webhook handler, and check with me before you change the database. Send it."
 LINE_OVERLAY="In the README, show how to call use auth dot t s, and add the npm test dash dash coverage command."
-LINE_ANSWER="Yes, go ahead. Send it."
-LINE_GOTO="Go to docs."
 LINE_LEARN="Benchmark the docs examples against Quen three."
 LEARN_TERM="Qwen"
 
@@ -162,9 +158,8 @@ exit(ok ? 0 : 1)
 SWIFT
 
 # Posts flagsChanged events for Right Command (keycode 54) at the HID tap, the
-# real tap/hold gesture path. `key <code> [shift]` posts one key press, for
-# Tab while an overlay runs (the app takes it as a Carbon hotkey); `mouse x y`
-# moves the pointer.
+# real tap/hold gesture path. `key <code> [shift]` posts one key press;
+# `mouse x y` moves the pointer.
 cat > "$HELPER_DIR/gesture.swift" <<'SWIFT'
 import CoreGraphics
 import Foundation
@@ -278,7 +273,6 @@ compile_helper ax-probe "$SCRIPT_DIR/lib/ax-probe.swift"
 tap_hotkey()     { "$HELPER_DIR/gesture" tap; }
 press_hotkey()   { "$HELPER_DIR/gesture" down; }
 release_hotkey() { "$HELPER_DIR/gesture" up; }
-press_tab()      { "$HELPER_DIR/gesture" key 48; }
 ax_probe()       { "$HELPER_DIR/ax-probe" "$@"; }
 
 # --- cleanup ----------------------------------------------------------------------
@@ -441,7 +435,7 @@ demo_default settings.live_spoken_send_enabled -bool true
 demo_default settings.overlay_spoken_send_enabled -bool true
 # The script stops each dictation itself, before the spoken-send auto stop.
 demo_default settings.spoken_stop_wait_ms -int 3000
-# Needs-you cues, and waiting sessions as Tab destinations.
+# Needs-you cues.
 demo_default settings.agent_attention_enabled -bool true
 demo_default settings.agent_attention_mark -string dot
 demo_default settings.llm_polishing_enabled -bool true
@@ -952,7 +946,7 @@ herdr_cli pane send-keys "$DOCS_PANE" Enter >/dev/null
 sleep 2
 
 # Beat 3 — needs you: payments asks for permission (staged hook event), the
-# banner and dot, a tap, Tab Tab to payments, the spoken answer.
+# banner and dot.
 tl_seg needsyou 1
 BEAT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 PAYMENTS_SESSION_ID="$(claude_session_id "$PAYMENTS_DIR")"
@@ -978,34 +972,12 @@ if ! { [[ -n "$NC_PID" ]] && ax_probe "$NC_PID" --find "needs you" --timeout 8 >
   grep -q 'agent-attention' <<<"$NC_LOG" || beat_failed "needsyou: no \"needs you\" banner."
 fi
 sleep 3
-queue_line "@3 $LINE_ANSWER" # the answer comes after the two Tabs
-tap_hotkey
-sleep 1
-press_tab
-sleep 0.7
-press_tab
-sleep 1.3
-speak "$LINE_ANSWER"
-tap_hotkey
 tl_seg needsyou 4
-wait_pane_focused "$PAYMENTS_PANE" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: payments never came forward."
-wait_pane_text "$PAYMENTS_PANE" "go ahead" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: the answer never reached payments."
-log_since "$BEAT_LOG_START" | grep -qE "spoken send: (submit handed|Return pressed)|mod: spoken send submitted" || beat_failed "needsyou: \"send it\" did not submit the answer."
+sleep 4
 tl_seg needsyou 1
 sleep 3
 
-# Beat 4 — go to docs.
-tl_seg goto 1
-queue_line "$LINE_GOTO"
-tap_hotkey
-speak "$LINE_GOTO"
-tap_hotkey
-wait_pane_focused "$DOCS_PANE" 15 || beat_failed "goto: the docs pane never came forward."
-sleep 1
-assert_frontmost Ghostty "after go to docs"
-sleep 2
-
-# Beat 5 — learned: dictate a name ASR mishears, fix it by hand, submit; the
+# Beat 4 — learned: dictate a name ASR mishears, fix it by hand, submit; the
 # app learns it from the difference. Then the Projects pane.
 tl_seg learned 1
 herdr_cli pane send-keys "$DOCS_PANE" ctrl+c >/dev/null # the composer starts empty
@@ -1087,8 +1059,7 @@ tsv, out, offset, stop = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys
 beats = [
     ("live", "Hold to talk: it streams into Claude Code. “Send it” submits"),
     ("overlay", "Tap to talk: the polish writes the session’s code words"),
-    ("needsyou", "An agent needs you: Tab to it and answer by voice"),
-    ("goto", "“Go to docs” brings that session forward"),
+    ("needsyou", "An agent needs you: a banner, a sound and a dot on the menu bar"),
     ("learned", "Fix a word once and it is learned, with the agents’ terms"),
     ("history", "History and Insights: time saved, terms it learned"),
 ]

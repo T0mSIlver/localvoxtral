@@ -255,22 +255,18 @@ package enum AgentAttentionText {
     /// (`SessionShownNames`), with no git-root walk: the queue is fed on
     /// every hook.
     ///
-    /// - Parameters:
-    ///   - title: the harness's title for a session.
-    ///   - nickname: what the user called a session.
+    /// - Parameter title: the harness's title for a session.
     package static func name(
         of session: ClaudeSessionSnapshot,
         among live: [ClaudeSessionSnapshot],
-        title: (ClaudeSessionSnapshot) -> String? = { _ in nil },
-        nickname: (String) -> String? = { _ in nil }
+        title: (ClaudeSessionSnapshot) -> String? = { _ in nil }
     ) -> String {
         var sessions = live.filter { $0.sessionID != session.sessionID }
         sessions.append(session)
         let candidates = sessions.map {
             SessionNameCandidate(
                 snapshot: $0,
-                names: SessionDefaultNames.of($0, repositoryRoot: .unknown, title: title($0)),
-                nickname: nickname($0.sessionID)
+                names: SessionDefaultNames.of($0, repositoryRoot: .unknown, title: title($0))
             )
         }
         guard let name = SessionShownNames.of(candidates)[session.sessionID] else { return unnamed }

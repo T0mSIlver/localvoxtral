@@ -87,7 +87,6 @@ final class DictationViewModel {
                 || message == HotKeyManager.livePasteUnavailableErrorMessage
                 || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
                 || message == HotKeyManager.copyLastDictationUnavailableErrorMessage
-                || message == HotKeyManager.answerAgentUnavailableErrorMessage
             {
                 return .hotKeyShortcutUnavailable
             }
@@ -387,9 +386,6 @@ final class DictationViewModel {
         var bundleIdentifier: (pid_t) -> String?
         /// The app's name, for the overlay's focused app entry (#840).
         var applicationName: (pid_t) -> String?
-        /// Brings an app back to the front: ⇧Tab to the focused app after a
-        /// session pane came forward. False when it is gone.
-        var activateApp: @MainActor (pid_t) -> Bool
         /// The center the terminate observer registers on. Nil is the
         /// default center, registered only when runtime services run; a
         /// private center is registered on regardless, so a test posts
@@ -446,9 +442,6 @@ final class DictationViewModel {
             applicationName: @escaping (pid_t) -> String? = {
                 NSRunningApplication(processIdentifier: $0)?.localizedName
             },
-            activateApp: @escaping @MainActor (pid_t) -> Bool = {
-                NSRunningApplication(processIdentifier: $0)?.activate(options: []) ?? false
-            },
             lifecycleNotificationCenter: NotificationCenter? = nil,
             workspaceNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
@@ -468,7 +461,6 @@ final class DictationViewModel {
             self.pasteboardWriter = pasteboardWriter
             self.bundleIdentifier = bundleIdentifier
             self.applicationName = applicationName
-            self.activateApp = activateApp
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
             self.workspaceNotificationCenter = workspaceNotificationCenter
             self.reconnectSleep = reconnectSleep
@@ -725,12 +717,6 @@ final class DictationViewModel {
         }
 
         session.escapeCancelHandler.onCancel = { [weak session] in session?.cancelDictation() }
-        session.destinationKeyHandler.onMove = { [weak session] forward in
-            session?.moveDestination(forward: forward)
-        }
-        overlayPanel?.onDestinationClick = { [weak session] destination in
-            session?.clickDestination(destination)
-        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -899,7 +885,6 @@ final class DictationViewModel {
         session.overlayBufferCoordinator.reset()
         audio.healthMonitor.cancelTasks()
         session.escapeCancelHandler.stop()
-        session.destinationKeyHandler.stop()
         audio.audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
             audio.stopMicrophoneIfInitialized()

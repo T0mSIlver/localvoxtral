@@ -603,9 +603,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
-    /// A herdr pane (#1012): the window found with the join's process-table
-    /// probes, herdr reached over its local socket or the join's `ssh -L`
-    /// forward, the window raised with the terminal focuser's tty path.
+    /// A herdr pane (#1012), read back: the window found with the join's
+    /// process-table probes, herdr reached over its local socket or the
+    /// join's `ssh -L` forward.
     private func liveHerdrFocuser(
         terminal: TerminalSessionPaneFocuser,
         herdrClient: HerdrSocketClient,
@@ -643,20 +643,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return HerdrFocusSocket(path: forward.localSocketPath, release: { forward.close() })
                 }
             },
-            // A write waits longer than a read, like the pane route's.
-            focuser: HerdrSocketClient(timeout: 2),
             panes: herdrClient,
-            raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
             focusedTTY: { await terminal.frontmostTTY(bundleID: $0) },
             paneSessionID: { [claudeSessionRegistry] in claudeSessionRegistry.sessionID(shownIn: $0) }
         )
     }
 
-    /// Claude Desktop's session link, opened in Desktop itself (another app
-    /// may also claim `claude://`), read back through the join's resolver.
+    /// Claude Desktop's focused session view, read back through the join's
+    /// resolver.
     private static func liveClaudeDesktopFocuser(
-        resolver: ClaudeSessionJoinResolver,
-        sleep: @escaping @Sendable (Duration) async -> Void
+        resolver: ClaudeSessionJoinResolver
     ) -> ClaudeDesktopSessionPaneFocuser {
         let runningDesktop = {
             NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeDesktopAllowlist.bundleID).first
@@ -664,21 +660,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ClaudeDesktopSessionPaneFocuser(
             desktopPID: { runningDesktop()?.processIdentifier },
             frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
-            open: { link in
-                guard let appURL = runningDesktop()?.bundleURL else { return false }
-                NSWorkspace.shared.open([link], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-                    if error != nil {
-                        Log.claudeContext.error("go to session: Claude Desktop refused its session link")
-                    }
-                }
-                return true
-            },
             shownSessionID: { pid in
                 await resolver.sessionShown(
                     target: TerminalScreenTarget(pid: pid, bundleID: ClaudeDesktopAllowlist.bundleID)
                 )
-            },
-            sleep: sleep
+            }
         )
     }
 
@@ -691,7 +677,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ttyReader: AppleScriptTerminalTTYReader,
         desktopSessionReader: AXClaudeDesktopSessionURLReader,
         herdrClient: HerdrSocketClient,
-        nicknames: SessionNicknameStore,
         desktopTitles: ClaudeDesktopSessionTitles
     ) {
         let registry = claudeSessionRegistry
@@ -720,8 +705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AgentAttentionText.name(
                     of: session,
                     among: registry.liveSessions(),
-                    title: desktopTitles.title(of:),
-                    nickname: nicknames.nickname(for:)
+                    title: desktopTitles.title(of:)
                 )
             }
         )
@@ -812,9 +796,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
-                // Writes wait longer than reads: a write that times out after
-                // landing would be typed a second time by the fallback.
-                herdrPaneWriter: HerdrSocketClient(timeout: 2),
                 cmuxSurfaces: CmuxSocketClient(
                     password: { cmuxPasswords.password() },
                     bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
@@ -859,20 +840,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel.context.claudeSessionJoinResolver = resolver
             viewModel.context.claudeModChannels = claudeModChannels
             viewModel.session.projectTermProposer?.attachSessionChannels(claudeModChannels)
-            // "Go to <name>" (#723): the same registry and the same
-            // focused-pane reader as the join, so a pane counts as brought
-            // forward by the evidence the join trusts.
-            let nicknames = SessionNicknameStore.userDefaults(AppDefaults.shared, key: "session_navigation.nicknames")
+            // "Send it" reads the joined pane back before it presses Return,
+            // with the same registry and focused-pane reader as the join.
             let desktopTitles = ClaudeDesktopSessionTitles.live()
-            let terminalFocuser = TerminalSessionPaneFocuser.live(ttyReader: ttyReader)
+            let terminalFocuser = TerminalSessionPaneFocuser.live(
+                ttyReader: ttyReader,
+                sessionOnTTY: { [claudeSessionRegistry] tty in
+                    if case .resolved(let snapshot) = claudeSessionRegistry.resolve(tty: tty) {
+                        return snapshot.sessionID
+                    }
+                    return nil
+                }
+            )
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
-                repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: SessionPaneFocuserRouter(
                     terminal: terminalFocuser,
                     claudeDesktop: Self.liveClaudeDesktopFocuser(
-                        resolver: resolver,
-                        sleep: viewModel.session.dependencies.clock.sleep
+                        resolver: resolver
                     ),
                     herdr: liveHerdrFocuser(
                         terminal: terminalFocuser,
@@ -880,17 +865,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         canonicalizer: sshDestinationCanonicalizer
                     )
                 ),
-                sleep: viewModel.session.dependencies.clock.sleep,
-                nicknames: nicknames,
-                branch: { RepoIndexing.branch(root: $0) },
-                title: desktopTitles.title(of:),
                 ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) }
             )
             installAgentAttention(
                 ttyReader: ttyReader,
                 desktopSessionReader: desktopSessionReader,
                 herdrClient: herdrClient,
-                nicknames: nicknames,
                 desktopTitles: desktopTitles
             )
             // Correction learning compares each submitted prompt with the

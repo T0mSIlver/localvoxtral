@@ -654,9 +654,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let focuser = FakeSessionPaneFocuser()
         harness.viewModel.session.sessionNavigator = SessionNavigator(
             liveSessions: { registry.liveSessions() },
-            repositoryRoot: { _ in .unknown },
             focuser: focuser,
-            sleep: ManualSessionClock().sleep,
             ttyForegroundPIDs: { _ in [9001] }
         )
         return focuser

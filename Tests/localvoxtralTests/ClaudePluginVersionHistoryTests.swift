@@ -17,6 +17,7 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
         "localvoxtral": [
             "1.1.0": "ae24b8495881e48dd5f5b684b2c8a24a98ee0e2f9c901644a83998e3b91a9eef",
             "1.2.0": "0ccb162898e10564bbb1403064e6459891dcd09d8cc598b660087e78eb311d60",
+            "1.3.0": "16417cb175c5e1b4a5c32d64d33ba53278441bdf63bf8b2d939d7db124ce674e",
         ],
         "localvoxtral-remote": [
             "1.11.0": "b60ad882518a1daac7a1c5f527fc0d856fa836d2358c687f011bbd12a3ca9834",
@@ -54,6 +55,7 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
             "1.44.0": "1493afd58ecde90a6bfe5e85f82eb44a6b38600c4f2e8b19fe6abb1e8b942ab7",
             "1.45.0": "5826bf4d2b883b8146199c4c2b1723fa8b885fd745fadf685f3e5b7d4eb005f6",
             "1.46.0": "ab1324f655795ca513e22a5657b7f0de746e025fe0e6be5d6f2e819db617eaed",
+            "1.47.0": "be71e3c0c2ad16210516ac218d31d89b22aa0d5cb71e0591afe17e575a0a0d71",
         ],
     ]
 

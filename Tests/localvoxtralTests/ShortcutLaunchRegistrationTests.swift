@@ -36,7 +36,6 @@ final class ShortcutLaunchRegistrationTests: XCTestCase {
         // Only the dictation slots register; the action slots would reach
         // real Carbon, whose answer in a test host is not ours to assert.
         settings.setCopyLastDictationShortcut(nil)
-        settings.setAnswerAgentShortcut(nil)
 
         let shortcuts = ShortcutController(settings: settings)
         let session = FakeShortcutSession()

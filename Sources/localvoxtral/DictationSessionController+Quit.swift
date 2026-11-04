@@ -42,8 +42,7 @@ extension DictationSessionController {
 
     /// Quit: a stopped dictation still owed its commit is saved to History
     /// as not inserted, synchronously, so the quit's History drain writes
-    /// it. Waiting on the polish (#1284), on the final transcript (#1296),
-    /// or on an addressed send's delivery (#1667).
+    /// it. Waiting on the polish (#1284) or on the final transcript (#1296).
     /// A dictation still running is stopped here first: the terminate
     /// observer's stop runs in a Task, after the drain if at all (#1568).
     func saveStoppedDictationForQuit() {
@@ -52,9 +51,6 @@ extension DictationSessionController {
         if isDictating {
             stopDictation(reason: "app terminating")
         }
-        // Before the cancel: a delivery the commit awaits will not answer
-        // before the process exits (#1667).
-        saveHandedOffAddressedCommitsForQuit()
         if cancelPolishingForNewSessionIfNeeded() { return }
         guard isFinalizingStop, !isCompletingStoppedSession, !wasCancelled else { return }
         Log.persistence.notice("quit before the final transcript; saving the text so far as not inserted")

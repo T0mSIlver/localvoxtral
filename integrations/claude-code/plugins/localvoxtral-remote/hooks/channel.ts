@@ -57,9 +57,6 @@ export type Outcome = {
 /** The refusal of a request issued for a session the process has left. */
 export const SESSION_CHANGED = 'session_changed'
 
-/** The refusal of an `abort` while no main-loop turn runs. */
-export const NO_TURN = 'no_turn'
-
 /**
  * A send's reason when a hook dropped its submit and the box did not take
  * the text back in time: the mod keeps trying, then copies it (#1803).

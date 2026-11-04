@@ -50,8 +50,6 @@
 
 import net from "node:net";
 import fs from "node:fs";
-import http from "node:http";
-import crypto from "node:crypto";
 import { isatty } from "node:tty";
 import { isMainThread } from "node:worker_threads";
 
@@ -284,7 +282,7 @@ function processBlock(tty) {
   return block;
 }
 
-function record(event, sessionID, fields, tty, relay) {
+function record(event, sessionID, fields, tty) {
   // Bounded, not scoped: namespacing ("opencode:…") is applied by the
   // RECEIVER from the agent tag, by design. The plugin sends raw ids.
   const boundedID = truncateBytes(sessionID, MAX_PATH_BYTES);
@@ -306,7 +304,6 @@ function record(event, sessionID, fields, tty, relay) {
   if (fields && typeof fields.toolName === "string" && fields.toolName) {
     result.tool_name = truncateBytes(fields.toolName, MAX_PATH_BYTES);
   }
-  if (relay) result.prompt_relay = relay;
   if (fields && typeof fields.notificationType === "string") {
     result.notification_type = fields.notificationType;
   }
@@ -502,84 +499,6 @@ function ownTTY() {
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Prompt relay (TUI half): the one way the app writes into opencode (#719).
-// A plain `opencode` has no HTTP server (its TUI talks to its worker over
-// RPC), so the TUI half listens itself: 127.0.0.1, port 0, a random token.
-// Port and token ride only in FocusChanged, over the peer-checked socket. It
-// takes two calls, append and submit, for the session the pane displays when
-// the call arrives, and forwards them through the TUI's in-process client.
-// Anything else, or any doubt, is refused and the app types as before.
-
-const MAX_RELAY_BODY_BYTES = 64 * 1024;
-
-function startPromptRelay(api, displayedSession, onListening) {
-  try {
-    const tui = api.client && api.client.tui;
-    if (!tui) return undefined;
-    const token = crypto.randomBytes(32).toString("hex");
-    const expected = Buffer.from("Bearer " + token);
-    const relay = { address: undefined };
-    const server = http.createServer((request, response) => {
-      const reply = (status) => {
-        try {
-          response.writeHead(status, { "content-type": "application/json", connection: "close" });
-          response.end(status === 200 ? "true" : "false");
-        } catch {}
-      };
-      try {
-        const route = { "/tui/append-prompt": "append", "/tui/submit-prompt": "submit" }[request.url];
-        const given = Buffer.from(String(request.headers.authorization || ""));
-        const port = relay.address && relay.address.port;
-        if (request.method !== "POST" || !route) return reply(404);
-        if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return reply(401);
-        if (request.headers.host !== "127.0.0.1:" + port) return reply(403);
-        // Bytes, decoded once at the end: a chunk can split a UTF-8 sequence.
-        const chunks = [];
-        let bytes = 0;
-        request.on("data", (chunk) => {
-          const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-          bytes += data.length;
-          if (bytes > MAX_RELAY_BODY_BYTES) {
-            reply(413);
-            request.destroy();
-          } else chunks.push(data);
-        });
-        request.on("end", () => {
-          try {
-            const call = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-            if (!call || call.session_id !== displayedSession()) return reply(409);
-            if (route === "append" && (typeof call.text !== "string" || !call.text)) return reply(400);
-            const sent = route === "append" ? tui.appendPrompt({ text: call.text }) : tui.submitPrompt({});
-            Promise.resolve(sent).then(
-              (result) => reply(result && !result.error ? 200 : 502),
-              () => reply(502)
-            );
-          } catch {
-            reply(400);
-          }
-        });
-      } catch {
-        reply(500);
-      }
-    });
-    server.on("error", () => {
-      relay.address = undefined;
-    });
-    server.listen(0, "127.0.0.1", () => {
-      try {
-        relay.address = { port: server.address().port, token };
-        onListening();
-      } catch {}
-    });
-    server.unref();
-    relay.close = () => server.close();
-    return relay;
-  } catch {
-    return undefined;
-  }
-}
-
 const TuiHalf = async (api) => {
   const tty = ownTTY();
   if (!tty) return; // No pane evidence, nothing to declare. Ever.
@@ -623,11 +542,6 @@ const TuiHalf = async (api) => {
       : undefined;
   }
 
-  // Once it listens, the next sample re-declares with its address.
-  const relay = startPromptRelay(api, displayedSession, () => {
-    lastSentAt = 0;
-  });
-
   function sample() {
     try {
       const sessionID = displayedSession();
@@ -646,7 +560,7 @@ const TuiHalf = async (api) => {
         return;
       }
       if (sessionID === lastSession && nowMillis - lastSentAt < FOCUS_HEARTBEAT_MS) return;
-      const declared = record("FocusChanged", sessionID, undefined, tty, relay && relay.address);
+      const declared = record("FocusChanged", sessionID, undefined, tty);
       inflight = publish(declared, (replied) => {
         inflight = false;
         if (replied) {
@@ -681,7 +595,6 @@ const TuiHalf = async (api) => {
     api.lifecycle.onDispose(() => {
       try {
         clearInterval(timer);
-        if (relay) relay.close();
         for (const unsubscribe of unsubscribes) {
           try {
             unsubscribe();

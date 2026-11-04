@@ -48,8 +48,6 @@ extension DictationSessionController {
         // it just gave up still emits is refused from here on (#417).
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
-        sessionCommitGuard = nil
-        sessionPickedPane = nil
         sessionStartedAt = nil
         sessionStoppedAt = nil
         sessionCaptureTimeline = nil
@@ -994,7 +992,6 @@ extension DictationSessionController {
         // session and silently skips its overlay commit.
         wasCancelled = false
         escapeCancelHandler.stop()
-        endDestinations()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
@@ -1390,7 +1387,6 @@ extension DictationSessionController {
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
         }
-        beginDestinations()
     }
 
     func beginOverlayFinalization() {

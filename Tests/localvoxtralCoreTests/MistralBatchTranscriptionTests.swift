@@ -124,7 +124,7 @@ final class MistralBatchTranscriptionTests: XCTestCase {
     /// The client reports how much of the body went out, which sizes the next
     /// pass's deadline. Linux's Foundation sends no body progress.
     func testTheClientMeasuresTheBodyItUploaded() async throws {
-        let server = try FakeOpencodePromptRelay()
+        let server = try FakeLoopbackHTTPServer()
         addTeardownBlock { server.stop() }
         let wav = Data(repeating: 1, count: 1_000_000)
         let measurements = Mutex<[MistralBatchTranscription.UploadMeasurement]>([])
