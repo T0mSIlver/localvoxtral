@@ -35,8 +35,24 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// Counts the pending segments, so a stall's mark goes stale once its
     /// segment is gone.
     private var pendingEpoch = 0
+    /// The segment the last final or promotion closed, kept so a backfill
+    /// that answers after it still lands: a stop right after a stall closes
+    /// the segment before the batch reply is back (LVX-75).
+    private var closedSegment: ClosedSegment?
 
     package init() {}
+
+    /// The accumulator as it stood before the close, how the segment closed,
+    /// and what the close left. A late backfill replays the close on `before`
+    /// with its words spliced in, if nothing changed the text since.
+    private indirect enum ClosedSegment: Equatable, Sendable {
+        case closed(before: TranscriptAccumulator, by: Closing, eventText: String, transcriptText: String)
+    }
+
+    private enum Closing: Equatable, Sendable {
+        case final(String)
+        case promoted(keepingOverlayMerge: Bool)
+    }
 
     private struct Backfill: Equatable, Sendable {
         let offset: Int
@@ -62,7 +78,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// the pending segment. Returns them, or nil when the mark's segment is
     /// gone or `StallBackfill.wordsToInsert` finds none to place.
     package mutating func spliceBackfill(_ batchText: String, at mark: StallMark) -> String? {
-        guard mark.epoch == pendingEpoch else { return nil }
+        guard mark.epoch == pendingEpoch else { return spliceIntoClosedSegment(batchText, at: mark) }
         let raw = unsplicedPending
         let offset = min(mark.offset, raw.count)
         let split = raw.index(raw.startIndex, offsetBy: offset)
@@ -78,6 +94,42 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         pendingSegmentText = Self.splicing(backfills, into: raw)
         livePartialText = pendingSegmentText
         return words
+    }
+
+    /// The same splice for the segment the last close ended: replays that
+    /// close with the words in. Nil when the mark is older than that segment
+    /// or the dictation event changed since the close.
+    private mutating func spliceIntoClosedSegment(_ batchText: String, at mark: StallMark) -> String? {
+        guard case .closed(var replay, let closing, let eventText, let transcriptText)? = closedSegment,
+            mark.epoch == replay.pendingEpoch,
+            currentDictationEventText == eventText,
+            self.transcriptText == transcriptText,
+            let words = replay.spliceBackfill(batchText, at: mark)
+        else { return nil }
+        switch closing {
+        case .final(let text): _ = replay.applyFinal(text)
+        case .promoted(let keepingOverlayMerge):
+            _ = replay.promotePendingToLatestSegment(keepingOverlayMerge: keepingOverlayMerge)
+        }
+        currentDictationEventText = replay.currentDictationEventText
+        lastFinalSegment = replay.lastFinalSegment
+        self.transcriptText = replay.transcriptText
+        closedSegment = replay.closedSegment
+        return words
+    }
+
+    /// Records the close that just ended the segment `before` held.
+    private mutating func recordClose(_ closing: Closing, before: TranscriptAccumulator) {
+        closedSegment = .closed(
+            before: before, by: closing,
+            eventText: currentDictationEventText, transcriptText: transcriptText)
+    }
+
+    /// The accumulator without its closed segment, which a replay never needs.
+    private var snapshotBeforeClose: TranscriptAccumulator {
+        var before = self
+        before.closedSegment = nil
+        return before
     }
 
     /// `raw` with each backfill at its offset, set off by spaces.
@@ -144,6 +196,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// final and the buffered partials resolve to nothing; the buffers are
     /// cleared either way.
     package mutating func applyFinal(_ processedText: String) -> FinalizedSegment? {
+        let before = snapshotBeforeClose
         let finalizedSegment = resolvedFinalizedSegment(from: processedText)
         let segmentStartsMidWord = startsMidWord(
             bufferedRawText.trimmed.isEmpty ? processedText : bufferedRawText
@@ -161,6 +214,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
             livePartialText = ""
             pendingSegmentText = ""
             clearBackfills()
+            closedSegment = nil
             return nil
         }
 
@@ -174,6 +228,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         livePartialText = ""
         pendingSegmentText = ""
         clearBackfills()
+        recordClose(.final(processedText), before: before)
 
         let liveInsertion: String?
         if !hadLiveDelta {
@@ -211,6 +266,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     package mutating func promotePendingToLatestSegment(keepingOverlayMerge: Bool = false) -> String? {
         let pendingSegment = resolvedFinalizedSegment(from: "")
         guard !pendingSegment.isEmpty else { return nil }
+        let before = snapshotBeforeClose
 
         currentDictationEventText = keepingOverlayMerge
             ? overlayCommitText.trimmed
@@ -223,6 +279,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         livePartialText = ""
         pendingSegmentText = ""
         clearBackfills()
+        recordClose(.promoted(keepingOverlayMerge: keepingOverlayMerge), before: before)
 
         return pendingSegment
     }
@@ -335,6 +392,7 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         livePartialText = ""
         pendingSegmentText = ""
         clearBackfills()
+        closedSegment = nil
     }
 
     /// A new session starts with an empty dictation event. The running
@@ -345,5 +403,6 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         currentDictationEventText = ""
         hasSeenSpacePrefixedDelta = false
         clearBackfills()
+        closedSegment = nil
     }
 }
