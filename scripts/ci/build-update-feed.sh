@@ -55,7 +55,7 @@ sparkle_bin() {
   if [[ ! -x "$TOOLS_DIR/bin/sign_update" ]]; then
     local tmp
     tmp="$(mktemp -d)"
-    curl -fsSL --retry 3 -o "$tmp/sparkle.tar.xz" \
+    curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 -o "$tmp/sparkle.tar.xz" \
       "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" \
       || die "could not download Sparkle $SPARKLE_VERSION's tools"
     [[ "$(shasum -a 256 "$tmp/sparkle.tar.xz" | cut -d' ' -f1)" == "$SPARKLE_SHA256" ]] \

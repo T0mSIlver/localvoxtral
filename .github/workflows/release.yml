@@ -399,6 +399,12 @@ jobs:
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
+        # Every step that compiles, downloads or waits on a service has its
+        # own bound below, so a stall names its step within the hour instead
+        # of holding the Mini, and every mac-lanes job queued behind it, for
+        # the job's 420 min (run 41742286992). Notarization is bounded by
+        # notarize.sh, not here.
+        timeout-minutes: 45
         run: swift test --build-system native --filter RealtimeAPIVLLMIntegrationTests
 
       - name: Name the STT service's state
@@ -459,6 +465,9 @@ jobs:
           # Empty for an ad-hoc nightly, so package_app.sh signs ad-hoc.
           LOCALVOXTRAL_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && env.DEVELOPER_ID_IDENTITY || '' }}
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && '1' || '0' }}
+        # Cold: the app, then both MLX helpers through xcodebuild, which
+        # resolves their own packages.
+        timeout-minutes: 90
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
       - name: Gate — packaged app launch smoke test
@@ -468,6 +477,7 @@ jobs:
           # startup TCC prompts off the runner's GUI session (node's
           # Accessibility grant dies on every runner auto-update).
           LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
+        timeout-minutes: 15
         run: |
           # A home of its own, as in ci.yml: never the owner's history (#985).
           SMOKE_HOME="$(mktemp -d)"
@@ -555,6 +565,7 @@ jobs:
           && steps.meta.outputs.prerelease == 'false'
         env:
           TAG: ${{ steps.meta.outputs.tag }}
+        timeout-minutes: 30
         run: '"$RELEASE_CI/build-update-feed.sh" feed "$TAG" dist'
 
       - name: Upload rehearsal artifacts (no tag, no release)
@@ -598,6 +609,13 @@ jobs:
           RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
         run: |
           set -euo pipefail
+          # The last word before anything leaves the runner: Plan and Compute
+          # version already refuse this, and a tag is what Publish, Keep and
+          # the cask job all follow.
+          if [[ "$GITHUB_REF_NAME" != "main" && "$TAG" != *-rc.* ]]; then
+            echo "::error::$TAG is not a prerelease and $GITHUB_REF_NAME is not main: only main tags a release. Nothing was tagged."
+            exit 1
+          fi
           if [[ -z "$RELEASE_TAG_TOKEN" ]]; then
             echo "::error::The RELEASE_TAG_TOKEN repo secret is missing or empty; GITHUB_TOKEN cannot push this tag (#964). Nothing was tagged."
             exit 1
@@ -704,6 +722,7 @@ jobs:
           && steps.signing.outputs.notarize == 'true'
           && steps.meta.outputs.prerelease == 'false'
         continue-on-error: true
+        timeout-minutes: 15
         run: '"$RELEASE_CI/build-update-feed.sh" keep dist'
 
       - name: Keep the assets of a release that did not publish
