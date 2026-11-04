@@ -130,6 +130,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         var phase: Phase = .http
         var buffer = Data()
         var session: SpeechASRStreamingSession?
+        /// The client's `context_bias` list, handed to every session this
+        /// connection opens from now on. Inference queue only, like `session`.
+        var terms = SessionTerms.empty
         let feed: CoalescingStepFeed
         // Append-only delta contract lives in OUR layer now (the engine is an upstream
         // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
@@ -280,7 +283,14 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             switch message {
-            case .sessionUpdate:
+            case .sessionUpdate(let terms):
+                // A list sent mid-utterance takes effect at the next one: the
+                // open session was built with the list it started with.
+                if let terms {
+                    ctx.terms = terms
+                    FileHandle.standardError.write(Data(
+                        "speechd: session.update carries \(terms.terms.count) context_bias terms\n".utf8))
+                }
                 self.sendServer(connection, .sessionUpdated)
             case .audioAppend:
                 break  // queued above
@@ -358,7 +368,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         if let s = ctx.session { return s }
         let s = engine.makeSession(
             transcriptionDelayMs: transcriptionDelayMs,
-            utteranceLimit: utteranceLimit
+            utteranceLimit: utteranceLimit,
+            terms: ctx.terms
         )
         ctx.session = s
         return s
