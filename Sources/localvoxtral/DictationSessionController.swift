@@ -254,10 +254,11 @@ final class DictationSessionController {
     @ObservationIgnored
     var audioStoreWithoutHistory: DictationAudioStore?
     /// Watches the seconds after a commit for an immediate erase, and patches
-    /// that dictation's record with what it saw. `var` for the same reason as
-    /// the store: tests inject the clock and the event source.
+    /// that dictation's record with what it saw. Its window sleeps on the
+    /// session clock. `var` for the same reason as the store: tests inject
+    /// the clock and the event source.
     @ObservationIgnored
-    var editSignalWatcher = EditSignalWatcher()
+    var editSignalWatcher: EditSignalWatcher
 
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
@@ -658,6 +659,11 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        self.editSignalWatcher = EditSignalWatcher(
+            monitor: dependencies.editKeyMonitor(),
+            now: dependencies.clock.now,
+            sleepFor: dependencies.clock.sleep
+        )
         textInsertion.pasteRestoreSleep = dependencies.clock.sleep
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
         self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)

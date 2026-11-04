@@ -832,7 +832,6 @@ final class DictationPipelineTests: XCTestCase {
         let viewModel = pipeline.viewModel
         viewModel.settings.dictationHistoryRetention = .forever
         viewModel.settings.diagnosticRecordsEnabled = true
-        // Not `.succeeded`: that arms the edit watcher's real timer.
         pipeline.overlay.commitOutcome = .copiedToClipboard(message: "copied")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
@@ -885,6 +884,66 @@ final class DictationPipelineTests: XCTestCase {
             "no alert was presented during the second dictation")
         // The first dictation still said what went wrong, once.
         XCTAssertEqual(alertsOfTheFirst, ["LLM Polishing Returned No Text"])
+    }
+
+    /// The edit watch after an inserted commit sleeps on the session clock
+    /// (LVX-95): the window closes when the clock passes it, and the
+    /// dictation's record gets its verdict.
+    func testTheEditWatchClosesOnTheSessionClockAndPatchesTheRecord() async throws {
+        // Records, and the watch, come with the polish path.
+        StubHTTPProtocol.reply.withLock {
+            $0 = .http(200, #"{"choices":[{"message":{"role":"assistant","content":"\#(Self.phrase)"}}]}"#)
+        }
+        let monitor = await MainActor.run { EditSignalTestMonitor() }
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(session: StubHTTPProtocol.session()),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false,
+            editKeyMonitor: { monitor }
+        )
+        let viewModel = pipeline.viewModel
+        viewModel.settings.dictationHistoryRetention = .forever
+        viewModel.settings.diagnosticRecordsEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let recordStore = DiagnosticRecordStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.diagnosticRecordStore = recordStore
+        viewModel.sessionStore = store
+        viewModel.session.diagnosticRecordStore = recordStore
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertTrue(monitor.isInstalled, "the inserted commit opened no edit watch")
+
+        // History hears the verdict once the record holds it: the end of the
+        // record write, the window and the patch, whichever comes last.
+        let watcher = viewModel.session.editSignalWatcher
+        let patched = BoundedWait()
+        let toHistory = watcher.onOutcome
+        watcher.onOutcome = { id, outcome in
+            toHistory?(id, outcome)
+            patched.resolve()
+        }
+        let window = EditSignalPolicy.windowSeconds(wordCount: EditSignalPolicy.wordCount(of: Self.phrase))
+        await pipeline.clock.waitForSleeper(dueIn: window)
+        pipeline.clock.advance(by: window)
+        let didPatch = await patched.value(failAfter: 10)
+        XCTAssertTrue(didPatch, "the record never got the window's verdict")
+
+        XCTAssertFalse(monitor.isInstalled, "the window closed and took its observer down")
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(names.count, 1)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(
+            DiagnosticRecord.self, from: Data(contentsOf: directory.appendingPathComponent(try XCTUnwrap(names.first)))
+        )
+        XCTAssertEqual(record.behavior?.outcome, .clean)
+        XCTAssertEqual(record.behavior?.watchWindowSeconds, window)
     }
 
     /// The polish-failure alert is modal. The edit watch of the inserted
@@ -4309,7 +4368,8 @@ final class DictationPipelineTests: XCTestCase {
         contextBudget: RealtimeContextBudget? = nil,
         overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         workspaceCenter: NotificationCenter? = nil,
-        backendManager: (any ManagedBackendManaging)? = nil
+        backendManager: (any ManagedBackendManaging)? = nil,
+        editKeyMonitor: (@MainActor () -> any EditKeyMonitoring)? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -4341,7 +4401,8 @@ final class DictationPipelineTests: XCTestCase {
                 connectionFailurePresenter: presenter,
                 onSessionRecord: { records.append($0) },
                 clock: clock.clock,
-                realtimeContextLimit: { _ in contextBudget }
+                realtimeContextLimit: { _ in contextBudget },
+                editKeyMonitor: editKeyMonitor ?? { EditKeyNSEventMonitor() }
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()
