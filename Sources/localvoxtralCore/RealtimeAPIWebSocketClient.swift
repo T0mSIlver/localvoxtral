@@ -1255,7 +1255,8 @@ extension RealtimeAPIWebSocketClient {
                 endpoint: task.originalRequest?.url ?? URL(string: "ws://127.0.0.1/v1/realtime")!,
                 apiKey: "",
                 model: modelName,
-                usageBackend: usageBackend
+                usageBackend: usageBackend,
+                contextBias: contextBias
             )
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
