@@ -70,6 +70,7 @@ enum AgentDictationE2EEvalSupport {
         let provider: String?
         let apiKey: String?
         let replayDirectory: String?
+        let replayNewest: Int?
 
         init(
             helperPath: String? = nil,
@@ -81,9 +82,11 @@ enum AgentDictationE2EEvalSupport {
             recordingSubset: Bool? = nil,
             provider: String? = nil,
             apiKey: String? = nil,
-            replayDirectory: String? = nil
+            replayDirectory: String? = nil,
+            replayNewest: Int? = nil
         ) {
             self.replayDirectory = replayDirectory
+            self.replayNewest = replayNewest
             self.helperPath = helperPath
             self.voxmlxEndpoint = voxmlxEndpoint
             self.asrModel = asrModel
@@ -123,6 +126,9 @@ enum AgentDictationE2EEvalSupport {
         /// Non-nil replays a user's stored dictations
         /// (`testReplayStoredDictations`) instead of scoring the corpus.
         var replayDirectory: String? = nil
+        /// Non-nil replays only the newest this many dictations, so a run
+        /// fits its Mac slot.
+        var replayNewest: Int? = nil
 
         /// The bundled polishd helper is only in the loop for the local arm
         /// with no explicit external endpoint. A hosted arm needs no `package`
@@ -231,7 +237,8 @@ enum AgentDictationE2EEvalSupport {
             caseIDs: caseIDs,
             provider: provider,
             apiKey: pickOptional(apiKeyEnvKey, marker?.apiKey) ?? "",
-            replayDirectory: pickOptional(replayDirectoryEnvKey, marker?.replayDirectory)
+            replayDirectory: pickOptional(replayDirectoryEnvKey, marker?.replayDirectory),
+            replayNewest: marker?.replayNewest
         )
     }
 

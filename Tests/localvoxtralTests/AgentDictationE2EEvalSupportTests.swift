@@ -49,6 +49,20 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertNil(marker.apiKey)
     }
 
+    /// The replay marker `remote-build.sh eval-e2e --replay` writes: a set
+    /// that stays on the Mac, capped to the newest dictations, or uncapped.
+    func testTheReplayMarkerCarriesItsSetAndCap() throws {
+        let capped = try Support.parseMarker(Data(
+            #"{"helperPath": "x", "replayDirectory": "/Users/Shared/lv-replay-1105", "replayNewest": 40}"#.utf8))
+        let enablement = try XCTUnwrap(Support.resolveEnablement(environment: [:], marker: capped))
+        XCTAssertEqual(enablement.replayDirectory, "/Users/Shared/lv-replay-1105")
+        XCTAssertEqual(enablement.replayNewest, 40)
+
+        let uncapped = try Support.parseMarker(Data(
+            #"{"helperPath": "x", "replayDirectory": "EvalRecordings/replay/a", "replayNewest": null}"#.utf8))
+        XCTAssertNil(try XCTUnwrap(Support.resolveEnablement(environment: [:], marker: uncapped)).replayNewest)
+    }
+
     func testEnablementNilWithoutEnvOrMarker() {
         XCTAssertNil(Support.resolveEnablement(environment: [:], marker: nil))
         // A "0" env value is not enablement either.

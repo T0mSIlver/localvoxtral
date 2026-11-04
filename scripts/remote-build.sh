@@ -104,7 +104,10 @@ set -euo pipefail
 #                  MISTRAL_API_KEY=... eval-e2e --provider mistral
 #                  `--replay EvalRecordings/replay/<set>` replays a user's
 #                  stored dictations instead, with and without the learned
-#                  terms (set from scripts/export-dictation-replay.sh)
+#                  terms (set from scripts/export-dictation-replay.sh).
+#                  `--replay /Users/Shared/lv-replay-<name>` reads a set
+#                  exported on the build host itself, which never leaves it;
+#                  `--replay-newest N` replays only the newest N dictations
 #     eval-term-recall
 #                  PRIVATE term-recall eval of the speech engine alone, on
 #                  EvalRecordings/term-recall/cases.json (made by
@@ -1062,6 +1065,7 @@ case "$CMD" in
     # run — and it BILLS the owner's Mistral account, so it is by-hand only.
     E2E_RECORDING_DIR=""
     E2E_REPLAY_DIR=""
+    E2E_REPLAY_NEWEST=""
     E2E_PROVIDER=""
     E2E_ASR=""
     E2E_ASR_GIVEN=0
@@ -1105,6 +1109,14 @@ case "$CMD" in
           E2E_REPLAY_DIR="$2"
           shift 2
           ;;
+        --replay-newest)
+          if [[ $# -lt 2 || ! "$2" =~ ^[1-9][0-9]{0,4}$ ]]; then
+            echo "eval-e2e: --replay-newest needs a count from 1 to 99999" >&2
+            exit 1
+          fi
+          E2E_REPLAY_NEWEST="$2"
+          shift 2
+          ;;
         -*)
           echo "eval-e2e: unknown option $1" >&2
           exit 1
@@ -1130,11 +1142,14 @@ case "$CMD" in
         echo "eval-e2e: --replay takes no recording set and no --provider" >&2
         exit 1
       fi
-      if [[ ! "$E2E_REPLAY_DIR" =~ ^EvalRecordings/replay/[A-Za-z0-9._-]+$ ]]; then
-        echo "eval-e2e replay set must be EvalRecordings/replay/<set>" >&2
+      # A set under /Users/Shared/lv-replay-* was exported on the build host
+      # and stays there: only its path travels, and the harness checks it.
+      if [[ "$E2E_REPLAY_DIR" =~ ^/Users/Shared/lv-replay-[A-Za-z0-9._-]+$ ]]; then
+        :
+      elif [[ ! "$E2E_REPLAY_DIR" =~ ^EvalRecordings/replay/[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-e2e replay set must be EvalRecordings/replay/<set> or /Users/Shared/lv-replay-<name>" >&2
         exit 1
-      fi
-      if [[ ! -f "$ROOT_DIR/$E2E_REPLAY_DIR/default.store" ]]; then
+      elif [[ ! -f "$ROOT_DIR/$E2E_REPLAY_DIR/default.store" ]]; then
         echo "replay set not found: $E2E_REPLAY_DIR/default.store" >&2
         echo "Export one on the Mac that dictated with scripts/export-dictation-replay.sh" >&2
         exit 1
@@ -1205,11 +1220,12 @@ case "$CMD" in
           >"$E2E_MARKER"
       fi
     elif [[ -n "$E2E_REPLAY_DIR" ]]; then
-      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "replayDirectory": "%s"}\n' \
+      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "replayDirectory": "%s", "replayNewest": %s}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
         "ws://127.0.0.1:$E2E_ASR_PORT/v1/realtime" \
         "$E2E_ASR_REPO" \
         "$E2E_REPLAY_DIR" \
+        "${E2E_REPLAY_NEWEST:-null}" \
         >"$E2E_MARKER"
     elif [[ -n "$E2E_RECORDING_DIR" ]]; then
       printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
