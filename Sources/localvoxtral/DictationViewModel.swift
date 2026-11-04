@@ -1199,7 +1199,8 @@ extension DictationViewModel {
                 settings: settings,
                 dictionary: StopCommitCoordinator.effectiveReplacementDictionary(
                     settings: settings, appConfigStore: appConfigStore),
-                capabilities: settings.dictationModelCapabilities)
+                capabilities: settings.dictationModelCapabilities),
+            language: settings.sessionDictationLanguage
         )
         if mode == .mistralAPI {
             return (configuration, nil, {

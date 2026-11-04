@@ -133,6 +133,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         /// The client's `context_bias` list, handed to every session this
         /// connection opens from now on. Inference queue only, like `session`.
         var terms = SessionTerms.empty
+        /// The client's dictation language (ISO 639-1), nil for the model's own
+        /// detection. Same lifetime and queue as `terms`.
+        var language: String?
         let feed: CoalescingStepFeed
         // Append-only delta contract lives in OUR layer now (the engine is an upstream
         // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
@@ -283,9 +286,10 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             switch message {
-            case .sessionUpdate(let terms):
-                // A list sent mid-utterance takes effect at the next one: the
-                // open session was built with the list it started with.
+            case .sessionUpdate(let terms, let language):
+                // A list or language sent mid-utterance takes effect at the next
+                // one: the open session was built with what it started with.
+                if let language { ctx.language = language }
                 if let terms {
                     ctx.terms = terms
                     FileHandle.standardError.write(Data(
@@ -373,7 +377,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         let s = engine.makeSession(
             transcriptionDelayMs: transcriptionDelayMs,
             utteranceLimit: utteranceLimit,
-            terms: ctx.terms
+            terms: ctx.terms,
+            language: ctx.language
         )
         ctx.session = s
         return s

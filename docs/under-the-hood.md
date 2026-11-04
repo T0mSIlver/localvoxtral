@@ -83,7 +83,8 @@ The pane also offers
 step re-encodes the last 5.6 s of audio with the new chunk, so it uses about
 four times Nemotron 3.5's GPU. In exchange it makes fewer errors than 3.5,
 especially in French, and covers 25 European languages. It runs at the same
-320 ms latency, also under OpenMDW 1.1.
+320 ms latency, also under OpenMDW 1.1. Its Language row in the Engines pane
+names the language you dictate in; Auto, the default, lets the model detect it.
 
 Changing the model picker restarts the helper and downloads the new
 checkpoint.

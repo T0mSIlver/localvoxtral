@@ -14,19 +14,25 @@ package struct RealtimeSessionConfiguration: Sendable {
     /// Mistral client sends them in its `session.update`, and so does the
     /// OpenAI-compatible client, as `context_bias`, when the list is not empty.
     package let contextBias: [String]
+    /// The dictation language (ISO 639-1) when the session's model takes one
+    /// and the user chose it, else nil. The OpenAI-compatible client sends it in
+    /// its `session.update` as `language`; the Mistral client ignores it.
+    package let language: String?
 
     package init(
         endpoint: URL,
         apiKey: String,
         model: String,
         usageBackend: UsageEntry.Backend? = nil,
-        contextBias: [String] = []
+        contextBias: [String] = [],
+        language: String? = nil
     ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
         self.usageBackend = usageBackend
         self.contextBias = contextBias
+        self.language = language
     }
 }
 
