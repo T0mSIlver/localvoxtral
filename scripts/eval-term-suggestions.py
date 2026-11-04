@@ -327,8 +327,11 @@ def run(args: argparse.Namespace) -> None:
                     seen.add(key(term))
                     terms.append((term, forms))
             row = score(terms, chosen, data["accepted"], data["refused"])
-            cost = (usage.get("prompt_tokens", 0) * PRICE_IN
-                    + usage.get("completion_tokens", 0) * PRICE_OUT) / 1e6
+            # Only GLM 5.3 is priced here; an Anthropic run bills the pay-per-call
+            # key at its own rates, so its cost is left out rather than guessed.
+            cost = 0.0 if args.model.startswith("claude") else (
+                usage.get("prompt_tokens", 0) * PRICE_IN
+                + usage.get("completion_tokens", 0) * PRICE_OUT) / 1e6
             spend += cost
             results[arm].append({"terms": terms, **row})
             with out.open("a") as log:
@@ -337,8 +340,9 @@ def run(args: argparse.Namespace) -> None:
                                       "dictations": len(chosen), "terms": terms, "reply": reply,
                                       "usage": usage, "seconds": round(seconds, 1), **row},
                                      ensure_ascii=False) + "\n")
+            priced = "unpriced" if args.model.startswith("claude") else f"{cost:.3f} EUR"
             print(f"{arm} #{repeat + 1}: {len(chosen)} dictations, {seconds:.0f} s, "
-                  f"{cost:.3f} EUR, out {usage.get('completion_tokens')} tokens "
+                  f"{priced}, out {usage.get('completion_tokens')} tokens "
                   f"({usage.get('stop_reason', '-')}), " + ", ".join(f"{k} {v}" for k, v in row.items()))
     for arm, rows in results.items():
         if len(rows) >= 2:
@@ -346,7 +350,10 @@ def run(args: argparse.Namespace) -> None:
             union = first | second
             overlap = len(first & second) / len(union) if union else 1.0
             print(f"{arm} repeat overlap: {overlap:.0%} of {len(union)} distinct terms")
-    print(f"spend: {spend:.2f} EUR")
+    if args.model.startswith("claude"):
+        print("spend: not priced for claude-* (see the token counts above)")
+    else:
+        print(f"spend: {spend:.2f} EUR")
 
 
 def main() -> None:
