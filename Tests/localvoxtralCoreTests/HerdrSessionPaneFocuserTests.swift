@@ -93,15 +93,16 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         let foreground = Box<[(pid: Int32, name: String)]>([(4711, "claude")])
         let herdr = try herdr(focused: "w2:p5", foreground: { foreground.get() })
         defer { herdr.stop() }
-        var session = ClaudeSessionSnapshot(
-            sessionID: "remote:h1:s1",
+        let epoch = Self.epoch
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        let session = try XCTUnwrap(registry.ingest(
+            ClaudeHookRecord(event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/srv/app"),
             origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: "h1")),
-            firstSeen: Self.epoch
-        )
-        session.remoteSessionEnvironment = ClaudeRemoteSessionEnvironment(
-            herdrPaneID: "w2:p5", herdrSocketPath: remoteSocket, hookParentPID: "4711"
-        )
-        let subject = focuser(herdr: herdr, paneSessionID: { _ in "remote:h1:s1" })
+            environment: ClaudeRemoteSessionEnvironment(
+                herdrPaneID: "w2:p5", herdrSocketPath: remoteSocket, hookParentPID: "4711"
+            )
+        ))
+        let subject = focuser(herdr: herdr, paneSessionID: { _ in session.sessionID })
         let inForeground = await subject.focusedPaneShows(session, bundleID: ghostty)
         XCTAssertTrue(inForeground)
         foreground.set([(900, "zsh")])
