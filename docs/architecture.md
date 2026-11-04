@@ -115,10 +115,10 @@ AppKit:
 path that needs no AppKit (#591): the join resolver and its arms, the session
 registry and store, the broker and the remote listener, the herdr and cmux
 clients, the ssh forward and enrollment, the repository collector and its
-selection, the context blocks, and the plugin, statusline, opencode, Vibe and
-Codex installers. The settings model, the forward coordinator and supervisor
-(`@Observable`) and the `--probe-surface` command stay in
-`Sources/localvoxtral/ClaudeContext`.
+selection, the context blocks, the plugin, statusline, opencode, Vibe and
+Codex installers, and the Settings pane's model (`ClaudeIntegrationSettingsModel`)
+with the forward coordinator. The herdr forward, the recovery triggers and the
+`--probe-surface` command stay in `Sources/localvoxtral/ClaudeContext`.
 
 The core builds and tests on Linux (`scripts/core-tests-linux.sh`), and the
 app re-exports it. Test doubles that need only the core live in

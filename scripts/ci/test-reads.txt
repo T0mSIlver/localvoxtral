@@ -33,7 +33,7 @@ Tests/localvoxtralCoreTests/ClaudePluginManifestTests.swift contentsOfDirectory(
 Tests/localvoxtralCoreTests/VibeRemoteShimTests.swift contentsOfDirectory( none
 Tests/localvoxtralTestSupport/AgentDictationEvalCorpus.swift contentsOfDirectory( none
 Tests/localvoxtralTests/HerdrIntegrationSupport.swift contentsOfDirectory( none
-Tests/localvoxtralTests/SettingsSourceText.swift contentsOfDirectory( none
+Tests/localvoxtralTestSupport/SettingsSourceText.swift contentsOfDirectory( none
 Tests/localvoxtralTests/SettingsTabTests.swift enumerator( none
 Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/VibeHooksInstallServiceTests.swift contentsOfDirectory( none

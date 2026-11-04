@@ -30,7 +30,7 @@ extension ClaudeIntegrationSettingsModel {
 
     /// Derives the Saved-herdr-machines section from one catalog reading.
     /// Candidates keep the catalog's file order.
-    static func herdrMachineSection(
+    package static func herdrMachineSection(
         reading: HerdrMachineCatalogReading,
         enrolledHosts: [ClaudeRemoteHost]
     ) -> HerdrMachineImportSection {
@@ -55,7 +55,7 @@ extension ClaudeIntegrationSettingsModel {
     }
 
     /// One saved machine's status against the enrolled hosts.
-    static func herdrMachineStatus(
+    package static func herdrMachineStatus(
         profile: HerdrMachineProfile,
         enrolledHosts: [ClaudeRemoteHost]
     ) -> HerdrMachineImportStatus {

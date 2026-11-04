@@ -4,8 +4,8 @@ import Observation
 
 #if canImport(Darwin)
 import Darwin
-import Synchronization
 #endif
+import Synchronization
 
 /// Settings-pane state for both Claude Code integrations.
 ///
@@ -45,8 +45,8 @@ public final class ClaudeIntegrationSettingsModel {
     public internal(set) var verificationChecks: [ClaudeRemoteEnrollmentService.VerificationCheck] = []
     public internal(set) var setupRun: RemoteHostSetupRun?
     public internal(set) var setupManualInstructions: String?
-    var setupCancellationRequested = false
-    var setupSummaries: [String: String] = [:]
+    package var setupCancellationRequested = false
+    package var setupSummaries: [String: String] = [:]
     public var alert: DetailAlert?
 
     /// One busy flag for the sheet, so no two actions can interleave: a setup
@@ -59,7 +59,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// the port is not ours, which is exactly the case a forwarded 401 must not
     /// pass. Read at two different moments by `performSetup`, so it is one
     /// property rather than two copies of the same expression.
-    var listenerIsBound: Bool {
+    package var listenerIsBound: Bool {
         guard let listener, listener.isListening else { return false }
         return listenerStatus == .listening(port: listener.boundPort)
     }
@@ -68,7 +68,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// pane. Written by the join resolver on every attempt, so a user who
     /// dictates and sees no cmux context can read WHY here instead of in the
     /// log. `.ok` renders nothing — a working feature says nothing.
-    var cmuxStatus: CmuxSocketStatus = .ok
+    package var cmuxStatus: CmuxSocketStatus = .ok
 
     /// Whether the live herdr machine catalog has an enabled machine. The
     /// federated panel row is offered only in that state; refreshed with the
@@ -81,7 +81,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// pane and after the local panel action.
     public internal(set) var localHerdrPanelStatus: ClaudeRemoteEnrollmentService.LocalHerdrPanelStatus = .unknown
     /// The plain-ssh join's setup step, refreshed with the rest of the pane.
-    var shellSetupStatus = ClaudeShellSetupStatus()
+    package var shellSetupStatus = ClaudeShellSetupStatus()
 
     // MARK: - Integrations rows (Settings → Integrations)
 
@@ -141,15 +141,15 @@ public final class ClaudeIntegrationSettingsModel {
     /// stored secret is not shown back to anyone, and an empty field on a
     /// machine that HAS a password must not read as "no password set" — which
     /// is what `hasCmuxPassword` is for.
-    var cmuxPasswordField = ""
+    package var cmuxPasswordField = ""
 
     /// Whether a password is stored, refreshed after every save. A Bool, never
     /// the value or its length.
-    var hasCmuxPassword = false
+    package var hasCmuxPassword = false
 
     /// One short line under the cmux row: the socket's last word, or the setup
     /// state when it has not spoken yet.
-    var cmuxStatusText: String {
+    package var cmuxStatusText: String {
         if let message = cmuxStatus.message { return message }
         return hasCmuxPassword ? "Password saved." : "No password saved."
     }
@@ -167,24 +167,24 @@ public final class ClaudeIntegrationSettingsModel {
 
     // MARK: - Dependencies
 
-    let registry: ClaudeRemoteHostRegistry?
+    package let registry: ClaudeRemoteHostRegistry?
     /// The user's login shell, or nil for one this app will not write for.
     /// Injected so no test spawns `dscl`.
-    let loginShell: @Sendable () -> ClaudeShellKind?
+    package let loginShell: @Sendable () -> ClaudeShellKind?
     /// Reads and writes the rc block for a shell. Nil disables the whole
     /// setup step — which is what a test that forgets to inject must get, so
     /// nothing can touch a real `~/.zshrc`.
-    let shellRCWriter: @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter?
+    package let shellRCWriter: @Sendable (ClaudeShellKind) -> ClaudeShellRCWriter?
     /// Does any live remote session report a local tty? Nil means "no way to
     /// ask", which reports as no sessions rather than as a failure.
-    let liveLocalTTYReport: @Sendable () -> ClaudeShellSetupStatus.CrossingState
+    package let liveLocalTTYReport: @Sendable () -> ClaudeShellSetupStatus.CrossingState
     /// stdout of `claude plugin list`, or nil when the listing is
     /// unavailable. Async because the listing shells out; injected so tests
     /// drive the status derivation from fixtures.
-    let fetchPluginListOutput: @Sendable () async -> String?
+    package let fetchPluginListOutput: @Sendable () async -> String?
     /// stdout of `claude plugin marketplace list --json`. Same shape and same
     /// reason as the listing above: it shells out, so it is async and injected.
-    let fetchMarketplaceListOutput: @Sendable () async -> String?
+    package let fetchMarketplaceListOutput: @Sendable () async -> String?
     /// The marketplace path this app wants Claude Code to hold — its own
     /// mirror (`ClaudeMarketplaceMirror`). Nil where nothing models it, which
     /// makes the launch repair decide "no" rather than guess.
@@ -194,104 +194,104 @@ public final class ClaudeIntegrationSettingsModel {
     /// captured then is nil for the whole of the first launch after an update,
     /// which is precisely the launch that has a rotting registration to take
     /// over (review, 2026-09-21).
-    let desiredMarketplacePath: @Sendable () -> String?
+    package let desiredMarketplacePath: @Sendable () -> String?
     /// The bundled local plugin's `plugin.json` version, for the update
     /// comparison. Nil when the bundled manifest could not be read.
-    let bundledPluginVersion: String?
+    package let bundledPluginVersion: String?
     /// The bundled mod's `plugin.json` version, compared on its own at launch.
     /// Nil when the bundled manifest could not be read: the mod is then never
     /// updated unattended.
-    let bundledModVersion: String?
+    package let bundledModVersion: String?
     /// Reads and writes the `statusLine` key. Nil disables the row's actions.
-    let statuslineService: @Sendable () -> ClaudeStatuslineInstallService?
+    package let statuslineService: @Sendable () -> ClaudeStatuslineInstallService?
     /// The hook command the statusline entry points at, e.g.
     /// `/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook
     /// --statusline`. Nil when the publisher binary cannot be located — the
     /// row then cannot offer Install.
-    let statuslineHookCommand: @Sendable () -> String?
+    package let statuslineHookCommand: @Sendable () -> String?
     /// Copies the bundled opencode plugin and edits `tui.json`. Nil disables
     /// the row's actions.
-    let opencodeService: @Sendable () -> OpencodePluginInstallService?
+    package let opencodeService: @Sendable () -> OpencodePluginInstallService?
     /// Copies the bundled Vibe shim and edits `~/.vibe/hooks.toml`. Nil
     /// disables the row's actions.
-    let vibeService: @Sendable () -> VibeHooksInstallService?
+    package let vibeService: @Sendable () -> VibeHooksInstallService?
     /// Adds and removes the dictation note in an agent's instructions file.
     /// Nil disables the row's actions.
-    let dictationNoteService: @Sendable (DictationNoteAgent) -> DictationNoteInstallService?
+    package let dictationNoteService: @Sendable (DictationNoteAgent) -> DictationNoteInstallService?
     /// Adds and removes the doctor skill in an agent's skills directory. Nil
     /// disables the row's actions.
-    let doctorSkillService: @Sendable (DictationNoteAgent) -> AgentSkillInstallService?
+    package let doctorSkillService: @Sendable (DictationNoteAgent) -> AgentSkillInstallService?
     /// The files the setup run writes onto a host that has Vibe. Nil skips
     /// that step, which is what a test that injects nothing gets.
-    let vibeRemoteFiles: @Sendable () -> VibeRemoteHooksFiles?
+    package let vibeRemoteFiles: @Sendable () -> VibeRemoteHooksFiles?
     /// Nil when this build cannot drive Codex's CLI.
-    let codexService: @Sendable () -> CodexPluginInstallService?
-    let codexBundledVersion: String?
-    let codexHookMemory: CodexHookHeardMemory?
+    package let codexService: @Sendable () -> CodexPluginInstallService?
+    package let codexBundledVersion: String?
+    package let codexHookMemory: CodexHookHeardMemory?
     /// Hosts whose last setup run, this app session, found no Vibe. Not
     /// persisted, like the plugin version report: after a relaunch the run is
     /// offered again, which is also how a Vibe installed later gets its hooks.
-    var hostsWithoutVibe: Set<String> = []
+    package var hostsWithoutVibe: Set<String> = []
     /// The same for Claude Code: a host set up for Vibe alone never reports a
     /// plugin version, and without this its row would offer the run forever.
-    var hostsWithoutClaude: Set<String> = []
+    package var hostsWithoutClaude: Set<String> = []
     /// Whether a herdr binary is on this Mac's PATH. Synchronous and fast,
     /// so the row's visibility is reserved at construction instead of
     /// popping in after the first async refresh.
-    let herdrBinaryAvailable: @Sendable () -> Bool
+    package let herdrBinaryAvailable: @Sendable () -> Bool
     /// Whether any live session — local or remote — reports a herdr pane.
     /// Refreshed with the rest of the pane. Injected so tests pin row
     /// visibility without a herdr install.
-    let herdrPresenceReport: @Sendable () -> Bool
+    package let herdrPresenceReport: @Sendable () -> Bool
     /// Host ids whose live REMOTE sessions report a herdr pane, for the
     /// herdr pane's host-name list. Injected for the same reason; the model
     /// maps ids to the enrolled labels it already renders.
-    let herdrPaneReportingHostIDs: @Sendable () -> [String]
+    package let herdrPaneReportingHostIDs: @Sendable () -> [String]
     /// herdr's saved-machine catalog, re-read with the enrolled hosts so the
     /// candidate rows stay true to both. A `HerdrMachineFederationReader`-
     /// shaped seam: injected so tests pin candidates without herdr state on
     /// disk; production passes the live reader's `catalog()` at the
     /// construction site, and the default is absent (no machines).
-    let herdrMachineCatalogReading: @Sendable () -> HerdrMachineCatalogReading
+    package let herdrMachineCatalogReading: @Sendable () -> HerdrMachineCatalogReading
     /// Whether the live herdr machine catalog currently has an enabled
     /// machine. Injected so tests pin the federated row's visibility without
     /// reading herdr's state files.
-    let hasEnabledHerdrMachineReport: @Sendable () -> Bool
-    let listener: (any ClaudeRemoteListenerControlling)?
-    let pluginService: @Sendable () -> any ClaudePluginInstalling
-    let enrollmentService: ClaudeRemoteEnrollmentService
+    package let hasEnabledHerdrMachineReport: @Sendable () -> Bool
+    package let listener: (any ClaudeRemoteListenerControlling)?
+    package let pluginService: @Sendable () -> any ClaudePluginInstalling
+    package let enrollmentService: ClaudeRemoteEnrollmentService
     /// Runs one plugin action and returns its failure, or nil.
     ///
     /// Off the main actor by default: `claude plugin install` fetches, and 60s
     /// of beachball is not a UI. Injected so tests run it synchronously — the
     /// production hop would make every assertion a race.
-    let performAsync:
+    package let performAsync:
         @Sendable (@escaping @Sendable () throws -> Void) async -> ClaudePluginActionFailure?
-    let performEnrollmentAsync:
+    package let performEnrollmentAsync:
         @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]) async
             -> ClaudeEnrollmentActionAttempt
-    let performVerificationAsync:
+    package let performVerificationAsync:
         @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]) async
             -> ClaudeVerificationAttempt
     /// Injected wall clock, read once per refresh to age the host rows. No
     /// `Date()` in the view, and no timer: the rows are rebuilt when the pane
     /// appears and after every action that touches a host.
-    let now: @Sendable () -> Date
+    package let now: @Sendable () -> Date
     /// This Mac's allocated port on the remote side of the tunnel
     /// (`ClaudeRemoteForwardPort`), passed in rather than read here so the pane
     /// has no opinion about where it comes from — and so a test can pin it.
     /// Every generated artifact that names a remote port takes it from this one
     /// value: the ssh block, the install command, the verify probe, the
     /// update/migration commands.
-    let remoteForwardPort: UInt16
+    package let remoteForwardPort: UInt16
     /// Keychain-backed cmux password storage. Nil in previews and in tests that
     /// do not exercise the cmux row — the row then reports that it cannot save,
     /// rather than silently pretending it did.
-    let cmuxPasswords: (any CmuxPasswordStoring)?
+    package let cmuxPasswords: (any CmuxPasswordStoring)?
     /// Owns the app-held ssh forwards. Optional for the same reason `listener`
     /// is: previews and plugin-only tests have none, and the pane then simply
     /// does not offer the toggle.
-    let forwards: ClaudeRemoteForwardCoordinator?
+    package let forwards: ClaudeRemoteForwardCoordinator?
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The

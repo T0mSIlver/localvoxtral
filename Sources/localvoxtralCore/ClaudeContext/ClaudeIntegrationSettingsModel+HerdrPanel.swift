@@ -13,7 +13,7 @@ extension ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Claude local herdr panel configuration confirmation requested")
     }
 
-    func performLocalHerdrPanelConfiguration(_ confirmation: EnrollmentConfirmation) async {
+    package func performLocalHerdrPanelConfiguration(_ confirmation: EnrollmentConfirmation) async {
         // Re-check the offer gate at perform time, not just at request time:
         // a machine disabled between consent and confirm must not be written
         // for. The report is live (production re-reads the catalog per call),

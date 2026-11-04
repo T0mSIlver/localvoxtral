@@ -3,8 +3,8 @@ import Foundation
 
 #if canImport(Darwin)
 import Darwin
-import Synchronization
 #endif
+import Synchronization
 
 extension ClaudeIntegrationSettingsModel {
     /// Re-read the listener's rejection counters.
@@ -36,7 +36,7 @@ extension ClaudeIntegrationSettingsModel {
     /// as a pre-1.1.0 plugin, so checking your own setup raised a hint accusing
     /// a healthy host; those are now `.absentAuthorization`, which
     /// `Snapshot.isEmpty` excludes and this sentence therefore never describes.
-    static func rejectionHint(for snapshot: ClaudeRemoteRejectionTally.Snapshot) -> String? {
+    package static func rejectionHint(for snapshot: ClaudeRemoteRejectionTally.Snapshot) -> String? {
         guard !snapshot.isEmpty else { return nil }
         let cause: String
         switch (snapshot.emptyCredential > 0, snapshot.unknownToken > 0) {
@@ -81,7 +81,7 @@ extension ClaudeIntegrationSettingsModel {
         reconcileListener(presentAlert: false, logsPortConflict: logsPortConflict)
     }
 
-    func reconcileListener(presentAlert: Bool = true, logsPortConflict: Bool = true) {
+    package func reconcileListener(presentAlert: Bool = true, logsPortConflict: Bool = true) {
         guard let listener else { return }
         // Shutdown is the MIRROR of startup, and this is the shutdown case:
         // revoking the last host is about to close the port, so the forwards
@@ -125,7 +125,7 @@ extension ClaudeIntegrationSettingsModel {
         }
     }
 
-    static func status(for error: any Error, port: UInt16) -> ListenerStatus {
+    package static func status(for error: any Error, port: UInt16) -> ListenerStatus {
         if case .bindFailed(let code)? = error as? ClaudeRemoteContextListener.StartFailure,
            code == EADDRINUSE {
             return .portConflict(port: port)
@@ -133,7 +133,7 @@ extension ClaudeIntegrationSettingsModel {
         return .failed
     }
 
-    static func listenerFailureDetail(_ error: any Error, port: UInt16) -> String {
+    package static func listenerFailureDetail(_ error: any Error, port: UInt16) -> String {
         if case .bindFailed(let code)? = error as? ClaudeRemoteContextListener.StartFailure,
            code == EADDRINUSE {
             return "localvoxtral could not bind 127.0.0.1:\(port), because something else already has it.\n\n"

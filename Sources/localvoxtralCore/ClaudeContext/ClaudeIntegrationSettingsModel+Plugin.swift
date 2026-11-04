@@ -117,7 +117,7 @@ extension ClaudeIntegrationSettingsModel {
 
     /// `/tmp/x` and `/private/tmp/x` are one directory on macOS, and a
     /// registration that names either must not read as a disagreement.
-    nonisolated static func pathsAreTheSameDirectory(_ lhs: String, _ rhs: String) -> Bool {
+    package nonisolated static func pathsAreTheSameDirectory(_ lhs: String, _ rhs: String) -> Bool {
         func normalized(_ path: String) -> String {
             URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
         }
@@ -237,7 +237,7 @@ extension ClaudeIntegrationSettingsModel {
     }
 
     /// One short sentence, never the CLI's output.
-    static func shortPluginFailure(_ failure: ClaudePluginActionFailure) -> String {
+    package static func shortPluginFailure(_ failure: ClaudePluginActionFailure) -> String {
         switch failure.serviceError {
         case .claudeCLINotFound: return "Claude Code CLI not found."
         case .marketplaceUnavailable: return "Plugin files missing from the app."
@@ -247,7 +247,7 @@ extension ClaudeIntegrationSettingsModel {
         }
     }
 
-    static func pluginFailureDetail(_ failure: ClaudePluginActionFailure) -> String {
+    package static func pluginFailureDetail(_ failure: ClaudePluginActionFailure) -> String {
         switch failure.serviceError {
         case .claudeCLINotFound:
             return "localvoxtral could not find the `claude` command. Install Claude Code, or make sure "

@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// File scope, not nested in the @MainActor test class: the fixture builders
 /// are called from inside @Sendable seam closures, which must not capture an
@@ -23,6 +24,8 @@ private func catalog(_ profiles: [HerdrMachineProfile]) -> HerdrMachineCatalogRe
 /// Import… action reaching the typed form's consent-gated enrollment.
 @MainActor
 final class HerdrMachineImportTests: XCTestCase {
+    // async: on Linux, sync tests in a @MainActor case abort the test
+    // process at discovery (a failed cast of the main-actor method).
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
         try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-herdr-import-test/hosts.json"),
@@ -87,7 +90,7 @@ final class HerdrMachineImportTests: XCTestCase {
     /// Every status, from one catalog: exact-alias enrolled, plain-alias
     /// importable, both target forms the enrollment form cannot take, and
     /// herdr's own off switch.
-    func testEveryStatusIsDerived() throws {
+    func testEveryStatusIsDerived() async throws {
         let registry = try makeRegistry()
         let enrolled = try registry.enroll(label: "builder", sshHostAlias: "builder").host
         let reading = catalog([
@@ -115,7 +118,7 @@ final class HerdrMachineImportTests: XCTestCase {
     }
 
     /// Candidates keep the catalog's file order, not any sorted order.
-    func testCandidatesFollowTheCatalogsFileOrder() throws {
+    func testCandidatesFollowTheCatalogsFileOrder() async throws {
         let reading = catalog([
             machine("c", label: "third saved", target: "gamma"),
             machine("a", label: "first saved", target: "alpha"),
@@ -134,7 +137,7 @@ final class HerdrMachineImportTests: XCTestCase {
     /// join time — so a target that merely names the same machine by another
     /// spelling is offered for import, not silently folded into the enrolled
     /// host.
-    func testEnrolledRequiresAnExactAliasMatch() throws {
+    func testEnrolledRequiresAnExactAliasMatch() async throws {
         let registry = try makeRegistry()
         _ = try registry.enroll(label: "builder", sshHostAlias: "builder").host
         let reading = catalog([
@@ -151,7 +154,7 @@ final class HerdrMachineImportTests: XCTestCase {
 
     /// A revoked host never counts as enrolled: its credential is withdrawn,
     /// so the machine is importable again rather than silently skipped.
-    func testARevokedHostDoesNotCountAsEnrolled() throws {
+    func testARevokedHostDoesNotCountAsEnrolled() async throws {
         let registry = try makeRegistry()
         let enrolled = try registry.enroll(label: "builder", sshHostAlias: "builder").host
         try registry.revoke(hostID: enrolled.id)
@@ -165,14 +168,14 @@ final class HerdrMachineImportTests: XCTestCase {
 
     /// An unreadable catalog is one inline message's worth of fact — the
     /// section says `.unreadable`, never an alert and never a guessed list.
-    func testAnUnreadableCatalogIsTheUnreadableSection() throws {
+    func testAnUnreadableCatalogIsTheUnreadableSection() async throws {
         let model = makeModel(registry: try makeRegistry(), catalogReading: { .unreadable })
         XCTAssertEqual(model.herdrMachines, .unreadable)
     }
 
     /// An absent catalog renders nothing at all: no empty-state row for a
     /// feature this user does not use.
-    func testAnAbsentCatalogIsNoSectionAtAll() throws {
+    func testAnAbsentCatalogIsNoSectionAtAll() async throws {
         let model = makeModel(registry: try makeRegistry(), catalogReading: { .absent })
         XCTAssertEqual(model.herdrMachines, .absent)
     }
@@ -289,7 +292,7 @@ final class HerdrMachineImportTests: XCTestCase {
 
     /// An empty catalog renders nothing: zero profiles is "no machines
     /// saved", not a header with zero rows.
-    func testEmptyCatalogRendersNothing() throws {
+    func testEmptyCatalogRendersNothing() async throws {
         let model = makeModel(registry: try makeRegistry(), catalogReading: { catalog([]) })
         XCTAssertEqual(model.herdrMachines, .absent)
     }

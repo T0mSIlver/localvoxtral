@@ -53,3 +53,17 @@ public enum HerdrMachineImportStatus: Sendable, Equatable {
         }
     }
 }
+
+/// The sidebar's fixed dot meanings (PR #284) applied to one saved machine:
+/// green when the target is already an enrolled host's alias, yellow when it
+/// is detected and one setup step (the import) is pending, grey when there is
+/// nothing this pane can do with it.
+extension HerdrMachineImportStatus {
+    package var dot: SettingsStatusDot {
+        switch self {
+        case .enrolled: return .green
+        case .importable: return .yellow
+        case .needsAlias, .disabled: return .grey
+        }
+    }
+}

@@ -1,6 +1,6 @@
 import Observation
 import XCTest
-@testable import localvoxtral
+import localvoxtralCore
 
 /// Runs `trigger`, then returns once `value` has been written: how a test
 /// waits for what another main-actor task does in response, with no seam and
@@ -9,7 +9,7 @@ import XCTest
 /// instead of hanging the suite: a bound on a failure, never a wait a passing
 /// test relies on.
 @MainActor
-func awaitNextWrite<Value>(
+package func awaitNextWrite<Value>(
     of value: @escaping @MainActor () -> Value,
     failAfter: TimeInterval = 10,
     file: StaticString = #filePath,
@@ -32,7 +32,7 @@ func awaitNextWrite<Value>(
 /// number of yields. Bounded like `awaitNextWrite`: each wait for the next
 /// write fails after `failAfter` seconds of wall time.
 @MainActor
-func awaitCondition(
+package func awaitCondition(
     failAfter: TimeInterval = 10,
     file: StaticString = #filePath,
     line: UInt = #line,

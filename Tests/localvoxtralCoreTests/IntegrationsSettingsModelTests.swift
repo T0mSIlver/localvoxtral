@@ -2,7 +2,8 @@ import Foundation
 import Synchronization
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// Status derivation for every Integrations row: the plugin's installed /
 /// not / update-available states, the foreign-statusline rule, opencode's

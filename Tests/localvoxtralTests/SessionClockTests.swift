@@ -1,5 +1,6 @@
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// Every timer a session arms sleeps on `Dependencies.clock`. Each test here
 /// advances a `ManualSessionClock` to just short of a deadline, sees nothing
