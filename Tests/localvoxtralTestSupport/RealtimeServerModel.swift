@@ -12,12 +12,49 @@ import Foundation
 /// - `.speechd` follows `SpeechHelper`'s `RealtimeSpeechServer`: a non-final
 ///   commit is a no-op; a final commit answers with a `done` for everything
 ///   appended since the last one.
+/// - `.llamaServer` follows llama.cpp's `ws_realtime`
+///   (`tools/server/server-context.cpp`, after ggml-org/llama.cpp#30994):
+///   audio is transcribed as it arrives, with or without a commit. A
+///   non-final commit answers `input_audio_buffer.committed` at once and,
+///   once its audio is decoded, a `completed` for that item alone; then a
+///   new item opens. A final commit ends the input, and the last item's
+///   `completed` comes when the stream drains. While `holdDrains` is set,
+///   every `completed` waits for `drain()`: the decoder is still behind.
 ///
 /// The `done` text names the audio it covers, as "<n> bytes".
 package final class RealtimeServerModel: @unchecked Sendable {
     package enum Kind: Sendable {
         case vllm
         case speechd
+        case llamaServer
+    }
+
+    /// The `session.created` this server opens a socket with.
+    package static func sessionCreated(_ kind: Kind) -> [String: Any] {
+        switch kind {
+        case .vllm, .speechd:
+            return ["type": "session.created"]
+        case .llamaServer:
+            return [
+                "type": "session.created",
+                "session": [
+                    "id": "sess_test",
+                    "object": "realtime.transcription_session",
+                    "type": "transcription",
+                    "audio": ["input": ["format": ["type": "audio/pcm", "rate": 16_000]]],
+                ] as [String: Any],
+            ]
+        }
+    }
+
+    /// llama-server's `completed` for one item.
+    package static func llamaCompleted(_ text: String) -> [String: Any] {
+        [
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item_test",
+            "content_index": 0,
+            "transcript": text,
+        ]
     }
 
     private enum Item {
@@ -30,9 +67,28 @@ package final class RealtimeServerModel: @unchecked Sendable {
     private var queue: [Item] = []
     private var isRunning = false
     private var runBytes = 0
+    private var holdsDrains = false
+    private var heldCompletions: [[String: Any]] = []
 
     package init(_ kind: Kind) {
         self.kind = kind
+    }
+
+    /// From now on every llama-server `completed` waits for `drain()`.
+    package func holdDrains() {
+        lock.lock()
+        holdsDrains = true
+        lock.unlock()
+    }
+
+    /// llama-server only: the decoder catches up and sends the `completed`
+    /// frames it held, in order.
+    package func drain() -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        holdsDrains = false
+        defer { heldCompletions.removeAll() }
+        return heldCompletions
     }
 
     /// Whether a run is going: the server is reading audio it will answer.
@@ -53,6 +109,10 @@ package final class RealtimeServerModel: @unchecked Sendable {
         switch json["type"] as? String {
         case "input_audio_buffer.append":
             let bytes = (json["audio"] as? String).flatMap { Data(base64Encoded: $0) }?.count ?? 0
+            if kind == .llamaServer {
+                runBytes += bytes
+                return []
+            }
             queue.append(.audio(bytes))
         case "input_audio_buffer.commit":
             let final = json["final"] as? Bool ?? false
@@ -69,6 +129,16 @@ package final class RealtimeServerModel: @unchecked Sendable {
                 queue.append(.end)
                 isRunning = true
                 runBytes = 0
+            case .llamaServer:
+                let completed = Self.llamaCompleted("\(runBytes) bytes")
+                runBytes = 0
+                var frames: [[String: Any]] = final ? [] : [["type": "input_audio_buffer.committed"]]
+                if holdsDrains {
+                    heldCompletions.append(completed)
+                } else {
+                    frames.append(completed)
+                }
+                return frames
             }
         default:
             return []
