@@ -15,10 +15,15 @@ set -uo pipefail
 
 repo="${1:?owner/repo}" sha="${2:?sha}" name="${3:?check name}"
 
-answer="$(gh api "repos/$repo/commits/$sha/check-runs?check_name=$name&per_page=100" \
-  --jq '[.check_runs[]
-          | select(.status == "completed")
-          | select(.conclusion != "skipped" and .conclusion != "cancelled")]
-        | sort_by(.completed_at) | last | .conclusion // ""' 2>/dev/null)" || answer=""
+# `filter=all`: the default lists only each run's latest attempt, which hides
+# a failure behind its cancelled retry, and the older pass would then decide.
+# Every page, then the newest real result across them.
+answer="$(gh api --paginate \
+  "repos/$repo/commits/$sha/check-runs?check_name=$name&filter=all&per_page=100" \
+  --jq '.check_runs[]
+        | select(.status == "completed")
+        | select(.conclusion != "skipped" and .conclusion != "cancelled")
+        | "\(.completed_at) \(.conclusion)"' 2>/dev/null)" || answer=""
+answer="$(printf '%s\n' "$answer" | LC_ALL=C sort | tail -n 1 | cut -d' ' -f2)"
 
 if [[ "$answer" == "success" ]]; then echo true; else echo false; fi

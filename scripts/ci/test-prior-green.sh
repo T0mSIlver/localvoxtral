@@ -23,8 +23,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   if [[ "${args[i]}" == --jq ]]; then jq_filter="${args[i + 1]}"; fi
 done
 [[ "$1" == api ]] || { echo "stub gh: unexpected: $*" >&2; exit 64; }
-[[ "$2" == repos/o/r/commits/abc123/check-runs\?check_name=build-test* ]] \
-  || { echo "stub gh: unexpected url: $2" >&2; exit 64; }
+[[ "$2" == --paginate ]] || { echo "stub gh: not paginated: $*" >&2; exit 64; }
+[[ "$3" == repos/o/r/commits/abc123/check-runs\?check_name=build-test\&filter=all\&* ]] \
+  || { echo "stub gh: unexpected url (every attempt, not the latest, must be listed): $3" >&2; exit 64; }
 [[ -z "${FAIL_API:-}" ]] || { echo "HTTP 502" >&2; exit 1; }
 jq -r "$jq_filter" "$RUNS"
 STUB
@@ -65,6 +66,11 @@ expect false "a later failure on the same head is never covered by the older pas
 
 runs completed:failure:2026-11-04T10:00:00Z
 expect false "a red head runs again"
+
+# Codex review: a failed attempt whose retry the ready cancelled. With every
+# attempt listed the failure stays newer than the old pass.
+runs completed:success:2026-11-04T09:00:00Z completed:failure:2026-11-04T10:00:00Z completed:cancelled:2026-11-04T11:00:00Z
+expect false "a failure behind a cancelled retry is not covered by an older pass"
 
 runs in_progress:null:null
 expect false "a run still going is no result"
