@@ -125,9 +125,11 @@ final class RemovedFeatureUpgradeTests: XCTestCase {
 
         XCTAssertNil(session.lastError)
         XCTAssertTrue(shortcuts.hotKeyManager.isCopyLastDictationShortcutRegistered)
-        XCTAssertTrue(
-            HotKeyManager.debugForcedRegisterStatusesByID.isEmpty,
-            "overlay, live paste and copy each registered once; nothing else did")
+        XCTAssertNil(HotKeyManager.debugForcedRegisterStatusesByID[HotKeyManager.ActionHotKey.copyLastDictation.rawValue],
+            "the copy slot took the key once")
+        XCTAssertEqual(
+            HotKeyManager.ActionHotKey.allCases.map(\.rawValue).sorted(), [3, 5],
+            "Carbon ID 4 was quick capture's; no slot registers under it")
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: true, hotKeyID: .copyLastDictation)
         XCTAssertEqual(session.copyLastDictationCalls, 1)
     }
