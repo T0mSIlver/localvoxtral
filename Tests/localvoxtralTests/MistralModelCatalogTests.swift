@@ -112,15 +112,22 @@ final class MistralModelCatalogTests: XCTestCase {
             [
                 MistralModelPickerEntry(
                     tag: "",
-                    label: "Voxtral Mini Transcribe Realtime 26.02 (default)",
+                    label: "Voxtral Mini Transcribe Realtime 3.0 (default)",
                     section: .mistral
-                )
+                ),
+                // Mistral retires it on 2027-04-30, but the listing still
+                // offers it without a deprecation (2026-11-04).
+                MistralModelPickerEntry(
+                    tag: "voxtral-mini-transcribe-realtime-2602",
+                    label: "Voxtral Mini Transcribe Realtime 26.02",
+                    section: .mistral
+                ),
             ]
         )
     }
 
-    /// Voxtral Realtime 3 gets its row by id, whether or not the listing sets
-    /// its realtime flag, and the default stays 2602.
+    /// Voxtral Realtime 3 is the default row, whether or not the listing sets
+    /// its realtime flag, and 2602 keeps a row of its own.
     func testDictationPickerOffersVoxtralRealtime3() throws {
         for realtimeFlag in [true, false] {
             let listing = """
@@ -138,9 +145,9 @@ final class MistralModelCatalogTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                entries.map(\.tag), ["", "voxtral-mini-transcribe-realtime-3-0"],
+                entries.map(\.tag), ["", "voxtral-mini-transcribe-realtime-2602"],
                 "realtime flag \(realtimeFlag)")
-            XCTAssertEqual(entries.last?.label, "Voxtral Mini Transcribe Realtime 3.0")
+            XCTAssertEqual(entries.first?.label, "Voxtral Mini Transcribe Realtime 3.0 (default)")
         }
     }
 
@@ -165,7 +172,7 @@ final class MistralModelCatalogTests: XCTestCase {
         let entries = MistralModelCatalog.pickerEntries(
             for: .dictation, catalog: catalog, storedModel: "",
             defaultModel: MistralRealtimeWebSocketClient.defaultModel)
-        XCTAssertEqual(entries.map(\.tag), ["", "voxtral-mini-transcribe-realtime-3-0"])
+        XCTAssertEqual(entries.map(\.tag), ["", "voxtral-mini-transcribe-realtime-2602"])
 
         let stored = "Voxtral Mini Transcribe Realtime 3.0"
         XCTAssertEqual(
@@ -175,7 +182,7 @@ final class MistralModelCatalogTests: XCTestCase {
             MistralModelCatalog.selectionTag(
                 storedModel: stored, catalog: catalog,
                 defaultModel: MistralRealtimeWebSocketClient.defaultModel),
-            "voxtral-mini-transcribe-realtime-3-0")
+            "", "Realtime 3's name selects the default row")
         XCTAssertEqual(
             MistralModelCatalog.requestModelID(
                 for: "voxtral-mini-realtime-latest", catalog: catalog),

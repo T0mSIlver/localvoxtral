@@ -12,7 +12,7 @@ package struct DictationModelCapabilities: Equatable, Sendable {
         case none
         /// A list in the session's opening message, in priority order, cut at
         /// `maxTerms`. Terms keep their spaces: Voxtral Realtime 3 takes
-        /// phrases, unlike the batch model's single words.
+        /// phrases.
         case sessionList(maxTerms: Int)
     }
 

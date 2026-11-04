@@ -42,6 +42,8 @@ final class SettingsStore {
         /// anything: a false value only costs one extra (cheap) sweep.
         static let apiKeysMigratedToKeychain = "settings.api_keys_migrated_to_keychain"
         static let mistralDictationModel = "settings.mistral_dictation_model"
+        /// Set once a stored 2602 dictation model moved to the default.
+        static let mistralDictationModel2602Migrated = "settings.mistral_dictation_model_2602_migrated"
         static let mistralPolishingModel = "settings.mistral_polishing_model"
         static let anthropicPolishingModel = "settings.anthropic_polishing_model"
         /// Never stored in UserDefaults; the key exists only so the legacy
@@ -1218,6 +1220,20 @@ final class SettingsStore {
         // Empty is the stored form of "use the pinned default": the defaults
         // live in one place (the client / MistralPolishDefaults) and a user who
         // clears the field gets them back, rather than a blank model name.
+        // Mistral retires the hosted 2602 on 2027-04-30: a stored 2602 id
+        // moves to the default, Realtime 3, once. Picking 2602 again later
+        // keeps it; an environment override is left as it is.
+        if !defaults.bool(forKey: Keys.mistralDictationModel2602Migrated) {
+            defaults.set(true, forKey: Keys.mistralDictationModel2602Migrated)
+            let stored = defaults.string(forKey: Keys.mistralDictationModel) ?? ""
+            let migrated = MistralRealtimeModels.storedDictationModel(migrating: stored)
+            if migrated != stored {
+                defaults.set(migrated, forKey: Keys.mistralDictationModel)
+                Log.backends.notice(
+                    "settings: stored Mistral dictation model \(stored, privacy: .public) is deprecated; now the default, \(MistralRealtimeWebSocketClient.defaultModel, privacy: .public)"
+                )
+            }
+        }
         mistralDictationModel = Self.loadString(
             defaults: defaults, key: Keys.mistralDictationModel,
             envKey: "MISTRAL_DICTATION_MODEL", fallback: "",

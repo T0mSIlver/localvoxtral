@@ -76,7 +76,7 @@ final class MistralRealtimeClientTests: XCTestCase {
         )
         XCTAssertEqual(
             MistralRealtimeWebSocketClient.defaultModel,
-            "voxtral-mini-transcribe-realtime-2602"
+            "voxtral-mini-transcribe-realtime-3-0"
         )
     }
 
