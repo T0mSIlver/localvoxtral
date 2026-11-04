@@ -414,7 +414,13 @@ enum SpeechModelLoader {
                             ? .float16 : .bfloat16
                     )
                 },
-                fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
+                fromPretrained: { id in
+                    // Development only. The checkpoint's kind is known after the download,
+                    // so a Unified one loads again from the cache with the app's float16.
+                    let model = try await NemotronASRModel.fromPretrained(id)
+                    guard model.isBuffered else { return model }
+                    return try await NemotronASRModel.fromPretrained(id, computeDType: .float16)
+                }
             ))
         }
     }
