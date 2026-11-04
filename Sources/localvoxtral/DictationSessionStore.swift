@@ -243,7 +243,7 @@ final class DictationSessionStore {
         let diagnosticRecordStore = diagnosticRecordStore
         // The record goes first: a save that fails keeps the dictation with its
         // audio, and a file that will not go is retried by the next sweep.
-        return enqueueWrite("delete dictation \(id)") { context in
+        return enqueueWrite("delete dictation \(id)", deletes: true) { context in
             let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.id == id }, in: context)
             try context.save()
@@ -271,7 +271,7 @@ final class DictationSessionStore {
         #if DEBUG
         let afterSave = debugAfterDeleteAllSave
         #endif
-        return enqueueWrite("delete all dictations") { context in
+        return enqueueWrite("delete all dictations", deletes: true) { context in
             let deleted = try Self.deleteRecords(matching: nil, in: context)
             try context.save()
             #if DEBUG
@@ -302,7 +302,7 @@ final class DictationSessionStore {
     func trim(olderThan cutoff: Date, expiringBackups: Bool = false) -> Task<Void, Never> {
         guard !isFailing else { return skipWhileFailing("trim dictations") }
         let attachments = attachments
-        return enqueueWrite("trim dictations") { context in
+        return enqueueWrite("trim dictations", deletes: true) { context in
             let expired = #Predicate<DictationSessionRecord> { $0.startedAt < cutoff }
             if try context.fetchCount(FetchDescriptor(predicate: expired)) > 0 {
                 attachments.snapshotBeforeDelete()
@@ -459,11 +459,15 @@ final class DictationSessionStore {
         return ids
     }
 
+    /// `deletes`: the write removes dictations, so the file is scrubbed of
+    /// their text once it is saved.
     private func enqueueWrite(
         _ label: String,
+        deletes: Bool = false,
         _ body: @escaping @Sendable (ModelContext) throws -> Int
     ) -> Task<Void, Never> {
         let container = modelContainer
+        let scrubbed = deletes ? storeURL : nil
         let previous = lastWrite
         let task = Task.detached { [weak self] in
             await previous?.value
@@ -475,6 +479,7 @@ final class DictationSessionStore {
                 Log.persistence.info(
                     "History: \(label, privacy: .public) changed \(changed, privacy: .public) record(s)"
                 )
+                if changed > 0, let scrubbed { Self.scrubDeletedText(in: scrubbed) }
                 await self?.noteAccess(failure: nil)
             } catch {
                 changed = 0
@@ -489,6 +494,22 @@ final class DictationSessionStore {
         }
         lastWrite = task
         return task
+    }
+
+    /// The rows are gone; a scrub that fails leaves their text in free
+    /// space until the next one, and says so.
+    private nonisolated static func scrubDeletedText(in url: URL) {
+        let started = DispatchTime.now().uptimeNanoseconds
+        do {
+            try SQLiteFile(readWrite: url).scrubFreedSpace()
+            let milliseconds = (DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            Log.persistence.info(
+                "History: scrubbed deleted text from the store in \(milliseconds, privacy: .public) ms")
+        } catch {
+            Log.persistence.error(
+                "History: scrubbing deleted text from the store failed; it stays in free space until the next delete: \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     // MARK: - Reads
