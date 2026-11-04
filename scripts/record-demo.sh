@@ -458,7 +458,6 @@ until [[ -s "$BACKEND_PORT_FILE" ]] || (( SECONDS >= BACKEND_DEADLINE )); do sle
 [[ -s "$BACKEND_PORT_FILE" ]] || { echo "The demo backend did not start." >&2; exit 1; }
 BACKEND_PORT="$(cat "$BACKEND_PORT_FILE")"
 demo_default settings.dictation_backend_mode -string external_url
-demo_default settings.realtime_provider -string realtime_api
 demo_default settings.realtime_api_endpoint_url -string "ws://127.0.0.1:$BACKEND_PORT/v1/realtime"
 demo_default settings.realtime_api_model_name -string demo
 demo_default settings.polishing_backend_mode -string external_url

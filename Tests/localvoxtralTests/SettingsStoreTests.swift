@@ -256,29 +256,8 @@ final class SettingsStoreTests: XCTestCase {
         for (name, endpoint, expected) in cases {
             let store = makeFreshStore()
             store.realtimeAPIEndpointURL = endpoint
-            store.realtimeProvider = .realtimeAPI
             store.dictationBackendMode = .externalURL
             XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, expected, name)
-        }
-    }
-
-    // MARK: - realtimeProvider migration
-
-    func testRealtimeProvider_storedRawValueFallsBackToDefault() {
-        let cases: [(name: String, rawValue: String)] = [
-            // A user who previously selected the now-removed deprecated backend has
-            // its raw value persisted in UserDefaults. Decoding must fall back to the
-            // default provider instead of crashing or producing an invalid state.
-            ("legacyRawValue", "mlx_audio"),
-            ("unknownRawValue", "some_future_provider"),
-        ]
-        for (name, rawValue) in cases {
-            _ = makeFreshStore()
-            defaults.set(rawValue, forKey: "settings.realtime_provider")
-
-            let store = makeStore()
-
-            XCTAssertEqual(store.realtimeProvider, .realtimeAPI, name)
         }
     }
 
@@ -295,6 +274,7 @@ final class SettingsStoreTests: XCTestCase {
             ("settings.speechd_step_cadence", "100ms"),
             ("settings.speechd_cache_limit", "2gb"),
             ("debug.dogfood_capture_enabled", true),
+            ("settings.realtime_provider", "mlx_audio"),
             ("settings.quick_capture_shortcut_key_code", 41),
             ("settings.quick_capture_shortcut_carbon_modifiers", 4096),
             ("settings.quick_capture_shortcut_enabled", false),
@@ -622,7 +602,6 @@ final class SettingsStoreTests: XCTestCase {
         for (name, modelName, expected) in cases {
             let store = makeFreshStore()
             store.realtimeAPIModelName = modelName
-            store.realtimeProvider = .realtimeAPI
             store.dictationBackendMode = .externalURL
             XCTAssertEqual(store.effectiveModelName, expected, name)
         }

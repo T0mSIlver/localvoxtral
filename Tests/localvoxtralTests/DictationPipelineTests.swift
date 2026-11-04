@@ -4318,7 +4318,6 @@ final class DictationPipelineTests: XCTestCase {
         let settings = makeSettings(outputMode: outputMode)
         settings.dictationBackendMode = .externalURL
         settings.polishingBackendMode = .externalURL
-        settings.realtimeProvider = .realtimeAPI
         settings.realtimeAPIEndpointURL = endpoint.absoluteString
         settings.realtimeAPIModelName = Self.model
         // As in the e2e check: the inserted text is the transcript.
