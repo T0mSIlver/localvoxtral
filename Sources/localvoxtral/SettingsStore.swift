@@ -544,6 +544,19 @@ final class SettingsStore {
         }
     }
 
+    /// Global terms and refused suggestions as saved right now, by this copy
+    /// of the app or another. Reads only `defaults`, so a project-term run
+    /// can call it off the main actor when its answer lands (LVX-90).
+    var savedTermExclusions: @Sendable () -> [String] {
+        // UserDefaults is thread-safe, but the hosted runner's SDK does not
+        // mark it Sendable (`AppDefaults`).
+        nonisolated(unsafe) let defaults = defaults
+        return {
+            (defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
+                + (defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? [])
+        }
+    }
+
     /// An absent key is `every50`: the pass runs by itself unless the user
     /// picks Never (owner ruling, 2026-09-21).
     var termSuggestionInterval: TermSuggestionInterval {
