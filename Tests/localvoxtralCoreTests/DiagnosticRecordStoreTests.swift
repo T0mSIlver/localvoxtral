@@ -880,4 +880,132 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             DiagnosticRecordRedaction.withholding(withheld, in: context, softWrapped: false).contains("tidy up"),
             "the agent source's harvest is taken from this text")
     }
+
+    // MARK: - Matched entries and wrapped rows (LVX-63, LVX-64, LVX-65)
+
+    private func source(
+        _ name: String, entries: [String] = [], excerpt: String? = nil
+    ) -> DiagnosticRecord.Source {
+        .init(
+            source: name, harvest: [], harvestCount: 0,
+            entries: entries.map { .init(term: $0, heard: []) },
+            phoneticEntries: [], verificationEntries: [],
+            isFallbackOnly: false, renderedExcerpt: excerpt)
+    }
+
+    /// The matcher runs on the captured text, so `DB_PASSWORD=CrimsonFalcon71`
+    /// yields an entry whose term has lost the name that marked it.
+    func testAnEntryWhoseTermWasRedactedFromItsSourceIsDropped() {
+        let screen = "export DB_PASSWORD=CrimsonFalcon71\nrun PytestRunner"
+        var count = 0
+        let kept = DiagnosticRecordRedaction.redacting(screen, count: &count)
+        let entries: [DiagnosticRecord.Source.Entry] = [
+            .init(term: "CrimsonFalcon71", heard: ["crimson falcon 71"]),
+            .init(term: "PytestRunner", heard: ["pytest runner"]),
+        ]
+        XCTAssertEqual(
+            DiagnosticRecordRedaction.droppingEntries(entries, capturedText: screen, keptText: kept)
+                .map(\.term),
+            ["PytestRunner"])
+    }
+
+    func testAnEntryOfTheWithheldPromptIsDroppedAndNeighboursStay() {
+        var record = DiagnosticRecord.storeFixture(capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        var claude = source("claude", entries: ["ConfidentialRoadmapV2", "PytestRunner"])
+        claude.phoneticEntries = claude.entries
+        claude.verificationEntries = claude.entries
+        record.sources = [claude]
+        DiagnosticRecordRedaction.withholdPrompt("ConfidentialRoadmapV2", from: &record)
+        XCTAssertEqual(record.sources[0].entries.map(\.term), ["PytestRunner"])
+        XCTAssertEqual(record.sources[0].phoneticEntries.map(\.term), ["PytestRunner"])
+        XCTAssertEqual(record.sources[0].verificationEntries.map(\.term), ["PytestRunner"])
+    }
+
+    private let wrappedPrompt =
+        "Please keep the acquisition of RedPanda Labs confidential until the board meeting next Monday"
+    private let wrappedRows =
+        "Please keep the acquisit\nion of RedPanda Labs con\nfidential until the boa\nrd meeting next Monday"
+
+    /// The terminal source's excerpt and the user prompts quote the screen, so
+    /// they get the screen's soft-wrap pass.
+    func testAWrappedPriorPromptIsTakenOutOfTheTerminalExcerptAndUserPrompts() {
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: wrappedRows)
+        record.text.userPrompts = ["[Screen: reference only]\n---\n\(wrappedRows)\n---\nDictation: run tests"]
+        record.sources = [source("terminal", excerpt: wrappedRows)]
+        DiagnosticRecordRedaction.withholdPrompt(wrappedPrompt, from: &record)
+        XCTAssertFalse(record.screen?.sanitizedText?.contains("RedPanda") == true)
+        XCTAssertFalse(record.sources[0].renderedExcerpt?.contains("RedPanda") == true)
+        XCTAssertFalse(record.text.userPrompts[0].contains("RedPanda"))
+        XCTAssertTrue(record.text.userPrompts[0].contains("Dictation: run tests"))
+    }
+
+    /// A clipboard can hold millions of characters, so its excerpt keeps the
+    /// cheap pass: a prompt wrapped across rows is not looked for there.
+    func testAClipboardExcerptKeepsTheCheapPass() {
+        var record = DiagnosticRecord.storeFixture(capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let whole = "see: \(wrappedPrompt)"
+        let clipboardRows = "Please keep the acq\nuisition of RedPanda Labs con\nfidential until the boa\nrd meeting next Monday"
+        record.sources = [
+            source("clipboard", excerpt: clipboardRows),
+            source("claude", excerpt: whole),
+        ]
+        DiagnosticRecordRedaction.withholdPrompt(wrappedPrompt, from: &record)
+        XCTAssertEqual(record.sources[0].renderedExcerpt, clipboardRows)
+        XCTAssertEqual(
+            record.sources[1].renderedExcerpt,
+            "see: \(DiagnosticRecordRedaction.withheldPromptPlaceholder)")
+    }
+
+    /// A shorter prompt line that shares its start with a longer one is still
+    /// taken out whole: the soft-wrap pass must not consume the shared prefix
+    /// first and leave the line's tail behind.
+    func testALineSharingItsStartWithALongerPromptLineIsStillTakenOut() {
+        let prompt = "Please investigate the production deployment before changing any configuration.\n"
+            + "Please investigate the production ProjectZephyr"
+        let excerpt = "> Please investigate the production ProjectZephyr\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        record.text.userPrompts = [excerpt]
+        record.sources = [source("terminal", excerpt: excerpt)]
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        XCTAssertFalse(record.screen?.sanitizedText?.contains("ProjectZephyr") == true)
+        XCTAssertFalse(record.text.userPrompts[0].contains("ProjectZephyr"))
+        XCTAssertFalse(record.sources[0].renderedExcerpt?.contains("ProjectZephyr") == true)
+    }
+
+    /// The reverse of the shared-start case: the shorter line is a prefix of
+    /// a longer one that the screen wrapped. Whichever pass matches first, the
+    /// longer line goes whole.
+    func testAShorterPromptLineDoesNotLeaveTheTailOfAWrappedLongerOne() {
+        let prompt = "Please investigate the production ProjectZephyr tomorrow\n"
+            + "Please investigate the production"
+        let excerpt = "> Please investigate the production ProjectZephyr\n tomorrow\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        record.text.userPrompts = [excerpt]
+        record.sources = [source("terminal", excerpt: excerpt)]
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        for text in [record.screen?.sanitizedText, record.text.userPrompts[0], record.sources[0].renderedExcerpt] {
+            let text = text ?? ""
+            XCTAssertFalse(text.contains("ProjectZephyr"), text)
+            XCTAssertFalse(text.contains("tomorrow"), text)
+            XCTAssertTrue(text.contains("Done"), text)
+        }
+    }
+
+    /// Two prompt lines that overlap partway, one matched exactly and the
+    /// other across a row break, are masked as one stretch.
+    func testPartiallyOverlappingPromptLinesAreMaskedAsOneStretch() {
+        let prompt = "alpha beta gamma delta SecretOne\ngamma delta SecretOne epsilon zeta"
+        let excerpt = "> alpha beta gamma delta SecretOne\n  epsilon zeta\nDone"
+        var record = DiagnosticRecord.storeFixture(
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000), screenText: excerpt)
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+        let text = record.screen?.sanitizedText ?? ""
+        XCTAssertFalse(text.contains("SecretOne"), text)
+        XCTAssertFalse(text.contains("epsilon"), text)
+        XCTAssertFalse(text.contains("zeta"), text)
+        XCTAssertTrue(text.contains("Done"), text)
+    }
 }

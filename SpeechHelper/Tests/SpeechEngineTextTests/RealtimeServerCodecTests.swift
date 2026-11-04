@@ -126,6 +126,41 @@ final class RealtimeServerCodecTests: XCTestCase {
         XCTAssertEqual(try RealtimeClientMessage.parse(Data(#"{"type":"input_audio_buffer.commit"}"#.utf8)), .commit(final: false))
     }
 
+    // The app's term list arrives as `context_bias` (LVX-29). No field keeps
+    // the connection's list; an empty array clears it; the list is cleaned
+    // and bounded before any engine sees it.
+
+    func testParseSessionUpdateWithoutContextBiasKeepsTheList() throws {
+        XCTAssertEqual(
+            try RealtimeClientMessage.parse(Data(#"{"model":"m","type":"session.update"}"#.utf8)),
+            .sessionUpdate(terms: nil)
+        )
+    }
+
+    func testParseSessionUpdateCarriesTheCleanedTermList() throws {
+        let frame = #"{"type":"session.update","context_bias":["Claude  Code","herdr","HERDR"," ","\#(String(repeating: "x", count: 65))"]}"#
+        XCTAssertEqual(
+            try RealtimeClientMessage.parse(Data(frame.utf8)),
+            .sessionUpdate(terms: SessionTerms(["Claude Code", "herdr"]))
+        )
+        XCTAssertEqual(
+            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","context_bias":[]}"#.utf8)),
+            .sessionUpdate(terms: .empty)
+        )
+    }
+
+    func testSessionTermsKeepTheFirstHundred() {
+        let terms = SessionTerms((0..<150).map { "term\($0)" })
+        XCTAssertEqual(terms.terms.count, SessionTerms.maxTerms)
+        XCTAssertEqual(terms.terms.last, "term99")
+    }
+
+    func testParseSessionUpdateRejectsAContextBiasThatIsNotAList() {
+        XCTAssertThrowsError(
+            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","context_bias":"herdr"}"#.utf8))
+        ) { XCTAssertEqual($0 as? RealtimeClientMessage.ParseError, .invalidContextBias) }
+    }
+
     func testUnknownTypeIsIgnoredNotAnError() throws {
         XCTAssertEqual(try RealtimeClientMessage.parse(Data(#"{"type":"response.created"}"#.utf8)), .ignored(type: "response.created"))
     }

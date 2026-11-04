@@ -11,7 +11,7 @@ import Foundation
 /// - Two sources propose DIFFERENT exact terms for the same heard span. Nothing
 ///   here can tell which is right, and pre-applying the wrong bytes edits the
 ///   user's words into something they did not say. Abstain on that span
-///   entirely — the same rule `RepoVocabularyMatcher.groundedCandidateEntries`
+///   entirely — the same rule `RepoVocabularyMatcher.groundedCandidates`
 ///   already applies to tied fuzzy hits within one source.
 /// - One source has only a FALLBACK guess for a span (its exact and
 ///   edit-distance-one tiers found nothing and the bounded aligned matcher

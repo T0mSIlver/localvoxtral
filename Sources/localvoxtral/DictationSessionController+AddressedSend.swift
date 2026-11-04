@@ -330,7 +330,7 @@ extension DictationSessionController {
         handedOffAddressedCommits = []
         for handedOff in pending {
             Log.persistence.notice("quit while an addressed send delivers; saving it as not inserted")
-            handedOff.saveForQuit()
+            _ = keepUntypedDictation(savedBy: handedOff.saveForQuit)
         }
     }
 }
@@ -385,5 +385,9 @@ final class PinnedAppOverlayCommitter: OverlayKeyboardInserting {
 
     func pasteUsingCommandV(_ text: String, preferredAppPID _: pid_t?) -> Bool {
         textInsertion.pasteUsingCommandV(text, preferredAppPID: pid)
+    }
+
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void) {
+        textInsertion.writeClipboardAfterPendingPastes(write)
     }
 }

@@ -766,8 +766,10 @@ final class DictationViewModel {
             Task { [weak self] in await self?.session.refreshLastDictationFromStore() }
             // Attached whatever the setting says, so Delete and retention
             // still clear recordings kept before it was turned off.
-            sessionStore?.audioStore = DictationAudioStore(
+            let audioStore = DictationAudioStore(
                 directoryURL: dataDirectory.appendingPathComponent("dictation-audio", isDirectory: true))
+            sessionStore?.audioStore = audioStore
+            session.audioStoreWithoutHistory = audioStore
             // One store for writes and for deletes: a record follows its
             // History entry the way its audio does.
             let diagnosticRecordStore = DiagnosticRecordStore(
@@ -788,7 +790,7 @@ final class DictationViewModel {
                         self?.learnedTermRevision += 1
                         // What keeps the sidebar badge honest between two
                         // openings of the pane; reads memory, never the disk.
-                        self?.termSuggestions.refreshLearnedSuggestions()
+                        await self?.termSuggestions.refreshLearnedSuggestions()
                     }
                 }
             )

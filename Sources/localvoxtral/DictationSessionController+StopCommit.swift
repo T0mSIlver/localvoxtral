@@ -672,19 +672,22 @@ extension DictationSessionController {
             // no edit watch: nil outcome. Superseded, the capture tap already
             // belongs to the new dictation, and consuming it here would take
             // that dictation's facts.
+            // The failure goes first: the await below can outlast the next
+            // dictation's start (LVX-68).
+            if let llmConnectionFailure, !addressed.superseded {
+                self.handleLLMPolishingConnectionFailure(
+                    title: llmConnectionFailure.title,
+                    message: llmConnectionFailure.message,
+                    technicalDetails: llmConnectionFailure.technicalDetails,
+                    publicSummary: llmConnectionFailure.publicSummary
+                )
+            }
             if !addressed.superseded {
                 await self.writeDiagnosticRecordIfEnabled(
                     recordInputs,
                     historyID: historyID,
                     commitOutcome: nil,
                     committedTextForWatch: ""
-                )
-            }
-            if let llmConnectionFailure, !addressed.superseded {
-                self.handleLLMPolishingConnectionFailure(
-                    title: llmConnectionFailure.title,
-                    message: llmConnectionFailure.message,
-                    technicalDetails: llmConnectionFailure.technicalDetails
                 )
             }
             return
@@ -761,11 +764,10 @@ extension DictationSessionController {
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
-        // AFTER the commit and the session record: record latency
-        // can only ever land on the tail of this task, never on the
-        // user's paste. `writeDiagnosticRecordIfEnabled` checks the
-        // switch before doing any work.
-        await self.writeDiagnosticRecordIfEnabled(
+        // The watch opens and the capture tap is consumed before anything
+        // modal: the polish-failure alert blocks until dismissed, and an
+        // edit made while it is open must be seen.
+        let pendingRecord = self.beginDiagnosticRecord(
             recordInputs,
             historyID: historyID,
             commitOutcome: overlayCommit.outcome,
@@ -778,12 +780,24 @@ extension DictationSessionController {
             )
         )
 
+        // Before the diagnostic record's await: cleanup already reset the
+        // status, and a next dictation can start while the record waits
+        // behind History's writes. Reported after it, the failure would
+        // land on that dictation (LVX-68).
         if let llmConnectionFailure {
             self.handleLLMPolishingConnectionFailure(
                 title: llmConnectionFailure.title,
                 message: llmConnectionFailure.message,
-                technicalDetails: llmConnectionFailure.technicalDetails
+                technicalDetails: llmConnectionFailure.technicalDetails,
+                publicSummary: llmConnectionFailure.publicSummary
             )
+        }
+
+        // AFTER the commit and the session record: record latency
+        // can only ever land on the tail of this task, never on the
+        // user's paste.
+        if let pendingRecord {
+            await self.finishDiagnosticRecord(pendingRecord)
         }
     }
 
@@ -1181,6 +1195,24 @@ extension DictationSessionController {
         return record.id
     }
 
+    /// Deletes every recording, through History's write queue. When History
+    /// did not open there is no queue and no quarantine, so the folder is
+    /// emptied here; turning audio off must not depend on a store that
+    /// failed (same fallback as `deleteAllDiagnosticRecords`, #1771).
+    @discardableResult
+    func deleteAllAudio(removingBackups: Bool = false) -> Task<Void, Never>? {
+        if let sessionStore {
+            return sessionStore.deleteAllAudio(removingBackups: removingBackups)
+        }
+        if historyOpenFailed, let audioStoreWithoutHistory {
+            let removed = audioStoreWithoutHistory.removeAll()
+            if removingBackups { quarantineWithoutHistory?.removeAll(of: "dictation-audio") }
+            Log.persistence.info(
+                "History did not open: deleted \(removed, privacy: .public) recording(s) directly")
+        }
+        return nil
+    }
+
     /// Brings the store in line with the retention setting: at launch, and
     /// when the setting changes. `off` deletes everything there is; with
     /// `removingBackups` (the user ticked it when choosing Don't keep) the
@@ -1200,7 +1232,7 @@ extension DictationSessionController {
             deleteAllDiagnosticRecords()
         }
         if !settings.dictationAudioEnabled {
-            sessionStore?.deleteAllAudio()
+            deleteAllAudio()
         }
         if !retention.savesDictations, removingBackups {
             // Not a trim: a trim snapshots the store first.
@@ -1237,11 +1269,19 @@ extension DictationSessionController {
         let audioSeconds: Double
         let apiKey: String
         let endpoint: URL
+        let terms: ContextTermSources
+    }
+
+    /// Where a Mistral request's `context_bias` comes from: the second pass
+    /// at stop, or Voxtral Realtime 3 at session start (#1944).
+    struct ContextTermSources {
+        /// The host the terms go to, asked about again after the root lookup.
+        let endpoint: URL
         let userTerms: [String]
         let dictionarySpellings: [String]
         let contextTrusted: Bool
-        /// The session's and the screen's, read at stop. The repository's
-        /// wait for the project, which may need the git root.
+        /// The session's and, at stop, the screen's. The repository's wait
+        /// for the project, which may need the git root.
         let context: StopSecondPass.ContextTerms
         /// The joined session's workspace, the project's first word.
         let workspace: ClaudeWorkspaceReference?
@@ -1251,13 +1291,6 @@ extension DictationSessionController {
         /// Whether the project's agent proposals may go, and so whether the
         /// git root is looked up: repo vocabulary on, and `contextTrusted`.
         let repositoryTermsPermitted: Bool
-    }
-
-    /// The list the pass is biased with, and the terms before
-    /// `contextBias` joined their phrases, to put the spaces back.
-    struct StopSecondPassTerms {
-        let contextBias: [String]
-        let candidates: [String]
     }
 
     /// Nil when this stop gets no second pass; every reason but "not this
@@ -1275,17 +1308,27 @@ extension DictationSessionController {
             }
             return nil
         }
-        guard !transcript.currentDictationEventText
+        let realtimeIsEmpty = transcript.currentDictationEventText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            Log.backends.info("second pass skipped: the realtime transcript is empty")
+        guard let pcm = sessionAudio, !pcm.isEmpty else {
+            if realtimeIsEmpty {
+                Log.backends.info("second pass skipped: the realtime transcript is empty")
+            } else {
+                Log.backends.notice(
+                    "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
+                )
+            }
             return nil
         }
-        guard let pcm = sessionAudio, !pcm.isEmpty else {
-            Log.backends.notice(
-                "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
-            )
-            return nil
+        // A dictation that sat inside a stall has no realtime text although
+        // the speech is on the recording (LVX-71). The pass still runs when
+        // the audio reached speech level; a quiet tap stays off the API.
+        if realtimeIsEmpty {
+            guard StallBackfill.recordingReachesSpeech(pcm16: pcm) else {
+                Log.backends.info("second pass skipped: the realtime transcript is empty and the audio is quiet")
+                return nil
+            }
+            Log.backends.notice("second pass running on an empty realtime transcript: the audio reached speech level")
         }
         // The key and host the session dialed, never a fresh read of Settings.
         guard let configuration = sessionRealtimeConfiguration,
@@ -1308,12 +1351,25 @@ extension DictationSessionController {
             audioSeconds: Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond),
             apiKey: configuration.apiKey,
             endpoint: endpoint,
+            terms: contextTermSources(
+                endpoint: endpoint, contextTrusted: contextTrusted, join: join,
+                context: contextTrusted
+                    ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
+                    : .none)
+        )
+    }
+
+    /// The term sources for a request to `endpoint` on behalf of `join`.
+    func contextTermSources(
+        endpoint: URL, contextTrusted: Bool, join: ClaudeSessionJoin?,
+        context: StopSecondPass.ContextTerms
+    ) -> ContextTermSources {
+        ContextTermSources(
+            endpoint: endpoint,
             userTerms: settings.polishSpeakerTerms,
             dictionarySpellings: sessionReplacementDictionary?.entries.map(\.replaceWith) ?? [],
             contextTrusted: contextTrusted,
-            context: contextTrusted
-                ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
-                : .none,
+            context: context,
             workspace: contextTrusted ? join?.snapshot.learnedTermWorkspace : nil,
             joinedRepositoryRoot: join?.repositoryRoot ?? .unknown,
             // An agent's unconfirmed proposals go only where repo vocabulary
@@ -1348,12 +1404,27 @@ extension DictationSessionController {
     /// terminal has no project. The repository pipeline itself is not run:
     /// it can take 3 s, and it nominates only what the realtime text nearly
     /// spells.
-    func stopSecondPassTerms(for request: StopSecondPassRequest) async -> StopSecondPassTerms {
+    func stopSecondPassTerms(for request: StopSecondPassRequest) async -> [String] {
+        await contextBias(
+            from: request.terms, cut: MistralBatchTranscription.contextBias(from:),
+            logLabel: "second pass terms")
+    }
+
+    /// The `context_bias` list `sources` give, once the project is known,
+    /// cut by `cut`. Logs counts per source under `logLabel`, never terms.
+    func contextBias(
+        from request: ContextTermSources, cut: ([String]) -> [String], logLabel: String
+    ) async -> [String] {
         var context = request.context
         var learnedTerms: [String] = []
         if request.contextTrusted {
-            var repositoryRoot = LearnedTermProjectResolver.RepositoryRoot.unknown
-            if request.repositoryTermsPermitted, needsRepositoryRoot(request.workspace) {
+            // A root the start already found for this join is reused: a
+            // second lookup while that one holds the single-flight gate
+            // would answer `.unknown` at once.
+            var repositoryRoot = request.joinedRepositoryRoot
+            if repositoryRoot == .unknown, request.repositoryTermsPermitted,
+                needsRepositoryRoot(request.workspace)
+            {
                 let started = ContinuousClock.now
                 repositoryRoot = await repoVocabularyGrounding.repositoryRoot(
                     joinedWorkspace: request.workspace?.localPath,
@@ -1402,12 +1473,12 @@ extension DictationSessionController {
             context: context,
             contextTrusted: contextTrusted
         )
-        let contextBias = MistralBatchTranscription.contextBias(from: candidates)
+        let contextBias = cut(candidates)
         // Counts only: the terms are screen, session and repository content.
         Log.backends.info(
-            "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
+            "\(logLabel, privacy: .public): context \(contextTrusted ? "trusted" : "not sent", privacy: .public), own \(request.userTerms.count + request.dictionarySpellings.count, privacy: .public), learned \(learnedTerms.count, privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
         )
-        return StopSecondPassTerms(contextBias: contextBias, candidates: candidates)
+        return contextBias
     }
 
     /// A remote session's project is its label, whatever this Mac's
@@ -1472,10 +1543,10 @@ extension DictationSessionController {
         let sleep = dependencies.clock.sleep
         let usageRecorder = secondPassUsageRecorder
         polishAndCommitTask = Task { @MainActor [weak self] in
-            guard let terms = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
+            guard let contextBias = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
             else { return }
             Log.backends.info(
-                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public), last upload rate \(Self.describeUploadRate(measuredRate), privacy: .public)"
+                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public), last upload rate \(Self.describeUploadRate(measuredRate), privacy: .public)"
             )
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
                 // Here, off the main actor: the ledger appends to its file
@@ -1490,10 +1561,10 @@ extension DictationSessionController {
                     costEUR: MistralPricing.dictationCost(
                         model: MistralBatchTranscription.model, audioSeconds: request.audioSeconds)
                 ))
-                let text = try await transcriber.transcribe(
+                return try await transcriber.transcribe(
                     wav: request.wav,
                     language: nil,
-                    contextBias: terms.contextBias,
+                    contextBias: contextBias,
                     apiKey: request.apiKey,
                     endpoint: request.endpoint,
                     onUpload: { measurement in
@@ -1503,8 +1574,6 @@ extension DictationSessionController {
                         )
                     }
                 ).text
-                return MistralBatchTranscription.restoringPhrases(
-                    in: text, candidates: terms.candidates)
             }
             guard let self, outcome != .cancelled, !Task.isCancelled,
                   await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode)

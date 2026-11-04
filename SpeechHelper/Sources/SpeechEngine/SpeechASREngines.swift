@@ -18,7 +18,8 @@ final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
 
     func makeSession(
         transcriptionDelayMs: Int?,
-        utteranceLimit: UtteranceLimit
+        utteranceLimit: UtteranceLimit,
+        terms _: SessionTerms
     ) -> SpeechASRStreamingSession {
         // The decoder emits one token per audio frame, so the token cap is the
         // limit expressed in this model's frame rate.
@@ -82,7 +83,8 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
 
     func makeSession(
         transcriptionDelayMs: Int?,
-        utteranceLimit: UtteranceLimit
+        utteranceLimit: UtteranceLimit,
+        terms _: SessionTerms
     ) -> SpeechASRStreamingSession {
         let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
         let session: NemotronASRStreamSession

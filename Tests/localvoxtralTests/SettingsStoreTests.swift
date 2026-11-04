@@ -1073,6 +1073,29 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.resolvedMistralPolishingModel, "mistral-medium-latest")
     }
 
+    /// The default moved to Realtime 3 (Mistral retires the hosted 2602 on
+    /// 2027-04-30): a stored 2602 choice follows it on the next launch, once.
+    /// Picking 2602 again afterwards sticks, and an environment override is
+    /// never rewritten.
+    func testAStored2602DictationModelMovesToRealtime3Once() {
+        defaults.set("voxtral-mini-transcribe-realtime-2602", forKey: "settings.mistral_dictation_model")
+
+        let migrated = makeStore()
+        XCTAssertEqual(migrated.mistralDictationModel, "")
+        XCTAssertEqual(migrated.resolvedMistralDictationModel, "voxtral-mini-transcribe-realtime-3-0")
+        XCTAssertEqual(defaults.string(forKey: "settings.mistral_dictation_model"), "")
+
+        migrated.mistralDictationModel = "voxtral-mini-transcribe-realtime-2602"
+        XCTAssertEqual(makeStore().mistralDictationModel, "voxtral-mini-transcribe-realtime-2602")
+
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        let overridden = SettingsStore(
+            defaults: defaults,
+            environment: ["MISTRAL_DICTATION_MODEL": "voxtral-mini-transcribe-realtime-2602"],
+            secretStore: secrets)
+        XCTAssertEqual(overridden.mistralDictationModel, "voxtral-mini-transcribe-realtime-2602")
+    }
+
     func testMistralModelsFallBackToPinnedDefaultsWhenEmpty() {
         let store = makeStore()
 
@@ -1080,7 +1103,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.mistralPolishingModel, "")
         XCTAssertEqual(
             store.resolvedMistralDictationModel,
-            "voxtral-mini-transcribe-realtime-2602"
+            "voxtral-mini-transcribe-realtime-3-0"
         )
         XCTAssertEqual(store.resolvedMistralPolishingModel, "mistral-medium-3-5")
 

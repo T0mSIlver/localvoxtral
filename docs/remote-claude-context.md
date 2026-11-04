@@ -265,8 +265,8 @@ altogether, since the token goes through SSH stdin (see above).
 
 ## Checking the setup
 
-Press **Check Setup** in the enrollment sheet. It runs two read-only checks
-and explains the results. The checks below run them by hand.
+The last step of the setup run, **Check Setup**, runs two read-only checks and
+explains the results. The checks below run them by hand.
 
 Or run `localvoxtral doctor` in a Claude Code session on the host, or ask
 the agent why a dictation did not join: plugin 1.36.0 ships a skill that

@@ -17,6 +17,21 @@ package enum MistralRealtimeModels {
     package static let voxtral3 = "voxtral-mini-transcribe-realtime-3-0"
     package static let voxtral3Alias = "voxtral-mini-transcribe-realtime-3"
 
+    /// The hosted Voxtral Realtime 2602 ids. Mistral's models page marks the
+    /// model deprecated on 2026-10-31, retired on 2027-04-30; `GET /v1/models`
+    /// still lists it without a deprecation (2026-11-04), so the picker keeps
+    /// its row. `voxtral-mini-realtime-latest` is left out: the alias may move.
+    package static let deprecated2602 = [
+        "voxtral-mini-transcribe-realtime-2602", "voxtral-mini-realtime-2602",
+    ]
+
+    /// The dictation model to keep stored, once, when the default moved to
+    /// Realtime 3: a 2602 id becomes empty, the stored form of the default,
+    /// so the user follows the default from then on. Anything else is kept.
+    package static func storedDictationModel(migrating stored: String) -> String {
+        deprecated2602.contains(stored.trimmed.lowercased()) ? "" : stored
+    }
+
     /// Whether `model` names Voxtral Realtime 3, by its id or its alias
     /// exactly: a later 3.x may differ on the wire, and gets 2602's frames
     /// until it is added here.

@@ -42,9 +42,14 @@ public enum StreamingDelta {
     public static func next(previouslyEmitted: String, fullText: String) -> Result {
         let stable = String(stablePrefix(of: fullText))
 
-        if stable.hasPrefix(previouslyEmitted) {
+        // Compare unicode scalars, not Characters: a trailing grapheme can grow ("क" then
+        // "कि", "cafe" then "cafe\u{301}") and is then no Character-wise prefix, though the
+        // bytes already typed are untouched. Reading that as a rewrite would pin `emitted`
+        // and lose the rest of the dictation.
+        let typed = previouslyEmitted.unicodeScalars
+        if stable.unicodeScalars.starts(with: typed) {
             return Result(
-                delta: String(stable.dropFirst(previouslyEmitted.count)),
+                delta: String(String.UnicodeScalarView(stable.unicodeScalars.dropFirst(typed.count))),
                 emitted: stable,
                 wasRewrite: false
             )

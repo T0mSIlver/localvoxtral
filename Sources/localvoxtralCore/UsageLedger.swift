@@ -417,7 +417,12 @@ package enum MistralPricing {
             [MistralRealtimeModels.voxtral3, MistralRealtimeModels.voxtral3Alias],
             Price(perAudioMinute: 0.0071)
         )
-        // Voxtral Mini Transcribe 2, the batch model: 0.003 USD/min
+        // Voxtral Mini Transcribe 3, the batch model since 2026-11: 0.0035
+        // USD/min (Mistral's pricing page as captured 2026-10-22 by
+        // usagepricing.com; Mistral's own page shows no figure), at the same
+        // EUR/USD ratio.
+        add([MistralBatchTranscription.model, "voxtral-mini-transcribe-3"], Price(perAudioMinute: 0.0031))
+        // Voxtral Mini Transcribe 2, the batch model until 2026-11: 0.003 USD/min
         // (docs: models/voxtral-mini-transcribe-26-02, checked 2026-09-26).
         add(["voxtral-mini-latest", "voxtral-mini-2602"], Price(perAudioMinute: 0.0026))
         add(

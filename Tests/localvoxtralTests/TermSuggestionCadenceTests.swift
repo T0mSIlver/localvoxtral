@@ -342,7 +342,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
 
     /// The free chips count: the app refreshes them after each dictation that
     /// taught it something, not only when the pane opens.
-    func testLearnedChipsBadgeTheRow() {
+    func testLearnedChipsBadgeTheRow() async {
         let settings = makeFixture().settings
         let model = SpeakerTermSuggestionModel(
             settings: settings,
@@ -351,7 +351,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
             service: { Service() }
         )
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         XCTAssertEqual(model.badgeCount, 2)
     }

@@ -23,7 +23,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 {
     package static let defaultEndpoint = URL(
         string: "wss://api.mistral.ai/v1/audio/transcriptions/realtime")!
-    package static let defaultModel = "voxtral-mini-transcribe-realtime-2602"
+    /// Voxtral Realtime 3. Mistral deprecated the hosted 2602 on 2026-10-31
+    /// and retires it on 2027-04-30.
+    package static let defaultModel = MistralRealtimeModels.voxtral3
 
     /// PCM encoding this client always produces (16 kHz mono little-endian S16).
     static let audioEncoding = "pcm_s16le"
@@ -56,6 +58,10 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         var hasRequestedFinalCommit = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
+        /// The PCM of audio frames still queued when the socket died before
+        /// `session.created`; handed back once by `takeUnsentAudio` for the
+        /// session's reconnect to replay (#1672 does the same for speechd).
+        var unsentAudio = Data()
         /// The handshake's replay of `pendingMessages` is under way: new
         /// frames queue behind it until it has emptied the queue (#1058).
         var isReplayingHandshakeQueue = false
@@ -85,6 +91,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         let text: String
         let audioBytes: Int
         var levelDBFS: Double? = nil
+        /// The PCM an audio frame carries, nil for a control frame.
+        var audio: Data? = nil
     }
 
     private let state = Mutex(State())
@@ -277,6 +285,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 
         let previousUsage: SocketUsage? = state.withLock { s in
             let usage = takeUsageLocked(&s)
+            // A new session or a reconnect: whatever could have replayed it has.
+            s.unsentAudio.removeAll()
             closeSocketLocked(&s, cancelTask: true)
             // Stamped in the SAME locked block as the swap. A separate
             // acquisition would leave a window where the outgoing socket is
@@ -339,8 +349,16 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 "audio": pcm16Data.base64EncodedString(),
             ],
             audioBytes: pcm16Data.count,
-            levelDBFS: MistralStreamHealth.rmsDBFS(pcm16: pcm16Data)
+            levelDBFS: MistralStreamHealth.rmsDBFS(pcm16: pcm16Data),
+            audio: pcm16Data
         )
+    }
+
+    package func takeUnsentAudio() -> Data {
+        state.withLock { s in
+            defer { s.unsentAudio = Data() }
+            return s.unsentAudio
+        }
     }
 
     package func sendCommit(final: Bool) {
@@ -578,12 +596,14 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 
     /// False when the frame went nowhere: no socket, or no frame to send.
     @discardableResult
-    private func send(event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil) -> Bool {
+    private func send(
+        event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil, audio: Data? = nil
+    ) -> Bool {
         guard let text = encodedFrame(event) else { return false }
         #if DEBUG
         recordFrameForTesting(text)
         #endif
-        return sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
+        return sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS, audio: audio)
     }
 
     #if DEBUG
@@ -637,7 +657,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     }
 
     @discardableResult
-    private func sendText(_ text: String, audioBytes: Int, levelDBFS: Double? = nil) -> Bool {
+    private func sendText(
+        _ text: String, audioBytes: Int, levelDBFS: Double? = nil, audio: Data? = nil
+    ) -> Bool {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
@@ -645,7 +667,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 // would pass the declaration and the audio queued before it.
                 guard s.hasReceivedSessionCreated, !s.isReplayingHandshakeQueue else {
                     s.pendingMessages.append(
-                        PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS))
+                        PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS, audio: audio))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
@@ -653,7 +675,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 return .send(task: webSocketTask, text: text, stall: stall)
             case .connecting:
                 s.pendingMessages.append(
-                        PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS))
+                        PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS, audio: audio))
                 return .queued
             case .disconnected:
                 return .dropped
@@ -812,6 +834,16 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 let shouldEmitError = !s.base.isUserInitiatedDisconnect
                 let generation = s.base.connectionGeneration
                 let usage = takeUsageLocked(&s)
+                // Taken before the close erases the queue.
+                for frame in s.pendingMessages {
+                    if let audio = frame.audio { s.unsentAudio.append(audio) }
+                }
+                let unsentSeconds = Double(s.unsentAudio.count) / Double(AudioChunkBuffer.bytesPerSecond)
+                if unsentSeconds > 0 {
+                    Log.backends.notice(
+                        "mistral realtime connection \(generation.description, privacy: .public) closed with \(String(format: "%.1f", unsentSeconds), privacy: .public)s of audio it never sent; kept for the next socket"
+                    )
+                }
                 closeSocketLocked(&s, cancelTask: false)
                 return (shouldEmitError ? resolvedMessage : nil, true, usage, generation)
             }
@@ -984,6 +1016,12 @@ extension MistralRealtimeWebSocketClient {
 
     package func debugRecordedFrames() -> [String] {
         state.withLock { $0.recordedFrames }
+    }
+
+    /// The open socket's `session.created` request id, nil before it or once
+    /// the socket closed. The soak lane reports it per session.
+    package func debugRequestIDForTesting() -> String? {
+        state.withLock { $0.health?.requestID }
     }
 
     package func debugClearRecordedFrames() {

@@ -18,6 +18,30 @@ final class TranscriptAccumulatorTests: XCTestCase {
         XCTAssertEqual(transcript.currentDictationEventText, "")
     }
 
+    /// The bundled speech helper's deltas settle once whitespace follows
+    /// them: a sentence end at the very end can still grow ("3." then "5").
+    func testStreamedTextSettlesUpToItsLastWhitespace() {
+        var transcript = TranscriptAccumulator()
+        XCTAssertNil(transcript.settledStreamedText)
+        transcript.appendPartial(" Version 3.")
+        XCTAssertEqual(transcript.settledStreamedText, "Version")
+        transcript.appendPartial("5 ships")
+        XCTAssertEqual(transcript.settledStreamedText, "Version 3.5")
+        transcript.appendPartial(" today.")
+        XCTAssertEqual(transcript.settledStreamedText, "Version 3.5 ships")
+        transcript.appendPartial(" And")
+        XCTAssertEqual(transcript.settledStreamedText, "Version 3.5 ships today.")
+    }
+
+    /// Once a final lands, finals settle the dictation event, not deltas.
+    func testStreamedTextStopsSettlingOnceAFinalLands() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial(" first part. ")
+        _ = transcript.applyFinal(" first part.")
+        transcript.appendPartial(" second part. ")
+        XCTAssertNil(transcript.settledStreamedText)
+    }
+
     // MARK: - Finals and the live insertion
 
     func testDisjointFinalJoinsBufferedTextWithASpace() {

@@ -74,7 +74,9 @@ extension DictationSessionController {
         _ = promotePendingRealtimeTextToLatestSegment()
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let sessionAudio = audio.sessionRecording.finish()
-        saveSessionRecord(
+        // With History off the record is dropped: the clipboard keeps the
+        // text, as for every other dictation that was not inserted (#1915).
+        _ = keepUntypedDictation { _ = saveSessionRecord(
             startedAt: sessionStartedAt ?? Date(),
             rawText: transcript.currentDictationEventText,
             polishedText: nil,
@@ -87,7 +89,7 @@ extension DictationSessionController {
             commitSucceeded: false,
             audio: sessionStoresAudio ? sessionAudio : nil,
             joined: context.claudeSessionJoin.map(AgentCLIJoin.init)
-        )
+        ) }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
             overlayCommitOutcome: nil,
