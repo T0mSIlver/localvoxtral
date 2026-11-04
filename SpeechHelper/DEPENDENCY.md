@@ -67,8 +67,9 @@ in `SpeechASREngines.swift` depends on:
   `UtteranceLimit` is therefore enforced by our adapter, on the audio the session accepts.
 - Its session decodes in fixed chunks of 80 ms encoder frames; the Nemotron 3.5 card publishes
   WER for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
-  those rungs. Nemotron Unified (the shipped model) takes the value as latency and snaps it to
-  160/240/320/560/1120/2080 ms. Its decoder strips the model's `<xx-XX>` language tag itself.
+  those rungs. Nemotron Unified maps the same rungs onto its own buffer layouts
+  (`NemotronUnifiedLayout`): 160/320/560/1120 ms, the 80 ms rung raised to 160 ms, its lowest
+  latency. Its decoder strips the model's `<xx-XX>` language tag itself.
 
 Its `advance()` recomputes the whole mel from the raw buffer on every `step`, which is
 O(utterance) per step — upstream calls it negligible at utterance scale and a future
