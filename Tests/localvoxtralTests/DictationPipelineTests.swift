@@ -832,7 +832,6 @@ final class DictationPipelineTests: XCTestCase {
         let viewModel = pipeline.viewModel
         viewModel.settings.dictationHistoryRetention = .forever
         viewModel.settings.diagnosticRecordsEnabled = true
-        // Not `.succeeded`: that arms the edit watcher's real timer.
         pipeline.overlay.commitOutcome = .copiedToClipboard(message: "copied")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
@@ -885,6 +884,50 @@ final class DictationPipelineTests: XCTestCase {
             "no alert was presented during the second dictation")
         // The first dictation still said what went wrong, once.
         XCTAssertEqual(alertsOfTheFirst, ["LLM Polishing Returned No Text"])
+    }
+
+    /// The edit watch after an inserted commit sleeps on the session clock
+    /// (LVX-95): the window closes when the clock passes it, and the
+    /// dictation's record gets its verdict.
+    func testTheEditWatchClosesOnTheSessionClockAndPatchesTheRecord() async throws {
+        let monitor = await MainActor.run { EditSignalTestMonitor() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, editKeyMonitor: { monitor })
+        let viewModel = pipeline.viewModel
+        viewModel.settings.dictationHistoryRetention = .forever
+        viewModel.settings.diagnosticRecordsEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let recordStore = DiagnosticRecordStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.diagnosticRecordStore = recordStore
+        viewModel.sessionStore = store
+        viewModel.session.diagnosticRecordStore = recordStore
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertTrue(monitor.isInstalled, "the inserted commit opened no edit watch")
+
+        // The record is written and handed to the watch before its window ends.
+        await viewModel.session.polishAndCommitTask?.value
+        let window = EditSignalPolicy.windowSeconds(wordCount: EditSignalPolicy.wordCount(of: Self.phrase))
+        await pipeline.clock.waitForSleeper(dueIn: window)
+        let watcher = viewModel.session.editSignalWatcher
+        pipeline.clock.advance(by: window)
+        await watcher.windowTask?.value
+        await watcher.flushTask?.value
+
+        XCTAssertFalse(monitor.isInstalled, "the window closed and took its observer down")
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(names.count, 1)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(
+            DiagnosticRecord.self, from: Data(contentsOf: directory.appendingPathComponent(try XCTUnwrap(names.first)))
+        )
+        XCTAssertEqual(record.behavior?.outcome, .clean)
+        XCTAssertEqual(record.behavior?.watchWindowSeconds, window)
     }
 
     /// The polish-failure alert is modal. The edit watch of the inserted
@@ -4309,7 +4352,8 @@ final class DictationPipelineTests: XCTestCase {
         contextBudget: RealtimeContextBudget? = nil,
         overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         workspaceCenter: NotificationCenter? = nil,
-        backendManager: (any ManagedBackendManaging)? = nil
+        backendManager: (any ManagedBackendManaging)? = nil,
+        editKeyMonitor: (@MainActor () -> any EditKeyMonitoring)? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -4342,7 +4386,8 @@ final class DictationPipelineTests: XCTestCase {
                 connectionFailurePresenter: presenter,
                 onSessionRecord: { records.append($0) },
                 clock: clock.clock,
-                realtimeContextLimit: { _ in contextBudget }
+                realtimeContextLimit: { _ in contextBudget },
+                editKeyMonitor: editKeyMonitor ?? { EditKeyNSEventMonitor() }
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()

@@ -431,6 +431,10 @@ final class DictationViewModel {
         /// server when runtime services run, and no rollover in a unit test,
         /// so no suite dials the endpoint in its settings.
         var realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)?
+        /// The keyboard observer of the edit watch after a commit. The real
+        /// one never installs under XCTest, so a test that wants a watch
+        /// passes `EditSignalTestMonitor`.
+        var editKeyMonitor: @MainActor () -> any EditKeyMonitoring
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -454,7 +458,8 @@ final class DictationViewModel {
             batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
             dataDirectory: URL? = nil,
             home: URL? = nil,
-            realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)? = nil
+            realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)? = nil,
+            editKeyMonitor: @escaping @MainActor () -> any EditKeyMonitoring = { EditKeyNSEventMonitor() }
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -473,6 +478,7 @@ final class DictationViewModel {
             self.dataDirectory = dataDirectory
             self.home = home
             self.realtimeContextLimit = realtimeContextLimit
+            self.editKeyMonitor = editKeyMonitor
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
