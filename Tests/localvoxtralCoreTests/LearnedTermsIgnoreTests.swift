@@ -82,9 +82,11 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             LearnedTermProject(key: "/w/supervoxtral", name: "supervoxtral", terms: [term("Voxtral")], lastSeen: Self.start),
             orphan,
         ]
-        let rows = learned.listedProjects(now: Self.start)
+        let rows = ListedProjects.projects(from: learned, now: Self.start)
         XCTAssertTrue(rows.contains { $0.key == "/w/supervoxtral" }, "the leftover is listed, so it can be forgotten")
-        XCTAssertTrue(rows.contains { $0.key == "repo:github.com/me/gone" }, "the orphan is listed under its repository")
+        XCTAssertTrue(
+            rows.contains { $0.keys == ["/w/old-ink", "repo:github.com/me/gone"] },
+            "the orphan is listed under its repository")
 
         learned.forgetProject(keys: ["/w/supervoxtral"])
         learned.forgetProject(keys: ["/w/old-ink", "repo:github.com/me/gone"])
@@ -133,7 +135,6 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         let after = store.snapshot()
         XCTAssertEqual(proposed, [])
         XCTAssertEqual(after.projects, others, "nothing recorded for any of its checkouts")
-        XCTAssertFalse(after.listedProjects(now: Self.start).contains { $0.name == "quill" })
         XCTAssertFalse(after.confirmedEverywhere().contains { ["Kern", "Glyph", "Ligature"].contains($0.term) })
         let choices = ListedProjects.projects(from: after, now: Self.start)
         XCTAssertFalse(choices.contains { $0.name == "quill" }, "the Projects pane does not list it")
