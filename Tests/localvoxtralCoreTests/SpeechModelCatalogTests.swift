@@ -19,6 +19,14 @@ final class SpeechModelCatalogTests: XCTestCase {
         XCTAssertTrue(option.revision.allSatisfy(\.isHexDigit))
     }
 
+    /// A successor must be a catalog entry, and a replaced repo must not be one.
+    func testReplacedReposPointIntoTheCatalog() {
+        for (replaced, successor) in SpeechModelCatalog.successors {
+            XCTAssertNil(SpeechModelCatalog.option(forRepoID: replaced), replaced)
+            XCTAssertNotNil(SpeechModelCatalog.option(forRepoID: successor), successor)
+        }
+    }
+
     /// The build host serves one test service per row of this list, and eval-e2e
     /// scores whichever one it names. A catalog model without a row cannot be
     /// scored there, and a stale row serves weights the app no longer ships.

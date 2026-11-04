@@ -38,4 +38,20 @@ final class SpeechModelSelectionSettingsTests: XCTestCase {
         XCTAssertEqual(settings.managedSpeechModel, SpeechModelCatalog.defaultOption.repoID)
         XCTAssertEqual(defaults.string(forKey: "settings.managed_speech_model"), "someone/newer-model")
     }
+
+    /// A user of a replaced model gets its successor, not the 2.6 GB default.
+    @MainActor
+    func testReplacedNemotronSelectionResolvesToItsSuccessor() throws {
+        let defaults = makeSettingsDefaults()
+        let replaced = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+        defaults.set(replaced, forKey: "settings.managed_speech_model")
+
+        let settings = makeSettings(defaults: defaults)
+
+        let unified = try XCTUnwrap(
+            SpeechModelCatalog.option(forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit")
+        )
+        XCTAssertEqual(settings.resolvedManagedSpeechModel, unified)
+        XCTAssertEqual(defaults.string(forKey: "settings.managed_speech_model"), replaced)
+    }
 }

@@ -1146,10 +1146,12 @@ final class SettingsStore {
         }
 
         // A repo outside this build's catalog must never reach a helper
-        // launch, so the default runs instead. The stored repo stays: a newer
-        // build may have added it (#1040).
+        // launch, so its successor or the default runs instead. The stored repo
+        // stays: a newer build may have added it (#1040), an older one still
+        // runs a replaced one.
         let storedSpeechModel = defaults.string(forKey: Keys.managedSpeechModel)?.trimmed ?? ""
-        if let option = SpeechModelCatalog.option(forRepoID: storedSpeechModel) {
+        let selectedSpeechModel = SpeechModelCatalog.successors[storedSpeechModel] ?? storedSpeechModel
+        if let option = SpeechModelCatalog.option(forRepoID: selectedSpeechModel) {
             managedSpeechModel = option.repoID
         } else {
             managedSpeechModel = SpeechModelCatalog.defaultOption.repoID

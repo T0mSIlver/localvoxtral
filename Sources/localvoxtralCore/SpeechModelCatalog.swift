@@ -71,6 +71,12 @@ package enum SpeechModelCatalog {
     package static func option(forRepoID repoID: String) -> SpeechModelOption? {
         options.first { $0.repoID == repoID }
     }
+
+    /// Repos a newer entry replaced. A stored selection of one resolves to its
+    /// successor, not to the default: Nemotron 3.5 users keep a small model.
+    package static let successors: [String: String] = [
+        "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit",
+    ]
 }
 
 package enum SpeechModelPickerSupport {
