@@ -313,8 +313,30 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG (channel=$CHANNEL, prerelease=$PRERELEASE, publish=$PUBLISH) from $GITHUB_REF_NAME @ $(git rev-parse --short HEAD)"
 
+      - name: Resolve packages
+        # Sparkle (LVX-57) is a binary target: a cold checkout downloads its
+        # 10 MB zip, and SwiftPM never times a download out. Run 41742286992
+        # sat in the build gate for 2 h 20 min on a stalled one, with the Mac
+        # idle and seven mac-lanes jobs queued behind it. Bounded and retried
+        # here instead, so a stall costs minutes and says what it was.
+        if: steps.plan.outputs.proceed != 'false'
+        run: |
+          for attempt in 1 2 3; do
+            if ./scripts/ci/run-supervised-command.sh 300 \
+                "$RUNNER_TEMP/localvoxtral-resolve-$attempt.log" -- swift package resolve; then
+              exit 0
+            fi
+            echo "::warning::swift package resolve failed or stalled (attempt $attempt of 3)"
+          done
+          echo "::error::could not resolve packages in 3 attempts of 5 min; see the logs above"
+          exit 1
+
       - name: Gate — build
         if: steps.plan.outputs.proceed != 'false'
+        # Packages are resolved above, so this is compiling alone: about 10
+        # min cold on the Mini. The bound catches a hang an hour early instead
+        # of at the job's 420 min.
+        timeout-minutes: 60
         run: swift build --build-system native -c release
 
       - name: Gate — unit tests
