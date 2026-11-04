@@ -919,14 +919,20 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
         XCTAssertTrue(monitor.isInstalled, "the inserted commit opened no edit watch")
 
-        // The record is written and handed to the watch before its window ends.
-        await viewModel.session.polishAndCommitTask?.value
+        // History hears the verdict once the record holds it: the end of the
+        // record write, the window and the patch, whichever comes last.
+        let watcher = viewModel.session.editSignalWatcher
+        let patched = BoundedWait()
+        let toHistory = watcher.onOutcome
+        watcher.onOutcome = { id, outcome in
+            toHistory?(id, outcome)
+            patched.resolve()
+        }
         let window = EditSignalPolicy.windowSeconds(wordCount: EditSignalPolicy.wordCount(of: Self.phrase))
         await pipeline.clock.waitForSleeper(dueIn: window)
-        let watcher = viewModel.session.editSignalWatcher
         pipeline.clock.advance(by: window)
-        await watcher.windowTask?.value
-        await watcher.flushTask?.value
+        let didPatch = await patched.value(failAfter: 10)
+        XCTAssertTrue(didPatch, "the record never got the window's verdict")
 
         XCTAssertFalse(monitor.isInstalled, "the window closed and took its observer down")
         let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
