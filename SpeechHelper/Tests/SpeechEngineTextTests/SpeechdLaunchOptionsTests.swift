@@ -186,4 +186,21 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
             )
         }
     }
+
+    func testParsesTranscribeManifestAndRefusesItWithBench() throws {
+        let options = try SpeechdOptionParser.parse([
+            "--model-dir", "/tmp/model", "--transcribe", "/tmp/set/manifest.json",
+        ])
+        XCTAssertEqual(options.transcribeManifest, "/tmp/set/manifest.json")
+        XCTAssertNil(options.benchmark)
+
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse([
+                "--model-dir", "/tmp/model", "--transcribe", "/tmp/m.json",
+                "--bench", "--seconds", "5",
+            ])
+        ) { error in
+            XCTAssertEqual(error as? SpeechdOptionError, .mutuallyExclusive("--bench", "--transcribe"))
+        }
+    }
 }
