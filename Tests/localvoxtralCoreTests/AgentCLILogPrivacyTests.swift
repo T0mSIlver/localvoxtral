@@ -29,7 +29,9 @@ final class AgentCLILogPrivacyTests: XCTestCase {
 
     /// Opt-in debug logs whose job is to show the text, each behind a switch
     /// that is off by default and has no UI. `logs` prints neither: they log
-    /// at `.notice` without the join prefix.
+    /// at `.notice` without the join prefix. Each must also sit inside
+    /// `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, so no release build can log
+    /// the text, whatever its defaults say (LVX-80).
     static let allowed: Set<String> = [
         // `defaults write com.localvoxtral.app debug.log_realtime_deltas`.
         "RealtimeDeltaLog.swift: delta.debugDescription",
@@ -50,11 +52,15 @@ final class AgentCLILogPrivacyTests: XCTestCase {
         var findings: [String] = []
         for file in files.sorted() {
             let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
-            for expression in Self.publicExpressions(in: text) {
+            for (expression, offset) in Self.publicExpressionsWithOffsets(in: text) {
                 scanned += 1
                 guard Self.holdsText(expression) else { continue }
                 let key = "\((file as NSString).lastPathComponent): \(expression)"
-                if !Self.allowed.contains(key) { findings.append("Sources/\(file): \(expression)") }
+                if !Self.allowed.contains(key) {
+                    findings.append("Sources/\(file): \(expression)")
+                } else if !Self.isCompiledOutOfRelease(text, at: offset) {
+                    findings.append("Sources/\(file): \(expression) (allowed only under #if DEBUG || LOCALVOXTRAL_E2E_HARNESS)")
+                }
             }
         }
         XCTAssertGreaterThan(scanned, 400, "the scan found too few public values to be reading the log calls")
@@ -62,6 +68,36 @@ final class AgentCLILogPrivacyTests: XCTestCase {
             findings, [],
             "These public log values can hold dictated text. Log them `privacy: .private`, or log their `.count`."
         )
+    }
+
+    /// A debug-only branch is one under `#if DEBUG` or
+    /// `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, not its `#else`.
+    func testTheReleaseGateCheckReadsTheEnclosingIfBranch() {
+        let source = """
+            #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
+            <A>
+            #if os(macOS)
+            <B>
+            #endif
+            #else // release
+            <C>
+            #endif
+            <D>
+            #if os(macOS)
+            <E>
+            #endif
+            #if DEBUG
+            <F>
+            #elseif os(Linux)
+            <G>
+            #endif
+            """
+        func gated(_ marker: String) -> Bool {
+            let at = source.range(of: "<\(marker)>")!.lowerBound
+            return Self.isCompiledOutOfRelease(source, at: source.distance(from: source.startIndex, to: at))
+        }
+        XCTAssertEqual(["A", "B", "C", "D", "E", "F", "G"].map(gated),
+                       [true, true, false, false, false, true, false])
     }
 
     func testTheScanCatchesTextAndPassesItsSize() {
@@ -163,9 +199,14 @@ final class AgentCLILogPrivacyTests: XCTestCase {
     /// The expression of every `\(…, privacy: .public)`, parentheses
     /// balanced, so a call inside the interpolation stays whole.
     static func publicExpressions(in source: String) -> [String] {
+        publicExpressionsWithOffsets(in: source).map(\.expression)
+    }
+
+    /// Each public expression with the character offset of its `\(`.
+    static func publicExpressionsWithOffsets(in source: String) -> [(expression: String, offset: Int)] {
         let marker = Array(", privacy: .public)")
         let characters = Array(source)
-        var expressions: [String] = []
+        var expressions: [(expression: String, offset: Int)] = []
         var index = 0
         while index + marker.count <= characters.count {
             guard Array(characters[index..<(index + marker.count)]) == marker else {
@@ -185,7 +226,7 @@ final class AgentCLILogPrivacyTests: XCTestCase {
                 start -= 1
             }
             if start > 0, characters[start - 1] == "\\" {
-                expressions.append(String(characters[(start + 1)..<index]).trimmingCharacters(in: .whitespaces))
+                expressions.append((String(characters[(start + 1)..<index]).trimmingCharacters(in: .whitespaces), start - 1))
             }
             index += marker.count
         }
@@ -235,6 +276,28 @@ final class AgentCLILogPrivacyTests: XCTestCase {
             output.append(character)
         }
         return output
+    }
+
+    /// Whether the character at `offset` is in a branch only debug and
+    /// harness builds compile: an enclosing `#if DEBUG` or
+    /// `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, before its `#else`/`#elseif`.
+    static func isCompiledOutOfRelease(_ source: String, at offset: Int) -> Bool {
+        let debugOnly: Set<String> = ["DEBUG", "DEBUG || LOCALVOXTRAL_E2E_HARNESS"]
+        var stack: [Bool] = []  // one entry per open #if: is this branch debug-only
+        var consumed = 0
+        for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+            if consumed + line.count >= offset { break }
+            consumed += line.count + 1
+            let directive = line.trimmingCharacters(in: .whitespaces)
+            if directive.hasPrefix("#if ") {
+                stack.append(debugOnly.contains(String(directive.dropFirst(4)).trimmingCharacters(in: .whitespaces)))
+            } else if directive.hasPrefix("#else") {  // `#elseif` too, and a trailing comment
+                if !stack.isEmpty { stack[stack.count - 1] = false }
+            } else if directive.hasPrefix("#endif") {
+                _ = stack.popLast()
+            }
+        }
+        return stack.contains(true)
     }
 
     static func holdsText(_ expression: String) -> Bool {
