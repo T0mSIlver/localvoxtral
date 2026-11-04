@@ -906,6 +906,26 @@ case "$CMD" in
       fi
       SPEECHD_BENCH_OPTIONAL+=",\"$field\":\"$value\""
     done
+    # KEY=VALUE[,KEY=VALUE] added to the helper's environment (engine diagnostics).
+    if [[ -n "${LV_SPEECHD_BENCH_HELPER_ENV:-}" ]]; then
+      if [[ ! "$LV_SPEECHD_BENCH_HELPER_ENV" =~ ^[A-Z0-9_]+=[A-Za-z0-9._-]+(,[A-Z0-9_]+=[A-Za-z0-9._-]+)*$ ]]; then
+        echo "speechd-bench: LV_SPEECHD_BENCH_HELPER_ENV must be KEY=VALUE[,KEY=VALUE]" >&2
+        exit 1
+      fi
+      env_json=""
+      IFS=, read -r -a env_pairs <<<"$LV_SPEECHD_BENCH_HELPER_ENV"
+      for pair in "${env_pairs[@]}"; do
+        env_json+="${env_json:+,}\"${pair%%=*}\":\"${pair#*=}\""
+      done
+      SPEECHD_BENCH_OPTIONAL+=",\"environment\":{$env_json}"
+    fi
+    if [[ -n "${LV_SPEECHD_BENCH_STEP_MS:-}" ]]; then
+      if [[ ! "$LV_SPEECHD_BENCH_STEP_MS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "speechd-bench: LV_SPEECHD_BENCH_STEP_MS must be a positive integer" >&2
+        exit 1
+      fi
+      SPEECHD_BENCH_OPTIONAL+=",\"stepMilliseconds\":$LV_SPEECHD_BENCH_STEP_MS"
+    fi
     if [[ -n "${LV_SPEECHD_BENCH_DELAY_MS:-}" ]]; then
       if [[ ! "$LV_SPEECHD_BENCH_DELAY_MS" =~ ^[1-9][0-9]*$ ]]; then
         echo "speechd-bench: LV_SPEECHD_BENCH_DELAY_MS must be a positive integer" >&2

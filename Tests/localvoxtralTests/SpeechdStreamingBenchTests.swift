@@ -37,6 +37,10 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         /// An agent-dictation manifest, relative to the repo root: transcribe its
         /// recordings (`--transcribe`) instead of running the timing bench.
         let transcribeManifest: String?
+        /// Extra environment for the helper process (engine diagnostics).
+        let environment: [String: String]?
+        /// `--step-ms`: the transcription mode's feed size. Absent means 80.
+        let stepMilliseconds: Int?
     }
 
     /// About twenty seconds of plain dictation. The bench loops it to fill the run.
@@ -93,8 +97,13 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         if let delay = config.transcriptionDelayMs {
             arguments.append(contentsOf: ["--transcription-delay-ms", "\(delay)"])
         }
+        if let step = config.stepMilliseconds {
+            arguments.append(contentsOf: ["--step-ms", "\(step)"])
+        }
+        let environment = ProcessInfo.processInfo.environment
+            .merging(config.environment ?? [:]) { _, new in new }
         if let manifest = config.transcribeManifest {
-            try runTranscription(binary: binary, arguments: arguments
+            try runTranscription(binary: binary, environment: environment, arguments: arguments
                 + ["--transcribe", repoRoot.appendingPathComponent(manifest).path])
             return
         }
@@ -124,6 +133,7 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let process = Process()
         process.executableURL = binary
         process.arguments = arguments
+        process.environment = environment
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
@@ -184,10 +194,11 @@ final class SpeechdStreamingBenchTests: XCTestCase {
     }
 
     /// `--transcribe`: relays the helper's TRANSCRIBE lines and checks it finished.
-    private func runTranscription(binary: URL, arguments: [String]) throws {
+    private func runTranscription(binary: URL, environment: [String: String], arguments: [String]) throws {
         let process = Process()
         process.executableURL = binary
         process.arguments = arguments
+        process.environment = environment
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
