@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-capture-polish-latency|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-capture-polish-latency|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc|remove] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; needs --filter, or
 #                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
@@ -139,7 +139,11 @@ set -euo pipefail
 #                  du over the build trees can take a while)
 #     gc           delete remote work dirs unused > 14 days (gate v4 required;
 #                  also fired automatically, best-effort, after every run —
-#                  EvalRecordings inside a stale dir are always preserved)
+#                  EvalRecordings inside a stale dir are always preserved);
+#                  `gc --idle <hours>` reclaims dirs idle that many hours
+#     remove       delete this worktree's remote work dir now, or the
+#                  work/localvoxtral-<id> named; a dir in use is kept, and so
+#                  are its EvalRecordings
 #
 # The Mac is the owner's machine (#617), so two kinds of run refuse unless
 # LV_ALLOW_HEAVY_MAC_RUN=1 is set, before any sync: a `test` with neither
@@ -576,12 +580,41 @@ reject_gate_blocked_args() {
 }
 
 case "$CMD" in
-  diag|svc-status|disk|gc)
+  diag|svc-status|disk)
     if [[ $# -ne 0 ]]; then
       echo "$CMD does not accept extra arguments" >&2
       exit 1
     fi
     run_remote "$(quote_remote_command "$CMD")"
+    exit $?
+    ;;
+  gc)
+    # `gc --idle <hours>` reclaims dirs idle that long instead of the gate's
+    # configured days, for a host that needs the disk now.
+    if [[ $# -eq 0 ]]; then
+      run_remote "gc"
+    elif [[ $# -eq 2 && "$1" == --idle && "$2" =~ ^[1-9][0-9]{0,2}$ ]]; then
+      run_remote "$(quote_remote_command gc --idle "$2")"
+    else
+      echo "gc accepts no arguments, or --idle <hours>" >&2
+      exit 1
+    fi
+    exit $?
+    ;;
+  remove)
+    # Deletes a work dir on the host now: this worktree's own by default, or
+    # one named work/localvoxtral-<id>. The gate keeps a dir in use and its
+    # EvalRecordings.
+    if [[ $# -gt 1 ]]; then
+      echo "remove accepts at most one work dir (work/localvoxtral-<id>)" >&2
+      exit 1
+    fi
+    target="${1:-$DIR}"
+    if [[ ! "$target" =~ ^work/localvoxtral-[A-Za-z0-9._-]+/?$ ]]; then
+      echo "remove: $target is not a work dir (work/localvoxtral-<id>)" >&2
+      exit 1
+    fi
+    run_remote "$(quote_remote_command remove "$target")"
     exit $?
     ;;
   applog|voxlog)
@@ -1309,7 +1342,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc|remove] [extra args...]" >&2
     exit 1
     ;;
 esac

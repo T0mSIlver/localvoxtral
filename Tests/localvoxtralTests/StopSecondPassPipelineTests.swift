@@ -46,6 +46,32 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(usage.first?.costEUR ?? 0, 0.0031 / 60, accuracy: 1e-12)
     }
 
+    /// LVX-71: a short dictation entirely inside a stall has no realtime
+    /// text, and the kept recording still holds the speech.
+    func testLoudAudioWithAnEmptyRealtimeTranscriptIsTranscribedAndCommitted() async {
+        let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+        let harness = makeHarness(transcriber: transcriber, realtimeText: "")
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(transcriber.calls.count, 1)
+        XCTAssertEqual(harness.overlay.committedTexts, [Self.batchText])
+        XCTAssertEqual(harness.records.map(\.rawText), [Self.batchText])
+    }
+
+    /// An accidental tap records room noise: no realtime text and nothing
+    /// worth the batch API.
+    func testQuietAudioWithAnEmptyRealtimeTranscriptSkipsThePass() async {
+        let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+        let harness = makeHarness(
+            transcriber: transcriber, realtimeText: "", pcm: Data(count: 32_000))
+
+        harness.stop()
+
+        XCTAssertEqual(transcriber.calls.count, 0)
+    }
+
     /// #1649: the batch model left out a sentence the realtime stream had,
     /// and replacing the text whole lost it from the overlay, the polish and
     /// the commit.

@@ -109,7 +109,7 @@ package enum ClaudeRepoContextSelection {
     /// The characters this snapshot could actually RENDER — the demand it must
     /// declare to `PolishContextBudget`.
     ///
-    /// `groundingText.count` is the wrong measure and was the bug: that string
+    /// The length of the full grounding harvest is the wrong measure and was the bug: it
     /// is dominated by `trackedPaths`, which are NOT a section and therefore
     /// never render a single character. A monorepo would declare a demand of
     /// hundreds of thousands of characters for material it would never show,
@@ -175,33 +175,5 @@ package enum ClaudeRepoContextSelection {
 
     private static func join(_ sections: [(Section, String)]) -> String {
         sections.map { $0.1 }.joined(separator: "\n\n")
-    }
-
-    /// The complete harvested text, for GROUNDING — never for rendering.
-    ///
-    /// Grounding runs over everything the collector retained, because matching
-    /// is local, free, and input-side: a filename the user spoke should be
-    /// spelled correctly whether or not the line carrying it survived the
-    /// budget. Rendering is what the budget pays for. This is the same split
-    /// `PolishContextPreparation` makes for the clipboard and the screen.
-    package static func groundingText(snapshot: ClaudeRepoSnapshot) -> String {
-        var parts: [String] = []
-        // Every tracked PATH, not just the retained files: paths are the
-        // vocabulary this feature exists to get right, and they cost nothing to
-        // match over even in a monorepo where almost no contents were read.
-        if !snapshot.trackedPaths.isEmpty {
-            parts.append(snapshot.trackedPaths.joined(separator: "\n"))
-        }
-        if let branch = snapshot.branch { parts.append(branch) }
-        if !snapshot.statusLines.isEmpty {
-            parts.append(snapshot.statusLines.joined(separator: "\n"))
-        }
-        if !snapshot.stagedDiff.isEmpty { parts.append(snapshot.stagedDiff) }
-        if !snapshot.unstagedDiff.isEmpty { parts.append(snapshot.unstagedDiff) }
-        for file in snapshot.allFiles {
-            parts.append(file.path)
-            parts.append(file.contents)
-        }
-        return parts.joined(separator: "\n")
     }
 }

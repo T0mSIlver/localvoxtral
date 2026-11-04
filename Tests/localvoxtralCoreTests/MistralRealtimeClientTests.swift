@@ -698,6 +698,28 @@ final class MistralRealtimeClientTests: XCTestCase {
 
     // MARK: - Lifecycle cleanup
 
+    /// The socket dies between the upgrade and `session.created` (LVX-70):
+    /// the audio queued for the handshake is handed back once, in order, for
+    /// the session's reconnect to replay.
+    func testSocketClosedBeforeSessionCreatedHandsBackTheQueuedAudio() {
+        let client = MistralRealtimeWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        client.debugPrimeConnectedStateForTesting(task: task)
+        let first = Data(repeating: 1, count: 3_200)
+        let second = Data(repeating: 2, count: 3_200)
+        XCTAssertTrue(client.sendAudioChunk(first))
+        XCTAssertTrue(client.sendAudioChunk(second))
+
+        client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "socket failed")
+
+        XCTAssertEqual(client.takeUnsentAudio(), first + second)
+        XCTAssertTrue(client.takeUnsentAudio().isEmpty, "handed back once")
+    }
+
     func testTerminalErrorCleansSubclassStateAndEmitsErrorThenDisconnected() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()

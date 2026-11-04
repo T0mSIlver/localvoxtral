@@ -659,7 +659,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
-        guard !isIgnored(projectKey: projectKey) else { return false }
+        // A forgotten project takes no answer (`recordProposal`), so asking
+        // would run a paid agent whose reply is thrown away, on every join.
+        guard !isIgnored(projectKey: projectKey), !forgotten.contains(key: projectKey) else { return false }
         guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
@@ -804,6 +806,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// asked with, nil when the caller does not know it. An answer from a
     /// newer revision replaces the older answer's terms that nothing has
     /// confirmed or used since (#914). Returns how many terms were added.
+    ///
+    /// A project the user forgot or ignored takes nothing, not even the
+    /// stamp: an answer that was under way when they forgot it must not bring
+    /// it back (#1156); a later dictation or hook does, and asks again. A term
+    /// in `excluding` is matched with case, spaces and punctuation ignored, as
+    /// a refused suggestion is: refusing "Stable Diffusion" refuses
+    /// "Stable-Diffusion" too.
     @discardableResult
     package mutating func recordProposal(
         _ raw: [String],
@@ -814,6 +823,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         excluding: [String] = [],
         now: Date
     ) -> Int {
+        guard !isIgnored(projectKey: project.key), !forgotten.contains(key: project.key) else { return 0 }
         let index = projectIndex(for: project, now: now)
         let previousRevision = projects[index].answeredRevision
         if let revision, let answered = previousRevision, answered < revision,
@@ -822,9 +832,10 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             projects[index].terms.removeAll { $0.isUntouchedProposal && $0.firstSeen == answeredAt }
         }
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
-        known.formUnion(excluding.map(\.caseFoldedForMatching))
+        let refused = Set(excluding.map(PolishProjectNames.key))
         var added = 0
-        for term in ProjectTermProposal.acceptedTerms(raw) where known.insert(term.caseFoldedForMatching).inserted {
+        for term in ProjectTermProposal.acceptedTerms(raw)
+        where !refused.contains(PolishProjectNames.key(term)) && known.insert(term.caseFoldedForMatching).inserted {
             projects[index].terms.append(
                 LearnedTerm(term: term, sources: [agent.source], dictations: 0, firstSeen: now, lastSeen: now)
             )
@@ -849,7 +860,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// the command does not stamp the project: it is a few names an agent
     /// just met, not the project's list, so the headless run still asks once.
     /// `terms` must already be term-shaped (`ProjectTermProposal.acceptedTerms`);
-    /// a term the project holds or `excluding` names is dropped. A project
+    /// a term the project holds or `excluding` names (case, spaces and punctuation ignored) is dropped. A project
     /// the user forgot (#1156) takes none: an agent working there does not
     /// bring it back. Returns the terms added.
     @discardableResult
@@ -863,9 +874,10 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         guard !isIgnored(projectKey: project.key), !forgotten.contains(key: project.key) else { return [] }
         let index = projectIndex(for: project, now: now)
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
-        known.formUnion(excluding.map(\.caseFoldedForMatching))
+        let refused = Set(excluding.map(PolishProjectNames.key))
         var added: [String] = []
-        for term in terms where known.insert(term.caseFoldedForMatching).inserted {
+        for term in terms
+        where !refused.contains(PolishProjectNames.key(term)) && known.insert(term.caseFoldedForMatching).inserted {
             projects[index].terms.append(
                 LearnedTerm(
                     term: term,
@@ -887,6 +899,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// A terms request for this project failed; the next joined dictation
     /// after `ProjectTermProposal.retryAfter` asks again.
     package mutating func recordProposalFailure(project: LearnedTermProjectIdentity, now: Date) {
+        guard !isIgnored(projectKey: project.key), !forgotten.contains(key: project.key) else { return }
         let index = projectIndex(for: project, now: now)
         projects[index].proposalAttemptedAt = now
         prune(now: now)

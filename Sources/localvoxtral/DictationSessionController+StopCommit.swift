@@ -672,19 +672,22 @@ extension DictationSessionController {
             // no edit watch: nil outcome. Superseded, the capture tap already
             // belongs to the new dictation, and consuming it here would take
             // that dictation's facts.
+            // The failure goes first: the await below can outlast the next
+            // dictation's start (LVX-68).
+            if let llmConnectionFailure, !addressed.superseded {
+                self.handleLLMPolishingConnectionFailure(
+                    title: llmConnectionFailure.title,
+                    message: llmConnectionFailure.message,
+                    technicalDetails: llmConnectionFailure.technicalDetails,
+                    publicSummary: llmConnectionFailure.publicSummary
+                )
+            }
             if !addressed.superseded {
                 await self.writeDiagnosticRecordIfEnabled(
                     recordInputs,
                     historyID: historyID,
                     commitOutcome: nil,
                     committedTextForWatch: ""
-                )
-            }
-            if let llmConnectionFailure, !addressed.superseded {
-                self.handleLLMPolishingConnectionFailure(
-                    title: llmConnectionFailure.title,
-                    message: llmConnectionFailure.message,
-                    technicalDetails: llmConnectionFailure.technicalDetails
                 )
             }
             return
@@ -761,11 +764,10 @@ extension DictationSessionController {
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
-        // AFTER the commit and the session record: record latency
-        // can only ever land on the tail of this task, never on the
-        // user's paste. `writeDiagnosticRecordIfEnabled` checks the
-        // switch before doing any work.
-        await self.writeDiagnosticRecordIfEnabled(
+        // The watch opens and the capture tap is consumed before anything
+        // modal: the polish-failure alert blocks until dismissed, and an
+        // edit made while it is open must be seen.
+        let pendingRecord = self.beginDiagnosticRecord(
             recordInputs,
             historyID: historyID,
             commitOutcome: overlayCommit.outcome,
@@ -778,12 +780,24 @@ extension DictationSessionController {
             )
         )
 
+        // Before the diagnostic record's await: cleanup already reset the
+        // status, and a next dictation can start while the record waits
+        // behind History's writes. Reported after it, the failure would
+        // land on that dictation (LVX-68).
         if let llmConnectionFailure {
             self.handleLLMPolishingConnectionFailure(
                 title: llmConnectionFailure.title,
                 message: llmConnectionFailure.message,
-                technicalDetails: llmConnectionFailure.technicalDetails
+                technicalDetails: llmConnectionFailure.technicalDetails,
+                publicSummary: llmConnectionFailure.publicSummary
             )
+        }
+
+        // AFTER the commit and the session record: record latency
+        // can only ever land on the tail of this task, never on the
+        // user's paste.
+        if let pendingRecord {
+            await self.finishDiagnosticRecord(pendingRecord)
         }
     }
 
@@ -1181,6 +1195,24 @@ extension DictationSessionController {
         return record.id
     }
 
+    /// Deletes every recording, through History's write queue. When History
+    /// did not open there is no queue and no quarantine, so the folder is
+    /// emptied here; turning audio off must not depend on a store that
+    /// failed (same fallback as `deleteAllDiagnosticRecords`, #1771).
+    @discardableResult
+    func deleteAllAudio(removingBackups: Bool = false) -> Task<Void, Never>? {
+        if let sessionStore {
+            return sessionStore.deleteAllAudio(removingBackups: removingBackups)
+        }
+        if historyOpenFailed, let audioStoreWithoutHistory {
+            let removed = audioStoreWithoutHistory.removeAll()
+            if removingBackups { quarantineWithoutHistory?.removeAll(of: "dictation-audio") }
+            Log.persistence.info(
+                "History did not open: deleted \(removed, privacy: .public) recording(s) directly")
+        }
+        return nil
+    }
+
     /// Brings the store in line with the retention setting: at launch, and
     /// when the setting changes. `off` deletes everything there is; with
     /// `removingBackups` (the user ticked it when choosing Don't keep) the
@@ -1200,7 +1232,7 @@ extension DictationSessionController {
             deleteAllDiagnosticRecords()
         }
         if !settings.dictationAudioEnabled {
-            sessionStore?.deleteAllAudio()
+            deleteAllAudio()
         }
         if !retention.savesDictations, removingBackups {
             // Not a trim: a trim snapshots the store first.
@@ -1276,17 +1308,27 @@ extension DictationSessionController {
             }
             return nil
         }
-        guard !transcript.currentDictationEventText
+        let realtimeIsEmpty = transcript.currentDictationEventText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            Log.backends.info("second pass skipped: the realtime transcript is empty")
+        guard let pcm = sessionAudio, !pcm.isEmpty else {
+            if realtimeIsEmpty {
+                Log.backends.info("second pass skipped: the realtime transcript is empty")
+            } else {
+                Log.backends.notice(
+                    "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
+                )
+            }
             return nil
         }
-        guard let pcm = sessionAudio, !pcm.isEmpty else {
-            Log.backends.notice(
-                "second pass skipped: no audio kept (over \(DictationAudioRecording.maxSeconds / 60, privacy: .public) min, or dropped)"
-            )
-            return nil
+        // A dictation that sat inside a stall has no realtime text although
+        // the speech is on the recording (LVX-71). The pass still runs when
+        // the audio reached speech level; a quiet tap stays off the API.
+        if realtimeIsEmpty {
+            guard StallBackfill.recordingReachesSpeech(pcm16: pcm) else {
+                Log.backends.info("second pass skipped: the realtime transcript is empty and the audio is quiet")
+                return nil
+            }
+            Log.backends.notice("second pass running on an empty realtime transcript: the audio reached speech level")
         }
         // The key and host the session dialed, never a fresh read of Settings.
         guard let configuration = sessionRealtimeConfiguration,

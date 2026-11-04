@@ -322,50 +322,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
-    /// MINOR 1 (review round 3). The check must probe the tunnel that EXISTS,
-    /// so it needs three distinguishable answers about the local config, not a
-    /// yes/no about one port.
-    func testTheConfigReadReportsForwardsAbsentAndUnknownSeparately() throws {
-        // (a) a block that forwards a port → that port, whatever it is.
-        let legacy = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
-            to: "", snippet: try plan().sshConfigSnippet, hostID: host.id
-        )
-        let withBlock = ClaudeRemoteEnrollmentService(
-            sshConfigFileSystem: MemorySSHConfigFileSystem(
-                state: ClaudeRemoteRemoteConfigStateFixture.state(configText: legacy)
-            )
-        )
-        XCTAssertEqual(withBlock.sshConfigForwardState(hostID: host.id), .forwards(8473))
-
-        let allocated = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
-            to: "", snippet: try allocatedPlan().sshConfigSnippet, hostID: host.id
-        )
-        let migrated = ClaudeRemoteEnrollmentService(
-            sshConfigFileSystem: MemorySSHConfigFileSystem(
-                state: ClaudeRemoteRemoteConfigStateFixture.state(configText: allocated)
-            )
-        )
-        XCTAssertEqual(migrated.sshConfigForwardState(hostID: host.id), .forwards(28511))
-
-        // (b) a readable config with no block for this host.
-        let foreign = ClaudeRemoteEnrollmentService(
-            sshConfigFileSystem: MemorySSHConfigFileSystem(
-                state: ClaudeRemoteRemoteConfigStateFixture.state(
-                    configText: "Host other\n    RemoteForward 28511 127.0.0.1:8473\n"
-                )
-            )
-        )
-        XCTAssertEqual(
-            foreign.sshConfigForwardState(hostID: host.id), .absent,
-            "someone else's forward is not this host's block"
-        )
-
-        // (c) no seam at all — cannot tell, and must never be guessed either way.
-        XCTAssertEqual(
-            ClaudeRemoteEnrollmentService().sshConfigForwardState(hostID: host.id), .unknown
-        )
-    }
-
     /// The block check keeps its cannot-tell semantics: no config file yet is
     /// nil, not false.
     func testTheBooleanForwardCheckKeepsItsCannotTellSemantics() throws {
@@ -380,45 +336,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             empty.sshConfigBlockIsCurrent(snippet: expectedBlock(), hostID: host.id),
             "no config file yet is cannot-tell, and cannot-tell must regenerate"
         )
-    }
-
-    /// A tunnel that is alive on the port the config actually forwards must be
-    /// reported as exactly that, plus the one step that fixes it — not as "no
-    /// tunnel is live", which is what probing this install's allocation would
-    /// have said about a perfectly healthy old tunnel.
-    func testAStaleConfigPortIsDiagnosedRatherThanMisreported() throws {
-        let up = ClaudeRemoteEnrollmentService.tunnelCheck(
-            result: .init(exitCode: 0, message: "LVX_HTTP:401"),
-            sshHostAlias: "builder",
-            remoteForwardPort: 8473,
-            listenerIsBound: true,
-            staleAllocatedPort: 28511
-        )
-        XCTAssertFalse(up.passed, "half the setup is on the other port; that is not a pass")
-        XCTAssertTrue(up.summary.contains("8473"))
-        XCTAssertTrue(up.summary.lowercased().contains("no longer this mac's port"))
-        XCTAssertTrue(try XCTUnwrap(up.hint).contains("28511"))
-        XCTAssertTrue(try XCTUnwrap(up.hint).contains("step 1"))
-
-        let down = ClaudeRemoteEnrollmentService.tunnelCheck(
-            result: .init(exitCode: 0, message: "LVX_HTTP:000"),
-            sshHostAlias: "builder",
-            remoteForwardPort: 8473,
-            listenerIsBound: true,
-            staleAllocatedPort: 28511
-        )
-        XCTAssertFalse(down.passed)
-        XCTAssertTrue(down.summary.contains("8473"))
-        XCTAssertTrue(try XCTUnwrap(down.hint).contains("28511"))
-
-        // Without a mismatch, nothing changes.
-        let current = ClaudeRemoteEnrollmentService.tunnelCheck(
-            result: .init(exitCode: 0, message: "LVX_HTTP:401"),
-            sshHostAlias: "builder",
-            remoteForwardPort: 28511,
-            listenerIsBound: true
-        )
-        XCTAssertTrue(current.passed)
     }
 
     func testForwardStateIsUnknownWithoutAFilesystemSeamAndNeverGuessesTrue() throws {

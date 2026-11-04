@@ -53,19 +53,16 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
             ClaudeRepoContextSelection.renderableCharacterCount(snapshot: small),
             "tracked paths must not change what the repo can render, so they must not change its demand"
         )
-        // The measure that was used before, for contrast: dominated by paths.
-        XCTAssertGreaterThan(
-            ClaudeRepoContextSelection.groundingText(snapshot: huge).count,
-            100_000,
-            "precondition: the grounding text really is enormous"
-        )
         // The complete harvest reaches grounding even when the rendered excerpt
         // is reduced: a monorepo's tracked path list alone can exceed the whole
         // prompt budget, and it is exactly the vocabulary the feature exists to
         // spell correctly.
-        let grounding = ClaudeRepoContextSelection.groundingText(snapshot: huge)
-        XCTAssertTrue(grounding.contains("Sources/Generated/File4999.swift"))
-        XCTAssertGreaterThan(grounding.count, PolishContextBudget.totalCharacterBudget)
+        let groundedPaths = ClaudeRepoContextPreparation.groundingSources(snapshot: huge).paths
+        XCTAssertTrue(groundedPaths.contains("Sources/Generated/File4999.swift"))
+        XCTAssertGreaterThan(
+            groundedPaths.joined(separator: "\n").count,
+            PolishContextBudget.totalCharacterBudget
+        )
     }
 
     // The demand equals the string `render` measures for its verbatim case —

@@ -268,7 +268,7 @@ enum PolishContextGatherer {
         }
 
         // Only RENDERABLE material declares a demand — the repo's
-        // demand is what it could show, never `groundingText.count`.
+        // demand is what it could show, never the grounding harvest.
         // That string is mostly `trackedPaths`, which ground but
         // never render, so counting it made a monorepo bid hundreds
         // of thousands of characters for content it would not

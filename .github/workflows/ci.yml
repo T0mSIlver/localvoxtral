@@ -239,6 +239,7 @@ jobs:
             ./scripts/ci/test-build-gate-reap-command.sh \
             ./scripts/ci/test-build-gate-gc-command.sh \
             ./scripts/ci/test-build-gate-session-watch.sh \
+            ./scripts/ci/test-build-gate-remove-command.sh \
             ./scripts/ci/test-speech-model-services.sh \
             ./scripts/ci/test-test-server-reaper.sh \
             ./scripts/ci/test-remote-build-reap.sh \
