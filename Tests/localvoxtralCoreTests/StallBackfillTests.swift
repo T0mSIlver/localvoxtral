@@ -130,6 +130,24 @@ final class StallBackfillTests: XCTestCase {
         XCTAssertEqual(transcript.currentDictationEventText, "hello world big again")
     }
 
+    /// A backend that strips leading spaces: the replay must not read the
+    /// final's added words as a space-prefixed delta and glue the segment
+    /// onto the one before (review finding).
+    func testALateBackfillKeepsTheSegmentApartFromTheOneBefore() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("previous")
+        _ = transcript.applyFinal("previous")
+        transcript.appendPartial("hello world")
+        let mark = transcript.stallMark()
+        _ = transcript.applyFinal("hello world again")
+        let beforeBackfill = transcript.currentDictationEventText
+
+        XCTAssertEqual(transcript.spliceBackfill("hello world big again", at: mark), "big")
+        XCTAssertEqual(
+            transcript.currentDictationEventText,
+            beforeBackfill.replacingOccurrences(of: "hello world again", with: "hello world big again"))
+    }
+
     func testABackfillForAnOlderSegmentIsDropped() {
         var transcript = TranscriptAccumulator()
         transcript.appendPartial("we should ship it tonight")

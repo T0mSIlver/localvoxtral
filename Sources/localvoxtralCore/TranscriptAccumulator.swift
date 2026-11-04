@@ -127,7 +127,10 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         let final = finalText.trimmed
         let raw = unsplicedPending.trimmed
         guard !raw.isEmpty, final.count > raw.count, final.hasPrefix(raw) else { return }
+        // Not a delta the backend sent: it says nothing about its spacing.
+        let sawSpacePrefixedDelta = hasSeenSpacePrefixedDelta
         appendPartial(String(final.dropFirst(raw.count)))
+        hasSeenSpacePrefixedDelta = sawSpacePrefixedDelta
     }
 
     /// Records the close that just ended the segment `before` held.
