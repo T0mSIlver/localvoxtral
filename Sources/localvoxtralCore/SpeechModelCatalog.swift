@@ -78,7 +78,7 @@ package enum SpeechModelCatalog {
             // checkpoint's `prompt_dictionary`, which also holds other locales
             // the model was not trained on.
             capabilities: DictationModelCapabilities(
-                termBias: .none,
+                termBias: .sessionList(maxTerms: 100),
                 languages: [
                     "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it",
                     "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
