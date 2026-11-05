@@ -32,6 +32,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         /// Runs the helper twice on the same audio, without and then with a
         /// 100-term list, to time the term boost against a baseline (LVX-2).
         let terms: Bool?
+        /// Measurement only: a checkpoint dir (relative to the repo) loaded with
+        /// `--model-dir` instead of the HF cache, for weights the builder lacks.
+        let modelDirectory: String?
     }
 
     /// About twenty seconds of plain dictation. The bench loops it to fill the run.
@@ -78,9 +81,10 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             return
         }
         print("BENCH model=\(model.repoID)")
-        var arguments = [
-            "--model", model.repoID,
-            "--model-revision", model.revision,
+        let modelArguments = config.modelDirectory.map {
+            ["--model-dir", $0, "--engine", model.engine == .nemotron ? "nemotron" : "voxtral"]
+        } ?? ["--model", model.repoID, "--model-revision", model.revision]
+        var arguments = modelArguments + [
             "--bench",
             "--seconds", "\(config.seconds)",
             "--cadence-ms", "\(config.cadenceMilliseconds)",

@@ -963,6 +963,10 @@ case "$CMD" in
     if [[ "$SPEECHD_BENCH_TERMS" == terms ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"terms\":true"
     fi
+    if [[ -n "${LV_BENCH_MODEL_DIR:-}" ]]; then
+      [[ "$LV_BENCH_MODEL_DIR" =~ ^EvalRecordings/[A-Za-z0-9._/-]+$ ]] || { echo "LV_BENCH_MODEL_DIR must be under EvalRecordings/" >&2; exit 1; }
+      SPEECHD_BENCH_OPTIONAL+=",\"modelDirectory\":\"$LV_BENCH_MODEL_DIR\""
+    fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
       "$SPEECHD_BENCH_SECONDS" \
