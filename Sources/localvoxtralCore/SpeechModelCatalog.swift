@@ -20,8 +20,8 @@ package struct SpeechModelOption: Equatable, Sendable {
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
     package let sizeOnDiskGB: Double
-    /// What the model takes besides audio. Neither shipped engine biases its
-    /// decoding yet (#316, #521).
+    /// What the model takes besides audio. Every local model boosts the
+    /// session's terms while it decodes (LVX-2, LVX-12, LVX-94).
     package let capabilities: DictationModelCapabilities
 }
 
@@ -38,7 +38,7 @@ package enum SpeechModelCatalog {
             displayName: "Voxtral Mini 4B Realtime (4-bit, quantized head)",
             engine: .voxtral,
             sizeOnDiskGB: 2.6,
-            capabilities: .audioOnly
+            capabilities: DictationModelCapabilities(termBias: .sessionList(maxTerms: 100))
         ),
         // NVIDIA's cache-aware streaming RNN-T, 8-bit. A third of Voxtral's weights,
         // which is what matters on an 8 or 16 GB Mac where the speech model and the
@@ -56,7 +56,7 @@ package enum SpeechModelCatalog {
             displayName: "Nemotron 3.5 ASR Streaming 0.6B (8-bit)",
             engine: .nemotron,
             sizeOnDiskGB: 0.8,
-            capabilities: .audioOnly
+            capabilities: DictationModelCapabilities(termBias: .sessionList(maxTerms: 100))
         ),
         // NVIDIA's Nemotron Unified, the same RNN-T family, 8-bit. It streams buffered:
         // each step re-encodes 5.6 s of left context, not cached state, so it costs about
@@ -77,7 +77,7 @@ package enum SpeechModelCatalog {
             // checkpoint's `prompt_dictionary`, which also holds other locales
             // the model was not trained on.
             capabilities: DictationModelCapabilities(
-                termBias: .none,
+                termBias: .sessionList(maxTerms: 100),
                 languages: [
                     "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it",
                     "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",

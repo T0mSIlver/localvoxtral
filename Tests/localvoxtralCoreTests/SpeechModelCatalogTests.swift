@@ -73,6 +73,14 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
+    /// The bundled helper boosts the session's terms on every local model, so
+    /// each entry asks the app for the list (LVX-94).
+    func testEveryLocalModelTakesASessionList() {
+        for option in SpeechModelCatalog.options {
+            XCTAssertEqual(option.capabilities.termBias, .sessionList(maxTerms: 100), option.repoID)
+        }
+    }
+
     /// The app passes `--engine <rawValue>` and the helper's
     /// `SpeechASREngineKind` parses it; the helper is a separate package, so
     /// its accepted values are spelled out here.

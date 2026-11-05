@@ -40,7 +40,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
         stepMilliseconds: Int = 80,
-        utteranceLimit: UtteranceLimit = UtteranceLimit()
+        utteranceLimit: UtteranceLimit = UtteranceLimit(),
+        termBoost: TermBoostSettings? = nil
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let engine = try await SpeechModelLoader.load(
@@ -48,7 +49,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             modelRevision: modelRevision,
             modelDirectory: modelDirectory,
             engine: engine,
-            lockWeights: true
+            lockWeights: true,
+            termBoost: termBoost
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -321,6 +323,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // The client left mid-flush: `close` queued the session drop and cache
                 // clear behind this work, and nobody is left to answer.
                 guard finished else { return }
+                if !ctx.terms.terms.isEmpty, let boosted = session.boostedTokenCount {
+                    FileHandle.standardError.write(Data(
+                        ("speechd: utterance done: \(session.decodedTokenCount) tokens, \(boosted) boosted, "
+                            + "\(ctx.terms.terms.count) terms\n").utf8))
+                }
                 // Use the append-only emitted text (== sum of every delta), so the final
                 // payload can never contradict what was streamed on the wire.
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
@@ -446,7 +453,8 @@ enum SpeechModelLoader {
         modelRevision: String?,
         modelDirectory: String?,
         engine: SpeechASREngineKind?,
-        lockWeights: Bool = false
+        lockWeights: Bool = false,
+        termBoost: TermBoostSettings? = nil
     ) async throws -> SpeechASREngine {
         switch SpeechASREngineKind.resolve(
             named: engine, modelID: modelID, modelDirectory: modelDirectory
@@ -460,7 +468,7 @@ enum SpeechModelLoader {
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
-            return VoxtralASREngine(model: model)
+            return VoxtralASREngine(model: model, termBoost: termBoost)
         case .nemotron:
             let model = try await loadModel(
                 modelID: modelID,
@@ -482,7 +490,7 @@ enum SpeechModelLoader {
                 }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
-            return NemotronASREngine(model: model)
+            return NemotronASREngine(model: model, termBoost: termBoost)
         }
     }
 

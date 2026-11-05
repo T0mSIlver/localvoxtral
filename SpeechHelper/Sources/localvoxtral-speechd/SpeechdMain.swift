@@ -49,7 +49,8 @@ struct SpeechdMain {
                 transcriptionDelayMs: options.transcriptionDelayMs,
                 cacheLimitMB: options.cacheLimitMB,
                 stepMilliseconds: options.stepMilliseconds,
-                utteranceLimit: options.utteranceLimit
+                utteranceLimit: options.utteranceLimit,
+                termBoost: options.termBoost
             )
 
             // A listener that dies in a live process is invisible to the supervisor (it only
