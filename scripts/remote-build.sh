@@ -1116,8 +1116,22 @@ case "$CMD" in
           # service's baseline of the same arm.
           TR_LABEL="${TR_LABEL:-$TR_ASR-helper-$TR_BIAS}"
           TR_OPTIONAL+=",\"helperPath\":\"dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd\""
+          # Measurement only: LV_TR_HELPER_MODEL_DIR (a dir under EvalRecordings/,
+          # rsynced with the tree) and LV_TR_HELPER_ENGINE load weights the
+          # builder's HF cache lacks; the gate refuses a copy into that cache.
+          TR_HELPER_ARGS=""
           if [[ -n "$TR_TERM_BOOST" ]]; then
-            TR_OPTIONAL+=",\"helperArguments\":[\"--term-boost\",\"$TR_TERM_BOOST\"]"
+            TR_HELPER_ARGS+="\"--term-boost\",\"$TR_TERM_BOOST\","
+          fi
+          if [[ -n "${LV_TR_HELPER_MODEL_DIR:-}" ]]; then
+            if [[ ! "$LV_TR_HELPER_MODEL_DIR" =~ ^EvalRecordings/[A-Za-z0-9._/-]+$ ]]; then
+              echo "eval-term-recall: LV_TR_HELPER_MODEL_DIR must be under EvalRecordings/" >&2
+              exit 1
+            fi
+            TR_HELPER_ARGS+="\"--model-dir\",\"$LV_TR_HELPER_MODEL_DIR\",\"--engine\",\"${LV_TR_HELPER_ENGINE:-nemotron}\","
+          fi
+          if [[ -n "$TR_HELPER_ARGS" ]]; then
+            TR_OPTIONAL+=",\"helperArguments\":[${TR_HELPER_ARGS%,}]"
           fi
         fi
         TR_LABEL="${TR_LABEL:-$TR_ASR-$TR_BIAS}"

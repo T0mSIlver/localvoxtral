@@ -33,12 +33,13 @@ package final class PackagedSpeechHelper: @unchecked Sendable {
     ) async throws -> PackagedSpeechHelper {
         let process = Process()
         process.executableURL = binary
-        var arguments = [
-            "--model", model,
-            "--port", "\(port)",
-        ]
-        if let revision = SpeechModelCatalog.option(forRepoID: model)?.revision {
-            arguments.append(contentsOf: ["--model-revision", revision])
+        var arguments = ["--port", "\(port)"]
+        // A `--model-dir` in the extra arguments replaces the repo id; speechd takes one.
+        if !extraArguments.contains("--model-dir") {
+            arguments += ["--model", model]
+            if let revision = SpeechModelCatalog.option(forRepoID: model)?.revision {
+                arguments.append(contentsOf: ["--model-revision", revision])
+            }
         }
         process.arguments = arguments + extraArguments
 
