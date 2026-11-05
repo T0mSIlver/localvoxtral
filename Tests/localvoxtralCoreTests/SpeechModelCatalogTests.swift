@@ -73,16 +73,12 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
-    /// Nemotron boosts the session's terms while it decodes (LVX-2); Voxtral's
-    /// decoder takes none yet.
-    func testOnlyNemotronTakesASessionList() throws {
-        let nemotron = try XCTUnwrap(
-            SpeechModelCatalog.option(
-                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-            )
-        )
-        XCTAssertEqual(nemotron.capabilities.termBias, .sessionList(maxTerms: 100))
-        XCTAssertEqual(SpeechModelCatalog.defaultOption.capabilities, .audioOnly)
+    /// The bundled helper boosts the session's terms on every local model, so
+    /// each entry asks the app for the list (LVX-94).
+    func testEveryLocalModelTakesASessionList() {
+        for option in SpeechModelCatalog.options {
+            XCTAssertEqual(option.capabilities.termBias, .sessionList(maxTerms: 100), option.repoID)
+        }
     }
 
     /// The app passes `--engine <rawValue>` and the helper's

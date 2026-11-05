@@ -20,9 +20,8 @@ package struct SpeechModelOption: Equatable, Sendable {
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
     package let sizeOnDiskGB: Double
-    /// What the model takes besides audio. Voxtral's decoder has no logits hook
-    /// yet (LVX-12); Nemotron boosts the session's terms while it decodes
-    /// (LVX-2).
+    /// What the model takes besides audio. Every local model boosts the
+    /// session's terms while it decodes (LVX-2, LVX-12, LVX-94).
     package let capabilities: DictationModelCapabilities
 }
 
@@ -39,7 +38,7 @@ package enum SpeechModelCatalog {
             displayName: "Voxtral Mini 4B Realtime (4-bit, quantized head)",
             engine: .voxtral,
             sizeOnDiskGB: 2.6,
-            capabilities: .audioOnly
+            capabilities: DictationModelCapabilities(termBias: .sessionList(maxTerms: 100))
         ),
         // NVIDIA's cache-aware streaming RNN-T, 8-bit. A third of Voxtral's weights,
         // which is what matters on an 8 or 16 GB Mac where the speech model and the

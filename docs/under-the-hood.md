@@ -84,6 +84,18 @@ names the language you dictate in; Auto, the default, lets the model detect it.
 Changing the model picker restarts the helper and downloads the new
 checkpoint.
 
+### Your terms with the local engines
+
+All three local models take a list of up to 100 terms when the dictation
+starts: your Global terms and your replacement dictionary's spellings first,
+then the joined session's project terms. The list stays on your Mac, so the
+project terms go without **Send context to non-local polishing servers**.
+While it transcribes, the engine favours a term's spelling when the audio
+leaves it unsure between close candidates. It only changes which word it
+writes, never whether it writes one. On 260 test dictations, term recall rose from 55 to 61 % on
+Nemotron 3.5 and from 61 to 67 % on Nemotron Unified; on 170 dictations,
+from 67 to 71 % on Voxtral. Other words came out as before.
+
 ### Polishing engine
 
 Polishing runs in localvoxtral-polishd, a bundled Swift helper built on
