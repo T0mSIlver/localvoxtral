@@ -137,9 +137,14 @@ package protocol RealtimeClient: AnyObject, Sendable {
     /// its handshake sent what was queued for it (#1672). Handed over once;
     /// the session replays it ahead of its buffer on the next socket.
     func takeUnsentAudio() -> Data
+    /// How long a stop waits with no event from this server before it closes
+    /// the socket without the final answer. Nil, the default, takes the
+    /// app's `TimingConstants.finalizationInactivityThreshold`.
+    var finalizationInactivityThreshold: TimeInterval? { get }
 }
 
 extension RealtimeClient {
     /// A client that holds no audio for its handshake has none to hand back.
     package func takeUnsentAudio() -> Data { Data() }
+    package var finalizationInactivityThreshold: TimeInterval? { nil }
 }
