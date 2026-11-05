@@ -1,7 +1,13 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+#if canImport(os)
+import os
+#endif
 
 /// What asking Mistral about an API key came back with.
-enum MistralAPIKeyVerification: Equatable, Sendable {
+package enum MistralAPIKeyVerification: Equatable, Sendable {
     /// Mistral answered the authenticated request.
     case accepted
     /// Mistral answered, but refused the key (401/403) or the request.
@@ -14,21 +20,23 @@ enum MistralAPIKeyVerification: Equatable, Sendable {
 /// Checking an API key without dictating. Injected so Settings, the onboarding
 /// wizard, previews and the unit suite share one seam and only production ever
 /// opens a socket.
-protocol MistralAPIKeyVerifying: Sendable {
+package protocol MistralAPIKeyVerifying: Sendable {
     func verify(apiKey: String) async -> MistralAPIKeyVerification
 }
 
 /// Production check: an authenticated `GET /v1/models`. The cheapest endpoint
 /// that distinguishes "this key works" from "this key does not" — it bills
 /// nothing, needs no model, and its 401 is the same 401 a dictation would hit.
-struct MistralAPIKeyVerifier: MistralAPIKeyVerifying {
-    static let modelsEndpoint = URL(string: "https://api.mistral.ai/v1/models")!
+package struct MistralAPIKeyVerifier: MistralAPIKeyVerifying {
+    package static let modelsEndpoint = URL(string: "https://api.mistral.ai/v1/models")!
 
     /// Short on purpose: this runs behind a button the user is watching, and a
     /// slow answer is an answer they can act on ("could not reach Mistral").
-    static let timeoutInterval: TimeInterval = 10
+    package static let timeoutInterval: TimeInterval = 10
 
-    func verify(apiKey: String) async -> MistralAPIKeyVerification {
+    package init() {}
+
+    package func verify(apiKey: String) async -> MistralAPIKeyVerification {
         let trimmed = apiKey.trimmed
         guard !trimmed.isEmpty else {
             return .unreachable("Enter an API key first.")
@@ -67,7 +75,7 @@ struct MistralAPIKeyVerifier: MistralAPIKeyVerifying {
     /// is throttled, or Mistral is having a moment), so neither is reported as a
     /// rejection — telling someone their good key is bad is the one answer this
     /// check must never give.
-    static func verification(forStatusCode statusCode: Int) -> MistralAPIKeyVerification {
+    package static func verification(forStatusCode statusCode: Int) -> MistralAPIKeyVerification {
         switch statusCode {
         case 200..<300:
             return .accepted
@@ -86,13 +94,13 @@ struct MistralAPIKeyVerifier: MistralAPIKeyVerifying {
 /// UI state of one "Check key" press. Owned separately by Settings and by the
 /// onboarding wizard — they check different strings (the stored key vs the
 /// wizard's draft) and must not overwrite each other's result.
-enum MistralAPIKeyCheckState: Equatable, Sendable {
+package enum MistralAPIKeyCheckState: Equatable, Sendable {
     case idle
     case checking
     case finished(MistralAPIKeyVerification)
 
     /// ONE line for the row's status label; nil renders no label at all.
-    var statusLine: String? {
+    package var statusLine: String? {
         switch self {
         case .idle:
             return nil
@@ -109,51 +117,5 @@ enum MistralAPIKeyCheckState: Equatable, Sendable {
         }
     }
 
-    var isChecking: Bool { self == .checking }
-}
-
-/// One "Check key" row: the verdict and the key it belongs to. Settings and the
-/// onboarding wizard each own one, so a verdict is never shown next to a key
-/// it did not check (#1626, #1873).
-@MainActor
-@Observable
-final class MistralAPIKeyCheck {
-    private var checkedKey: String?
-    private var lastState: MistralAPIKeyCheckState = .idle
-    /// Bumped by every check and every `invalidate`, so only the latest
-    /// check publishes.
-    @ObservationIgnored private var generation = 0
-    /// The in-flight check. Kept awaitable so the unit suite observes the
-    /// result without polling a clock.
-    @ObservationIgnored private(set) var task: Task<Void, Never>?
-
-    /// The verdict for `key`: idle when the last check was of another key.
-    func state(for key: String) -> MistralAPIKeyCheckState {
-        key == checkedKey ? lastState : .idle
-    }
-
-    func start(
-        key: String,
-        verify: @escaping @MainActor (String) async -> MistralAPIKeyVerification
-    ) {
-        guard !state(for: key).isChecking else { return }
-        generation += 1
-        let generation = generation
-        checkedKey = key
-        lastState = .checking
-        task = Task { @MainActor [weak self] in
-            let verification = await verify(key)
-            guard let self, self.generation == generation else { return }
-            self.lastState = .finished(verification)
-        }
-    }
-
-    /// Forget the verdict and drop a check still running, for an owner that
-    /// sees every edit of its key: the same key typed again then gets a fresh
-    /// check instead of the older one's answer.
-    func invalidate() {
-        generation += 1
-        checkedKey = nil
-        lastState = .idle
-    }
+    package var isChecking: Bool { self == .checking }
 }

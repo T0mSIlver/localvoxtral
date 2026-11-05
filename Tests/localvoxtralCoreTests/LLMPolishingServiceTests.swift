@@ -2,7 +2,7 @@ import Foundation
 import localvoxtralTestSupport
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class LLMPolishingServiceTests: XCTestCase {
     private let request = LLMPolishingRequest(

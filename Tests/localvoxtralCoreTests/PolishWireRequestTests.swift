@@ -1,7 +1,10 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import localvoxtralTestSupport
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// What every polish-model request puts on the wire (#1851): URL, method,
 /// timeout, headers and body, for polish, term suggestions and the warmup, on
@@ -113,6 +116,10 @@ final class PolishWireRequestTests: XCTestCase {
 
     // MARK: - OpenAI-compatible and Mistral: pinned
 
+    #if canImport(Darwin)
+    /// Darwin only: Linux Foundation writes doubles in their shortest form
+    /// (`0.05`, not `0.050000000000000003`), and the app sends these requests
+    /// from macOS. The hosted macOS run checks them against the fixture.
     func testOpenAICompatibleAndMistralRequestsMatchTheirFixtures() async throws {
         var snapshots: [String: Any] = [:]
         let polishCases: [(String, LLMPolishingRequest, LLMPolishingConfiguration)] = [
@@ -131,6 +138,7 @@ final class PolishWireRequestTests: XCTestCase {
         }
         try assertFixture(snapshots)
     }
+    #endif
 
     // MARK: - Anthropic
 
@@ -169,9 +177,11 @@ final class PolishWireRequestTests: XCTestCase {
         ]
     }
 
+    /// In the app suite's fixtures folder, which Package.swift excludes from
+    /// that target; this suite moved to the core to run on Linux (LVX-17).
     private static let fixtureURL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .appendingPathComponent("Fixtures/PolishWireRequests.json")
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("localvoxtralTests/Fixtures/PolishWireRequests.json")
 
     private func assertFixture(_ snapshots: [String: Any], file: StaticString = #filePath, line: UInt = #line) throws {
         let data = try JSONSerialization.data(
@@ -200,10 +210,10 @@ final class PolishWireRequestTests: XCTestCase {
     }
 
     private func printForRecovery(_ contents: String) {
-        fflush(stdout)
+        fflush(nil)
         print("===== POLISH WIRE BEGIN =====")
         print(contents, terminator: "")
         print("===== POLISH WIRE END =====")
-        fflush(stdout)
+        fflush(nil)
     }
 }

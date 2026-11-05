@@ -1,7 +1,7 @@
 import Foundation
 import localvoxtralTestSupport
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// Anthropic's Messages API (#1849): an External URL server on
 /// `api.anthropic.com` gets its own body, URL and headers, and its replies

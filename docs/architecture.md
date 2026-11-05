@@ -67,7 +67,10 @@ AppKit:
 - the polishing server's wire dialect (`PolishWire.swift`, #1851):
   `LLMPolishingConfiguration` builds the URL, headers and body of every
   request to the polishing model, and reads its reply, in the OpenAI-compatible, Mistral or Anthropic shape;
-  `LLMPolishingService` stays in the app
+  `LLMPolishingService` sends it
+- the Mistral model catalog and key check (`MistralModelCatalog`,
+  `MistralAPIKeyVerifier`); the Settings row's `MistralAPIKeyCheck` stays in
+  the app
 - which app an insertion targets (`PreferredTextInsertionTargetPolicy`);
   `TextInsertionService` stays in the app
 - a managed backend's status (`ManagedBackendStatus`, `ModelDownloadProgress`)

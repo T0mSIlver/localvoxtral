@@ -1,37 +1,42 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+#if canImport(os)
 import os
+#endif
 
 // Test seams need to substitute a suspending polishing service so stop cleanup
 // can be proven idempotent while post-processing is still in flight.
-protocol LLMPolishingServicing: Sendable {
+package protocol LLMPolishingServicing: Sendable {
     func polish(
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult
 }
 
-struct LLMPolishingRequest: Sendable {
-    let inputText: String
-    let systemPrompt: String
-    let userPrompts: [String]
+package struct LLMPolishingRequest: Sendable {
+    package let inputText: String
+    package let systemPrompt: String
+    package let userPrompts: [String]
     /// Optional generation cap forwarded as `max_tokens`. Production polish
     /// requests leave it nil (the helper applies its own default); the
     /// prompt-prefix warmup sets 1 so the throwaway generation costs a
     /// single token.
-    let maxTokens: Int?
+    package let maxTokens: Int?
     /// Nil for a polish, which the user is waiting on. The term-suggestion
     /// request reads weeks of dictations in one go and is started from
     /// Settings, so it may take longer than a polish is allowed to.
-    let timeoutSeconds: TimeInterval?
+    package let timeoutSeconds: TimeInterval?
     /// False for a polish, which has to be fast. True asks a hosted reasoning
     /// model to think before answering (`MistralReasoningEffort.high`);
     /// self-hosted shapes ignore it and keep their configured behaviour.
-    let prefersDeepReasoning: Bool
+    package let prefersDeepReasoning: Bool
     /// The feature the usage ledger charges this request to. Nil records
     /// nothing: the warmup's one-token throwaway on the bundled helper.
-    let usageFeature: UsageEntry.Feature?
+    package let usageFeature: UsageEntry.Feature?
 
-    init(
+    package init(
         inputText: String,
         systemPrompt: String,
         userPrompts: [String],
@@ -50,12 +55,12 @@ struct LLMPolishingRequest: Sendable {
     }
 
     /// The characters of every message sent, for the usage ledger.
-    var promptCharacters: Int {
+    package var promptCharacters: Int {
         userPrompts.reduce(systemPrompt.count) { $0 + $1.count }
     }
 
     /// The request as every polishing server's dialect takes it.
-    var wire: PolishWireRequest {
+    package var wire: PolishWireRequest {
         PolishWireRequest(
             systemPrompt: systemPrompt,
             userPrompts: userPrompts,
@@ -69,32 +74,39 @@ struct LLMPolishingRequest: Sendable {
 /// Endpoint and model for Mistral's hosted polishing API. Settings wires these
 /// in separately; they live here so the request shape and its defaults are
 /// stated in one place.
-enum MistralPolishDefaults {
+package enum MistralPolishDefaults {
     /// Base URL — `LLMPolishingConfiguration.requestURL` turns it into
     /// `https://api.mistral.ai/v1/chat/completions`.
-    static let endpoint = URL(string: "https://api.mistral.ai")!
+    package static let endpoint = URL(string: "https://api.mistral.ai")!
     /// `mistral-medium-3-5` (aliases `mistral-medium-latest`,
     /// `mistral-medium-3`).
-    static let model = "mistral-medium-3-5"
+    package static let model = "mistral-medium-3-5"
 }
 
-struct LLMPolishingResult: Sendable {
-    let rawText: String
-    let polishedText: String
-    let durationSeconds: Double
-    var usage: LLMTokenUsage? = nil
+package struct LLMPolishingResult: Sendable {
+    package let rawText: String
+    package let polishedText: String
+    package let durationSeconds: Double
+    package var usage: LLMTokenUsage? = nil
+
+    package init(rawText: String, polishedText: String, durationSeconds: Double, usage: LLMTokenUsage? = nil) {
+        self.rawText = rawText
+        self.polishedText = polishedText
+        self.durationSeconds = durationSeconds
+        self.usage = usage
+    }
 }
 
-struct LLMPolishingService: LLMPolishingServicing {
+package struct LLMPolishingService: LLMPolishingServicing {
     /// Receives one entry per request that carries a usage feature, on every
     /// backend; only Mistral's are priced. Nil records nothing.
-    var usageRecorder: (any UsageRecording)?
-    let session: URLSession
+    package var usageRecorder: (any UsageRecording)?
+    package let session: URLSession
     /// Times the request's whole budget (#1688). Injected so tests run it
     /// on a manual clock.
-    let sleep: @Sendable (Duration) async -> Void
+    package let sleep: @Sendable (Duration) async -> Void
 
-    init(
+    package init(
         usageRecorder: (any UsageRecording)? = nil,
         session: URLSession = SameOriginHTTP.shared,
         sleep: @escaping @Sendable (Duration) async -> Void = SessionClock.live.sleep
@@ -107,7 +119,7 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// One rule for every backend. The timeout is only the client's cap: a
     /// fast hosted model finishes long before it, and a long transcript takes
     /// longer on an external server or Mistral too.
-    static func timeoutInterval(for request: LLMPolishingRequest) -> TimeInterval {
+    package static func timeoutInterval(for request: LLMPolishingRequest) -> TimeInterval {
         PolishRequestTimeout.seconds(
             forInputCharacters: request.inputText.count,
             override: request.timeoutSeconds
@@ -116,7 +128,7 @@ struct LLMPolishingService: LLMPolishingServicing {
 
     /// Classify a URLSession transport failure. A timeout keeps its own case; every other
     /// failure stays a network error carrying the system's description.
-    static func polishingError(
+    package static func polishingError(
         forTransportError error: Error,
         timeoutSeconds: TimeInterval
     ) -> LLMPolishingError {
@@ -126,7 +138,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         return .networkError(error.localizedDescription)
     }
 
-    func polish(
+    package func polish(
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
@@ -135,7 +147,7 @@ struct LLMPolishingService: LLMPolishingServicing {
             throw LLMPolishingError.emptyInput
         }
 
-        let startTime = CFAbsoluteTimeGetCurrent()
+        let startTime = Date().timeIntervalSinceReferenceDate
 
         let urlRequest = try Self.makeURLRequest(
             request: request,
@@ -216,7 +228,7 @@ struct LLMPolishingService: LLMPolishingServicing {
             throw LLMPolishingError.invalidResponse
         }
 
-        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        let duration = Date().timeIntervalSinceReferenceDate - startTime
 
         return LLMPolishingResult(
             rawText: trimmed,
@@ -226,7 +238,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         )
     }
 
-    static func mayHaveBeenBilled(transportError error: Error) -> Bool {
+    package static func mayHaveBeenBilled(transportError error: Error) -> Bool {
         guard let urlError = error as? URLError else {
             return error is CancellationError
         }
@@ -257,7 +269,7 @@ struct LLMPolishingService: LLMPolishingServicing {
 
     /// The full URLRequest for one polish call (and the test seam pinning
     /// the timeout without networking).
-    static func makeURLRequest(
+    package static func makeURLRequest(
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) throws -> URLRequest {

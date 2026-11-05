@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 import localvoxtralTestSupport
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The Mistral model pickers: `GET /v1/models` grouped into one row per model,
 /// the rows each engine offers, and the per-model `reasoning_effort` a polish
@@ -286,28 +286,6 @@ final class MistralModelCatalogTests: XCTestCase {
         let json = try requestJSON(model: "ministral-8b-2512", effort: .omitted)
 
         XCTAssertEqual(Set(json.keys), ["model", "messages", "temperature", "prompt_cache_key"])
-    }
-
-    @MainActor
-    func testSettingsPassTheCatalogsAnswerToThePolishRequest() throws {
-        let defaults = makeTestDefaults()
-        let settings = SettingsStore(
-            defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        settings.llmPolishingEnabled = true
-        settings.polishingBackendMode = .mistralAPI
-        settings.mistralAPIKey = "mk-mistral"
-        settings.mistralModelCatalog = try catalog()
-
-        settings.mistralPolishingModel = "ministral-8b-2512"
-        XCTAssertEqual(settings.llmPolishingConfiguration?.mistralReasoningEffort, .omitted)
-
-        settings.mistralPolishingModel = "zai-glm-5-3"
-        XCTAssertEqual(settings.llmPolishingConfiguration?.mistralReasoningEffort, .low)
-
-        // The list outlives the process: a relaunch offline still knows it.
-        let relaunched = SettingsStore(
-            defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        XCTAssertEqual(relaunched.mistralModelCatalog, settings.mistralModelCatalog)
     }
 
     private func requestJSON(
