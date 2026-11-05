@@ -465,9 +465,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(configuration.contextBias, [])
     }
 
-    /// The managed helper's Nemotron model takes the user's terms and Voxtral
-    /// does not (LVX-2); an External URL server never does.
-    func testOnlyANemotronHelperSessionIsHandedTheUsersTerms() {
+    /// Every model the managed helper runs takes the user's terms (LVX-94);
+    /// an External URL server never does.
+    func testEveryManagedHelperSessionIsHandedTheUsersTerms() {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         let settings = viewModel.settings
         settings.dictationBackendMode = .managedLocal
@@ -478,13 +478,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
                 capabilities: settings.dictationModelCapabilities)
         }
 
-        settings.managedSpeechModel = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-        XCTAssertEqual(bias(), ["localvoxtral", "herdr"])
+        for option in SpeechModelCatalog.options {
+            settings.managedSpeechModel = option.repoID
+            XCTAssertEqual(bias(), ["localvoxtral", "herdr"], option.repoID)
+        }
 
-        settings.managedSpeechModel = SpeechModelCatalog.defaultOption.repoID
-        XCTAssertEqual(bias(), [])
-
-        settings.managedSpeechModel = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
         settings.dictationBackendMode = .externalURL
         XCTAssertEqual(bias(), [])
     }
