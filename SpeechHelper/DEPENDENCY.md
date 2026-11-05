@@ -21,14 +21,18 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "c793e5cc0891c3c0f1856a41ca9151b116ba7c36"
+    revision: "3619351671ece61a1000fd1865c1f3cea8b18b3e"
 )
 ```
 
-This fork commit (branch `pin/nemotron-unified-on-902920c-v2`) is upstream's `902920c` plus
-the Nemotron Unified port, which the catalog's Unified entry needs. Its NemotronASR code is
-the port as posted upstream in Neywa-Labs/mlx-audio-swift#374 (`87c2920`), minus the two
-lines upstream's #349 added after `902920c`. It must become an upstream SHA before merge.
+This fork commit (branch `pin/term-boost-on-902920c`) is upstream's `902920c` plus the
+Nemotron Unified port, which the catalog's Unified entry needs, plus the decode-time term
+boosts for Nemotron and Voxtral Realtime that the catalog's term lists need. Its Unified code
+is the port as posted upstream in Neywa-Labs/mlx-audio-swift#374 (`87c2920`), minus the two
+lines upstream's #349 added after `902920c`. The boosts are the fork branches
+`feat/nemotron-term-boost-v2` (`7194af8`) and `feat/voxtral-term-boost` (`7bb452e`), not yet
+posted upstream; on `902920c` the Voxtral boost also needs a port of upstream main's Tekken
+`encode`, which `902920c` lacks. It must become an upstream SHA before merge.
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
