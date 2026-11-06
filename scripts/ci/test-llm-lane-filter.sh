@@ -169,6 +169,8 @@ expect false "a settings-model plus forward-supervisor change does not run the l
   Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
 expect false "the settings model's files by area do not run the lane" \
   "Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
+  "Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+DictationNote.swift" \
+  "Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+DoctorSkill.swift" \
   Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift \
   Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift
 expect true "an exempt file beside a content change still runs the lane" \
@@ -205,6 +207,15 @@ while IFS= read -r exempt; do
   done <<<"$patterns"
 done <<<"$exempt_paths"
 echo "PASS: every exempt path exists and only the catch-all matches it"
+
+# The settings model's files by area are Settings rows, so each one is exempt.
+# A file split out of it later must join the list (two missed it in #2033).
+while IFS= read -r model_file; do
+  grep -qxF "${model_file#"$ROOT_DIR/"}" <<<"$exempt_paths" \
+    || fail "settings model file is not exempt: ${model_file#"$ROOT_DIR/"}"
+done < <(find "$ROOT_DIR/Sources/localvoxtral/ClaudeContext" "$ROOT_DIR/Sources/localvoxtralCore/ClaudeContext" \
+  -name 'ClaudeIntegrationSettingsModel*.swift' 2>/dev/null | sort)
+echo "PASS: every settings model file is exempt"
 
 expect false "top-level docs do not run the lane" \
   README.md AGENTS.md

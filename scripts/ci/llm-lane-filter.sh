@@ -139,6 +139,8 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Cmux.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Codex.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+DictationNote.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+DoctorSkill.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentActions.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentTypes.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrMachines.swift'
