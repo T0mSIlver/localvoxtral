@@ -293,6 +293,11 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         let readyLine = "ready on 127.0.0.1:\(Self.testPort)"
         let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
             stderrLog.append(line)
+            // Timings only, no transcript: the load-time warm-up (LVX-111) and each
+            // utterance's slowest step.
+            if line.hasPrefix("speechd: warm-up") || line.contains("utterance ended by") {
+                print("speechd integration: helper: \(line)")
+            }
             if line.contains(readyLine), ready.set() {
                 readyOrExited.fulfill()
             }
