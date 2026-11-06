@@ -1135,6 +1135,10 @@ case "$CMD" in
       echo "eval-e2e: unknown provider '$E2E_PROVIDER' (only 'mistral')" >&2
       exit 1
     fi
+    if [[ -n "$E2E_REPLAY_NEWEST" && -z "$E2E_REPLAY_DIR" ]]; then
+      echo "eval-e2e: --replay-newest needs --replay" >&2
+      exit 1
+    fi
     if [[ -n "$E2E_REPLAY_DIR" ]]; then
       # A replay scores a user's stored dictations on the local services; it
       # takes no corpus recording set and never bills a hosted provider.
