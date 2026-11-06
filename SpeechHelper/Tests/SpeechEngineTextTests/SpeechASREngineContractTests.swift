@@ -124,3 +124,54 @@ final class NemotronChunkLadderTests: XCTestCase {
         )
     }
 }
+
+final class NemotronUnifiedLayoutTests: XCTestCase {
+    private func frames(_ delay: Int?) -> [Int] {
+        NemotronUnifiedLayout.frames(forTranscriptionDelayMs: delay)
+    }
+
+    /// Unified takes every 80 ms step from 160 to 2080 ms, not 3.5's rungs: the
+    /// latency (chunk + right) is the delay rounded down to a frame.
+    func testEveryEightyMillisecondStepKeepsItsLatency() {
+        for step in stride(from: 160, through: 2080, by: 80) {
+            for delay in [step, step + 79] {
+                let f = frames(delay)
+                XCTAssertEqual(f[0], 70, "\(delay) ms")
+                XCTAssertEqual((f[1] + f[2]) * 80, step, "\(delay) ms")
+                XCTAssertGreaterThanOrEqual(f[1], 1, "\(delay) ms")
+                XCTAssertGreaterThanOrEqual(f[2], 1, "\(delay) ms")
+            }
+        }
+    }
+
+    /// NVIDIA's rows, except 320 ms (speechd's default) on a 2-frame chunk; a latency
+    /// between rows takes the lower row's chunk; outside 160-2080 ms it clamps.
+    func testNvidiasRowsSpeechdsDefaultAndTheClamp() {
+        XCTAssertEqual(frames(nil), [70, 2, 2])
+        XCTAssertEqual(frames(320), [70, 2, 2])
+        XCTAssertEqual(frames(160), [70, 1, 1])
+        XCTAssertEqual(frames(240), [70, 1, 2])
+        XCTAssertEqual(frames(560), [70, 2, 5])
+        XCTAssertEqual(frames(1120), [70, 7, 7])
+        XCTAssertEqual(frames(2080), [70, 13, 13])
+        XCTAssertEqual(frames(400), [70, 2, 3])
+        XCTAssertEqual(frames(1600), [70, 7, 13])
+        XCTAssertEqual(frames(80), [70, 1, 1])
+        XCTAssertEqual(frames(5000), [70, 13, 13])
+    }
+
+    func testRecognizesABufferedCheckpointFromItsConfig() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "unified-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func write(_ style: String) throws {
+            let json = #"{"model_type":"nemotron_asr","encoder":{"att_context_style":"\#(style)"}}"#
+            try Data(json.utf8).write(to: root.appending(path: "config.json"))
+        }
+        try write("chunked_limited_with_rc")
+        XCTAssertTrue(NemotronUnifiedLayout.isBufferedCheckpoint(directory: root))
+        try write("chunked_limited")
+        XCTAssertFalse(NemotronUnifiedLayout.isBufferedCheckpoint(directory: root))
+        XCTAssertFalse(NemotronUnifiedLayout.isBufferedCheckpoint(directory: root.appending(path: "missing")))
+    }
+}

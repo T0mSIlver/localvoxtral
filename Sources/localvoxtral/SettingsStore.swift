@@ -51,6 +51,7 @@ final class SettingsStore {
         static let mistralModelCatalog = "settings.mistral_model_catalog"
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let managedSpeechModel = "settings.managed_speech_model"
+        static let dictationLanguage = "settings.dictation_language"
         static let polishingBackendMode = "settings.polishing_backend_mode"
         static let onboardingCompleted = "settings.onboarding_completed"
         static let onboardingPolishingBeforeMistralChoice = "settings.onboarding_polishing_before_mistral_choice"
@@ -222,6 +223,14 @@ final class SettingsStore {
     /// so a leftover external value can never leak into a managed launch.
     var managedSpeechModel: String {
         didSet { defaults.set(managedSpeechModel, forKey: Keys.managedSpeechModel) }
+    }
+
+    /// The language the user dictates in, an ISO 639-1 code, or empty for Auto:
+    /// the model detects it. Only a model that takes one gets it
+    /// (`DictationModelCapabilities.languages`); the choice stays when the user
+    /// switches to a model that doesn't.
+    var dictationLanguage: String {
+        didSet { defaults.set(dictationLanguage, forKey: Keys.dictationLanguage) }
     }
 
     /// True once the user has completed (or skipped) the first-launch onboarding
@@ -1081,6 +1090,7 @@ final class SettingsStore {
                 defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
             }
         }
+        dictationLanguage = defaults.string(forKey: Keys.dictationLanguage)?.trimmed ?? ""
 
         for key in Self.retiredKeys {
             defaults.removeObject(forKey: key)

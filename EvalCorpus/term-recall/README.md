@@ -3,7 +3,7 @@
 Measures whether the speech engine spells the owner's technical terms right,
 whether it writes listed terms nobody said, and how it does on the other
 words. Polish is not in the loop, so a speech-engine change is measured
-alone. It is the gate for term biasing in the engine (#316, #521) and for a
+alone. It is the gate for term biasing in the engine (LVX-2, LVX-12) and for a
 second pass on stop (#524).
 
 This directory holds only this README. The cases come from the owner's own
@@ -39,6 +39,34 @@ From the same machine, against the Mac's speech test services:
 ```bash
 ./scripts/remote-build.sh eval-term-recall compare voxtral-none nemotron-none
 ```
+
+To measure a helper or engine change, such as term biasing, run every arm
+against the packaged helper built from the branch (`remote-build.sh
+package` first), so they share one binary and one Mac:
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron --helper --bias none
+```
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron --helper --bias session
+```
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr nemotron --helper --bias noise
+```
+
+```bash
+./scripts/remote-build.sh eval-term-recall compare nemotron-helper-none nemotron-helper-session
+```
+
+`--bias session` sends each case's `sessionTerms` as the `session.update`
+`context_bias`, and `--bias noise` sends the set's `noiseTerms`: the noise arm
+counts false insertions. `--term-boost first,continuation,margin` overrides
+the helper's boost sizes for a tuning run. Without `--label`, a run is named
+`<asr>-<bias>`, or `<asr>-helper-<bias>` with `--helper`. With `--helper`, the
+log also reports how many tokens the helper boosted (a count, never the
+terms).
 
 Each run prints a scoreboard and leaves its run file in
 `EvalRecordings/term-recall/runs/<label>.jsonl`. `--hypotheses
@@ -87,8 +115,8 @@ header then says `say/<set>` instead of `human/<set>`. `hypotheses` and
   The harvester takes them with a port of the scorer's matcher, so the two
   agree; the eval fails a run on any disagreement.
 - `sessionTerms`: at most 100 terms from the sentence's session, topped up from
-  its project, its own terms included. This is the list the session arm of
-  #316 biases with.
+  its project, its own terms included. This is the list the session arm
+  biases with.
 - `sessionHash`: 12 hex characters; the path it stands for stays in
   `session-map.json`.
 

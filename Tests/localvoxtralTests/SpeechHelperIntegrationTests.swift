@@ -272,75 +272,33 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         binary: URL,
         model: String,
         extraArguments: [String] = []
-    ) async throws -> (process: Process, stderrLog: LineLog) {
-        let process = Process()
-        process.executableURL = binary
-        var arguments = [
-            "--model", model,
-            "--port", "\(Self.testPort)",
-        ]
-        if let revision = SpeechModelCatalog.option(forRepoID: model)?.revision {
-            arguments.append(contentsOf: ["--model-revision", revision])
-        }
-        process.arguments = arguments + extraArguments
-
-        let stderr = Pipe()
-        process.standardError = stderr
-        let readyOrExited = expectation(description: "speech helper ready or exited")
-        readyOrExited.assertForOverFulfill = false
-        let ready = LockedFlag()
-        let stderrLog = LineLog()
-        let readyLine = "ready on 127.0.0.1:\(Self.testPort)"
-        let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
-            stderrLog.append(line)
-            if line.contains(readyLine), ready.set() {
-                readyOrExited.fulfill()
-            }
-        }
-        process.terminationHandler = { _ in readyOrExited.fulfill() }
-
-        try process.run()
-        reader.start()
-        addTeardownBlock {
-            await Self.reap(process)
-        }
-
-        await fulfillment(of: [readyOrExited], timeout: Self.readyTimeout)
-        guard ready.value else {
-            let status = process.isRunning
-                ? "still running, no ready line after \(Int(Self.readyTimeout))s"
-                : "exited with status \(process.terminationStatus)"
-            XCTFail(
-                """
-                Speech helper failed to become ready (\(status)). stderr tail:
-                \(stderrLog.tail(30))
-                """
+    ) async throws -> (process: Process, stderrLog: SpeechHelperLineLog) {
+        let helper: PackagedSpeechHelper
+        do {
+            helper = try await PackagedSpeechHelper.launch(
+                binary: binary,
+                model: model,
+                port: Self.testPort,
+                extraArguments: extraArguments,
+                readyTimeout: Self.readyTimeout
             )
+        } catch {
+            XCTFail("\(error)")
             throw XCTSkip("speech helper did not become ready")
         }
-        return (process, stderrLog)
-    }
-
-    private static func reap(_ process: Process) async {
-        if process.isRunning {
-            process.terminate()
+        addTeardownBlock {
+            await helper.stop()
         }
-        let reaped = XCTestExpectation(description: "speech helper exited after SIGTERM")
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            reaped.fulfill()
-        }
-        _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
-        }
+        return (helper.process, helper.stderrLog)
     }
 
     func testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensureModelCached(model)
-        let (process, _) = try await launchHelper(binary: binary, model: model)
+        let (process, stderrLog) = try await launchHelper(binary: binary, model: model)
+        // A model that takes a language (Nemotron Unified) gets the phrase's,
+        // as a session with the user's choice would; the others get none.
+        let language = SpeechModelCatalog.option(forRepoID: model)?.capabilities.sessionLanguage(for: "en")
 
         let healthURL = URL(string: "http://127.0.0.1:\(Self.testPort)/health")!
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
@@ -403,7 +361,8 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         let configuration = RealtimeSessionConfiguration(
             endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
             apiKey: "",
-            model: model
+            model: model,
+            language: language
         )
         try client.connect(configuration: configuration)
         await fulfillment(
@@ -446,6 +405,14 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             0.55,
             "Expected synthetic-audio transcript accuracy >= 0.55. Transcript: \(doneText)"
         )
+        if let language {
+            // The session.update language reached the session as its prompt:
+            // "en" is index 0 in Nemotron's prompt dictionary.
+            XCTAssertTrue(
+                stderrLog.tail(200).contains("speechd: nemotron session language \(language) prompt 0"),
+                "speechd must open the session on the en prompt: \(stderrLog.tail(30))"
+            )
+        }
         XCTAssertTrue(process.isRunning)
         process.terminate()
     }
@@ -725,42 +692,6 @@ private final class TranscriptCapture: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Snapshot(deltas: deltas, doneTexts: doneTexts)
-    }
-}
-
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage = false
-
-    var value: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
-    }
-
-    func set() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !storage else { return false }
-        storage = true
-        return true
-    }
-}
-
-private final class LineLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-
-    func append(_ line: String) {
-        lock.lock()
-        lines.append(line)
-        lock.unlock()
-    }
-
-    func tail(_ count: Int) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return lines.suffix(count).joined(separator: "\n")
     }
 }
 

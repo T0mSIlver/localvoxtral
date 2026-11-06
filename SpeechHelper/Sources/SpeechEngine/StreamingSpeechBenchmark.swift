@@ -18,15 +18,25 @@ public enum StreamingSpeechBenchmark {
             modelID: options.modelID,
             modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
-            engine: options.engine
+            engine: options.engine,
+            termBoost: options.termBoost
         )
         let loaded = clock.now
+        let terms = try benchmark.termsPath.map { path in
+            SessionTerms(
+                try String(contentsOfFile: path, encoding: .utf8)
+                    .split(whereSeparator: \.isNewline).map(String.init)
+            )
+        } ?? .empty
+        if benchmark.termsPath != nil {
+            print("BENCH terms count=\(terms.terms.count)")
+        }
         let audio = try BenchmarkAudio.make(
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
         )
         let warmUpStart = clock.now
-        warmUp(engine: engine, audio: audio, options: options, benchmark: benchmark)
+        warmUp(engine: engine, audio: audio, options: options, benchmark: benchmark, terms: terms)
         // What a helper start costs before its first dictation runs at full speed: the
         // load (weights are read lazily, so most of it lands in the first steps) and the
         // throwaway first dictation, which the server does not run.
@@ -44,7 +54,8 @@ public enum StreamingSpeechBenchmark {
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit,
-            terms: .empty
+            terms: terms,
+            language: nil
         )
         var batcher = makeBatcher(benchmark, options: options)
         var records: [StepRecord] = []
@@ -110,6 +121,7 @@ public enum StreamingSpeechBenchmark {
         print(
             "BENCH done seconds=\(benchmark.seconds) limit_s=\(options.utteranceLimit.seconds) "
                 + "tokens=\(session.decodedTokenCount) "
+                + "boosted=\(session.boostedTokenCount.map(String.init) ?? "none") "
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
         )
         // Flush the held-back tail as a dictation's stop does, so the digest covers
@@ -143,13 +155,15 @@ public enum StreamingSpeechBenchmark {
         engine: any SpeechASREngine,
         audio: [Float],
         options: SpeechdLaunchOptions,
-        benchmark: SpeechdBenchmarkOptions
+        benchmark: SpeechdBenchmarkOptions,
+        terms: SessionTerms
     ) {
         let warmupSamples = min(audio.count, 3 * sampleRate)
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit,
-            terms: .empty
+            terms: terms,
+            language: nil
         )
         var batcher = makeBatcher(benchmark, options: options)
         var timeline = RealtimeStepTimeline(sampleRate: sampleRate)

@@ -18,13 +18,25 @@ package struct DictationModelCapabilities: Equatable, Sendable {
 
     package let termBias: TermBias
 
-    package init(termBias: TermBias) {
+    /// The languages the model takes a hint for, as ISO 639-1 codes in the order
+    /// the picker lists them; empty for a model that detects the language itself.
+    package let languages: [String]
+
+    package init(termBias: TermBias, languages: [String] = []) {
         self.termBias = termBias
+        self.languages = languages
     }
 
-    /// A model that takes audio and nothing else: every local model today,
-    /// and an External URL server, whose model the app can't vouch for.
+    /// A model that takes audio and nothing else: an External URL server,
+    /// whose model the app can't vouch for.
     package static let audioOnly = DictationModelCapabilities(termBias: .none)
+
+    /// The language a session sends at start: the user's choice when the model
+    /// takes it, else nil, and the model detects the language itself.
+    package func sessionLanguage(for chosen: String?) -> String? {
+        guard let chosen, languages.contains(chosen) else { return nil }
+        return chosen
+    }
 
     /// The list a session sends at start: `candidates` in priority order,
     /// whitespace runs collapsed to one space, duplicates dropped by a

@@ -40,7 +40,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
         stepMilliseconds: Int = 80,
-        utteranceLimit: UtteranceLimit = UtteranceLimit()
+        utteranceLimit: UtteranceLimit = UtteranceLimit(),
+        termBoost: TermBoostSettings? = nil
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let engine = try await SpeechModelLoader.load(
@@ -48,7 +49,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             modelRevision: modelRevision,
             modelDirectory: modelDirectory,
             engine: engine,
-            lockWeights: true
+            lockWeights: true,
+            termBoost: termBoost
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -135,6 +137,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         /// The client's `context_bias` list, handed to every session this
         /// connection opens from now on. Inference queue only, like `session`.
         var terms = SessionTerms.empty
+        /// The client's dictation language (ISO 639-1), nil for the model's own
+        /// detection. Same lifetime and queue as `terms`.
+        var language: String?
         let feed: CoalescingStepFeed
         // Append-only delta contract lives in OUR layer now (the engine is an upstream
         // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
@@ -285,9 +290,10 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             switch message {
-            case .sessionUpdate(let terms):
-                // A list sent mid-utterance takes effect at the next one: the
-                // open session was built with the list it started with.
+            case .sessionUpdate(let terms, let language):
+                // A list or language sent mid-utterance takes effect at the next
+                // one: the open session was built with what it started with.
+                if let language { ctx.language = language }
                 if let terms {
                     ctx.terms = terms
                     FileHandle.standardError.write(Data(
@@ -317,6 +323,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 // The client left mid-flush: `close` queued the session drop and cache
                 // clear behind this work, and nobody is left to answer.
                 guard finished else { return }
+                if !ctx.terms.terms.isEmpty, let boosted = session.boostedTokenCount {
+                    FileHandle.standardError.write(Data(
+                        ("speechd: utterance done: \(session.decodedTokenCount) tokens, \(boosted) boosted, "
+                            + "\(ctx.terms.terms.count) terms\n").utf8))
+                }
                 // Use the append-only emitted text (== sum of every delta), so the final
                 // payload can never contradict what was streamed on the wire.
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
@@ -375,7 +386,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         let s = engine.makeSession(
             transcriptionDelayMs: transcriptionDelayMs,
             utteranceLimit: utteranceLimit,
-            terms: ctx.terms
+            terms: ctx.terms,
+            language: ctx.language
         )
         ctx.session = s
         return s
@@ -441,7 +453,8 @@ enum SpeechModelLoader {
         modelRevision: String?,
         modelDirectory: String?,
         engine: SpeechASREngineKind?,
-        lockWeights: Bool = false
+        lockWeights: Bool = false,
+        termBoost: TermBoostSettings? = nil
     ) async throws -> SpeechASREngine {
         switch SpeechASREngineKind.resolve(
             named: engine, modelID: modelID, modelDirectory: modelDirectory
@@ -455,17 +468,29 @@ enum SpeechModelLoader {
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
-            return VoxtralASREngine(model: model)
+            return VoxtralASREngine(model: model, termBoost: termBoost)
         case .nemotron:
             let model = try await loadModel(
                 modelID: modelID,
                 modelRevision: modelRevision,
                 modelDirectory: modelDirectory,
-                fromDirectory: { try NemotronASRModel.fromDirectory($0) },
-                fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
+                fromDirectory: { directory in
+                    try NemotronASRModel.fromDirectory(
+                        directory,
+                        computeDType: NemotronUnifiedLayout.isBufferedCheckpoint(directory: directory)
+                            ? .float16 : .bfloat16
+                    )
+                },
+                fromPretrained: { id in
+                    // Development only. The checkpoint's kind is known after the download,
+                    // so a Unified one loads again from the cache with the app's float16.
+                    let model = try await NemotronASRModel.fromPretrained(id)
+                    guard model.isBuffered else { return model }
+                    return try await NemotronASRModel.fromPretrained(id, computeDType: .float16)
+                }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
-            return NemotronASREngine(model: model)
+            return NemotronASREngine(model: model, termBoost: termBoost)
         }
     }
 

@@ -20,10 +20,13 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+    url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+    revision: "0e8cbe388c20e3567937a16d8a5f6daf632ef47f"
 )
 ```
+
+This fork commit is upstream's `902920c` plus the Nemotron Unified port, which the catalog's
+Unified entry needs. It must become an upstream SHA before merge.
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
@@ -54,7 +57,7 @@ consumed, #264 appends decoder KV rows in place instead of rebuilding the window
 the transcript one token at a time instead of re-detokenizing it every step. `session.text` is
 still the full transcript, so the append-only delta routing below is unchanged.
 
-The same tree already carries NVIDIA Nemotron 3.5 ASR streaming — #195/#196 port the model,
+The same tree already carries NVIDIA Nemotron ASR streaming (the catalog ships Nemotron Unified) — #195/#196 port the model,
 #208 adds the incremental `NemotronASRStreamSession`, #236 widens the checkpoint loader — so
 adding the second catalog entry (#463) needed no pin change. Two Nemotron facts the adapter
 in `SpeechASREngines.swift` depends on:
@@ -62,9 +65,13 @@ in `SpeechASREngines.swift` depends on:
 - It is an **RNN-T**: it only ever appends text, and it never emits end-of-stream on its own,
   so the append-only delta contract carries it unchanged and there is no `maxTokens` to cap.
   `UtteranceLimit` is therefore enforced by our adapter, on the audio the session accepts.
-- Its session decodes in fixed chunks of 80 ms encoder frames; the model card publishes WER
-  for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
-  those rungs. Its decoder strips the model's `<xx-XX>` language tag itself.
+- Its session decodes in fixed chunks of 80 ms encoder frames; the Nemotron 3.5 card publishes
+  WER for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
+  those rungs. Nemotron Unified skips the ladder: `NemotronUnifiedLayout` takes the delay itself,
+  any 80 ms step from 160 to 2080 ms (320 ms by default). Its decoder strips the model's
+  `<xx-XX>` language tag itself. The `language` of the client's `session.update` becomes the
+  session's prompt key by NeMo's rule (`NemotronPromptLanguage`); without one, the checkpoint's
+  default prompt (`auto` for Unified).
 
 Its `advance()` recomputes the whole mel from the raw buffer on every `step`, which is
 O(utterance) per step — upstream calls it negligible at utterance scale and a future
