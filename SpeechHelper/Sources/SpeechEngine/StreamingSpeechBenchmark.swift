@@ -146,7 +146,7 @@ public enum StreamingSpeechBenchmark {
         options: SpeechdLaunchOptions,
         benchmark: SpeechdBenchmarkOptions
     ) {
-        let warmupSamples = min(audio.count, 3 * sampleRate)
+        let warmupSamples = min(audio.count, 7 * sampleRate)  // LVX-111 measurement: past the 5.92 s full-context step
         let session = engine.makeSession(
             transcriptionDelayMs: options.transcriptionDelayMs,
             utteranceLimit: options.utteranceLimit,
