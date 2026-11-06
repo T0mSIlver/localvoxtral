@@ -79,8 +79,11 @@ lv_build_dir_claim() {
   printf '%s\n' "$root" >"$file.$$" && mv -f "$file.$$" "$file"
 }
 
-# After `remove`: the dir is gone, so is its owner.
+# lv_build_dir_forget <dir> <owner seen before the remove>: the dir is gone,
+# so is its owner. `remove` holds no host lock, so a marker another tree wrote
+# while it ran names that tree's new dir and stays.
 lv_build_dir_forget() {
   [[ -n "$LV_BUILD_DIR_CLAIMS" ]] || return 0
+  [[ "$(lv_build_dir_owner "$1")" == "$2" ]] || return 0
   rm -f "$(lv_build_dir_claim_file "$1")"
 }

@@ -615,9 +615,10 @@ case "$CMD" in
       exit 1
     fi
     lv_build_dir_check "$target" "$DEFAULT_DIR" "$ROOT_DIR"
+    owner_before="$(lv_build_dir_owner "$target")"
     status=0
     run_remote "$(quote_remote_command remove "$target")" || status=$?
-    (( status != 0 )) || lv_build_dir_forget "$target"
+    (( status != 0 )) || lv_build_dir_forget "$target" "$owner_before"
     exit "$status"
     ;;
   applog|voxlog)
