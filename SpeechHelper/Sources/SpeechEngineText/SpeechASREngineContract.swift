@@ -51,6 +51,8 @@ public protocol SpeechASREngine: Sendable {
         utteranceLimit: UtteranceLimit,
         terms: SessionTerms
     ) -> SpeechASRStreamingSession
+    /// Samples of silence `EngineWarmUp` feeds a throwaway session at load; 0 for none.
+    func warmUpSamples(transcriptionDelayMs: Int?) -> Int
 }
 
 /// Which streaming engine `speechd` drives for a model. The app names it with

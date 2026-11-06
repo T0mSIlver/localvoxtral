@@ -82,6 +82,12 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
         self.model = model
     }
 
+    /// Unified only: its first full-context step compiles new kernels (LVX-111).
+    func warmUpSamples(transcriptionDelayMs: Int?) -> Int {
+        model.isBuffered
+            ? NemotronUnifiedLayout.warmUpSamples(forTranscriptionDelayMs: transcriptionDelayMs) : 0
+    }
+
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
