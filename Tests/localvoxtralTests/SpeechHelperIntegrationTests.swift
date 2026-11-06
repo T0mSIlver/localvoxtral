@@ -450,6 +450,64 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         process.terminate()
     }
 
+    /// LVX-113: Nemotron Unified streamed 0 tokens on this two-second eval phrase, with
+    /// the `auto` prompt at speechd's 70/2/2 layout (NeMo does the same), and the final
+    /// came back empty. speechd now decodes such an utterance again offline.
+    func testShortPhraseTheStreamMissesStillGetsAFinal() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let (process, stderrLog) = try await launchHelper(binary: binary, model: model)
+
+        // The eval's exact audio: case i-en-posix-pipe, `say -v Samantha`.
+        let pcm16 = try IntegrationTestSupport.makeSpokenPCM16Data(
+            phrase: "posix pipe read wraps the raw descriptor", voice: "Samantha"
+        )
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm16, chunkSizeBytes: 3_200)
+
+        let client = RealtimeAPIWebSocketClient()
+        let transcript = TranscriptCapture()
+        let finalTranscript = expectation(description: "final transcript")
+        finalTranscript.assertForOverFulfill = false
+        let disconnected = expectation(description: "disconnected")
+        client.setEventHandler { event, _ in
+            switch event {
+            case .connected:
+                for chunk in chunks {
+                    client.sendAudioChunk(chunk)
+                }
+                client.sendCommit(final: true)
+            case .partialTranscript(let delta):
+                transcript.append(delta: delta)
+            case .finalTranscript(let text):
+                transcript.append(doneText: text)
+                finalTranscript.fulfill()
+            case .disconnected:
+                disconnected.fulfill()
+            default:
+                break
+            }
+        }
+        try client.connect(configuration: RealtimeSessionConfiguration(
+            endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
+            apiKey: "",
+            model: model
+        ))
+        await fulfillment(of: [finalTranscript], timeout: 120)
+        client.disconnect()
+        await fulfillment(of: [disconnected], timeout: 5)
+
+        let snapshot = transcript.snapshot()
+        let doneText = try XCTUnwrap(snapshot.doneTexts.only)
+        print("speechd integration: short phrase word count \(doneText.split(separator: " ").count)")
+        XCTAssertFalse(
+            doneText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "Empty final on two seconds of speech. Helper log tail:\n\(stderrLog.tail(10))"
+        )
+        XCTAssertEqual(snapshot.deltas.joined(), doneText)
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
     /// #314: the engine stops decoding once an utterance reaches its token cap and returns
     /// nothing from every later step. Before the fix the helper never noticed, so a long
     /// dictation simply stopped producing text with no error anywhere. A short limit here

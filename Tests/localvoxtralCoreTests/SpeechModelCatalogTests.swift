@@ -59,16 +59,18 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
-    func testNemotronEntryPinsItsRevisionAndEngine() throws {
-        let option = try XCTUnwrap(
-            SpeechModelCatalog.option(
-                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-            )
-        )
-        XCTAssertEqual(option.engine, .nemotron)
-        XCTAssertEqual(option.revision, "7279359e4481b5e9e185a318bd618e429c6d86cd")
-        // The whole point of the second entry: it is the small one.
-        XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
+    func testNemotronEntriesPinTheirRevisionsAndEngine() throws {
+        let pins = [
+            "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": "7279359e4481b5e9e185a318bd618e429c6d86cd",
+            "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit": "b7108f135cd732fbdf86af5fa7bc8a30f38cb069",
+        ]
+        for (repoID, revision) in pins {
+            let option = try XCTUnwrap(SpeechModelCatalog.option(forRepoID: repoID))
+            XCTAssertEqual(option.engine, .nemotron, repoID)
+            XCTAssertEqual(option.revision, revision, repoID)
+            // The whole point of the Nemotron entries: they are the small ones.
+            XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB, repoID)
+        }
     }
 
     /// The app passes `--engine <rawValue>` and the helper's

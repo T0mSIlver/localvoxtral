@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXAudioSTT
 import SpeechEngineText
 
@@ -86,14 +87,32 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
         utteranceLimit: UtteranceLimit,
         terms _: SessionTerms
     ) -> SpeechASRStreamingSession {
-        NemotronASRSession(
-            session: model.makeStreamSession(
+        let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
+        let session: NemotronASRStreamSession
+        if model.isBuffered {
+            let frames = NemotronUnifiedLayout.frames(forLatencyMilliseconds: rung)
+            // Neither throw can happen: `isBuffered` is checked above, and
+            // NemotronUnifiedLayout's frames are valid by construction.
+            session = try! model.makeStreamSession(
                 language: nil,
-                chunkMs: NemotronChunkLadder.chunkMilliseconds(
-                    forTranscriptionDelayMs: transcriptionDelayMs
-                )
-            ),
-            utteranceLimit: utteranceLimit
+                bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
+            )
+        } else {
+            session = model.makeStreamSession(language: nil, chunkMs: rung)
+        }
+        guard model.isBuffered else {
+            return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
+        }
+        let model = model
+        return NemotronASRSession(
+            session: session, utteranceLimit: utteranceLimit,
+            redecode: EmptyStreamRedecode(),
+            offline: { samples in
+                model.generate(
+                    audio: MLXArray(samples),
+                    generationParameters: STTGenerateParameters()
+                ).text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
         )
     }
 }
@@ -103,25 +122,49 @@ final class NemotronASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     /// The engine has no token budget to cap, so the limit is enforced on the audio
     /// this session accepts — see `UtteranceAudioCap`.
     private var cap: UtteranceAudioCap
+    /// Unified only: a second, offline decode for an utterance whose stream emitted
+    /// no token (see `EmptyStreamRedecode`).
+    private var redecode: EmptyStreamRedecode?
+    private let offline: (([Float]) -> String)?
+    private var redecodedText = ""
 
-    init(session: NemotronASRStreamSession, utteranceLimit: UtteranceLimit) {
+    init(
+        session: NemotronASRStreamSession,
+        utteranceLimit: UtteranceLimit,
+        redecode: EmptyStreamRedecode? = nil,
+        offline: (([Float]) -> String)? = nil
+    ) {
         self.session = session
         self.cap = UtteranceAudioCap(limit: utteranceLimit)
+        self.redecode = redecode
+        self.offline = offline
     }
 
     func step(_ samples: [Float]) -> SpeechStreamDelta {
         let accepted = cap.accept(samples.count)
         guard accepted > 0 else { return SpeechStreamDelta(text: "", tokenIds: []) }
-        return delta(session.step(
-            accepted == samples.count ? samples : Array(samples.prefix(accepted))
-        ))
+        let fed = accepted == samples.count ? samples : Array(samples.prefix(accepted))
+        let streamed = session.step(fed)
+        redecode?.record(fed, decodedTokens: session.tokens.count)
+        return delta(streamed)
     }
 
     func finish() -> SpeechStreamDelta {
-        delta(session.finish())
+        let streamed = session.finish()
+        guard let offline,
+              let audio = redecode?.audioToRedecode(decodedTokens: session.tokens.count)
+        else { return delta(streamed) }
+        let started = ContinuousClock.now
+        redecodedText = offline(audio)
+        let elapsed = ContinuousClock.now - started
+        FileHandle.standardError.write(Data((
+            "speechd: Unified streamed 0 tokens on \(audio.count / 16) ms of audible audio; "
+                + "offline decode gave \(redecodedText.isEmpty ? "nothing" : "text") in \(elapsed)\n"
+        ).utf8))
+        return SpeechStreamDelta(text: redecodedText, tokenIds: [])
     }
 
-    var text: String { session.text }
+    var text: String { session.text + redecodedText }
 
     var decodedTokenCount: Int { session.tokens.count }
 

@@ -58,6 +58,23 @@ package enum SpeechModelCatalog {
             sizeOnDiskGB: 0.8,
             capabilities: .audioOnly
         ),
+        // NVIDIA's Nemotron Unified, the same RNN-T family, 8-bit. It streams buffered:
+        // each step re-encodes 5.6 s of left context, not cached state, so it costs about
+        // four times 3.5's GPU per step. In exchange it is more accurate (NVIDIA's card:
+        // 6.27 English WER at 320 ms, against 7.97 for 3.5) and covers 25 European
+        // languages. Converted by us; the speech helper picks its layout and float16
+        // compute (`NemotronUnifiedLayout`).
+        //
+        // LICENCE: OpenMDW 1.1, as the source model. The app downloads the weights at
+        // runtime and never bundles them.
+        SpeechModelOption(
+            repoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit",
+            revision: "b7108f135cd732fbdf86af5fa7bc8a30f38cb069",
+            displayName: "Nemotron Unified ASR 0.6B (8-bit)",
+            engine: .nemotron,
+            sizeOnDiskGB: 0.7,
+            capabilities: .audioOnly
+        ),
     ]
 
     package static let defaultOption: SpeechModelOption = {

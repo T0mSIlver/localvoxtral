@@ -51,6 +51,7 @@ package enum IntegrationTestSupport {
     /// Throws `SpokenAudioFailure` when `say` is missing or errors.
     package static func makeSpokenPCM16Data(
         phrase: String,
+        voice: String? = nil,
         say: URL = URL(fileURLWithPath: "/usr/bin/say")
     ) throws -> Data {
         let tempURL = FileManager.default.temporaryDirectory
@@ -67,8 +68,7 @@ package enum IntegrationTestSupport {
             "-o", tempURL.path,
             "--file-format=WAVE",
             "--data-format=LEI16@16000",
-            phrase,
-        ]
+        ] + (voice.map { ["-v", $0] } ?? []) + [phrase]
 
         do {
             try process.run()
