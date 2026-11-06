@@ -73,7 +73,16 @@ package enum SpeechModelCatalog {
             displayName: "Nemotron Unified ASR 0.6B (8-bit)",
             engine: .nemotron,
             sizeOnDiskGB: 0.7,
-            capabilities: .audioOnly
+            // The 25 languages of NVIDIA's model card. Each is a key of the
+            // checkpoint's `prompt_dictionary`, which also holds other locales
+            // the model was not trained on.
+            capabilities: DictationModelCapabilities(
+                termBias: .none,
+                languages: [
+                    "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it",
+                    "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
+                ]
+            )
         ),
     ]
 
@@ -96,6 +105,18 @@ package enum SpeechModelPickerSupport {
     /// it is downloaded shows on the Status row.
     package static func menuLabel(for option: SpeechModelOption) -> String {
         "\(option.displayName) — \(ModelSizeLabel.gigabytes(option.sizeOnDiskGB))"
+    }
+
+    /// The Language picker's items: each code with its name in `locale`, sorted
+    /// by name. Auto comes first in the view, outside this list.
+    package static func languageEntries(
+        _ codes: [String], locale: Locale = .current
+    ) -> [(code: String, name: String)] {
+        codes.map { code in
+            let name = locale.localizedString(forLanguageCode: code).map { $0.capitalized(with: locale) } ?? code
+            return (code: code, name: name)
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
 

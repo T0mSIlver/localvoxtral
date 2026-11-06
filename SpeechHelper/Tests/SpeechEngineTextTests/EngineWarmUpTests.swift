@@ -24,7 +24,8 @@ final class EngineWarmUpTests: XCTestCase {
         var sessions: [RecordingSession] = []
         init(samples: Int?) { self.samples = samples }
         func makeSession(
-            transcriptionDelayMs _: Int?, utteranceLimit _: UtteranceLimit, terms _: SessionTerms
+            transcriptionDelayMs _: Int?, utteranceLimit _: UtteranceLimit, terms _: SessionTerms,
+            language _: String?
         ) -> SpeechASRStreamingSession {
             let session = RecordingSession()
             sessions.append(session)

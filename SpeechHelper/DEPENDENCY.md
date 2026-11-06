@@ -71,7 +71,9 @@ in `SpeechASREngines.swift` depends on:
   WER for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
   those rungs. Nemotron Unified skips the ladder: `NemotronUnifiedLayout` takes the delay itself,
   any 80 ms step from 160 to 2080 ms (320 ms by default). Its decoder strips the model's
-  `<xx-XX>` language tag itself.
+  `<xx-XX>` language tag itself. The `language` of the client's `session.update` becomes the
+  session's prompt key by NeMo's rule (`NemotronPromptLanguage`); without one, the checkpoint's
+  default prompt (`auto` for Unified).
 
 Its `advance()` recomputes the whole mel from the raw buffer on every `step`, which is
 O(utterance) per step — upstream calls it negligible at utterance scale and a future
