@@ -43,17 +43,26 @@ final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
         if !terms.terms.isEmpty {
             session.setBoostTerms(terms.terms, config: termBoost)
         }
-        return VoxtralASRSession(session: session, maxDecodedTokens: maxDecodedTokens)
+        return VoxtralASRSession(
+            session: session, maxDecodedTokens: maxDecodedTokens,
+            padTokenId: model.config.streamingPadTokenId
+        )
     }
 }
 
 final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     private let session: VoxtralRealtimeStreamSession
     private let maxDecodedTokens: Int
+    private let padTokenId: Int
 
-    init(session: VoxtralRealtimeStreamSession, maxDecodedTokens: Int) {
+    /// MEASUREMENT ONLY (LVX-110): nil decodes the whole pad; a count stops the flush
+    /// after that many pad tokens past the delay. Flipped by hand between packages.
+    static let measureSilentTail: Int? = nil
+
+    init(session: VoxtralRealtimeStreamSession, maxDecodedTokens: Int, padTokenId: Int) {
         self.session = session
         self.maxDecodedTokens = maxDecodedTokens
+        self.padTokenId = padTokenId
     }
 
     func step(_ samples: [Float]) -> SpeechStreamDelta {
@@ -62,7 +71,15 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     }
 
     func finish() -> SpeechStreamDelta {
-        let delta = session.finish()
+        let before = session.tokens.count
+        let start = ContinuousClock.now
+        let delta = session.finish(stopAfterSilentTail: Self.measureSilentTail)
+        let elapsed = ContinuousClock.now - start
+        // Token classes only (P pad, T anything else), never text.
+        let pattern = session.tokens.dropFirst(before).map { $0 == padTokenId ? "P" : "T" }.joined()
+        let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
+        FileHandle.standardError.write(Data(
+            "BENCH flush silent_tail=\(Self.measureSilentTail.map { "\($0)" } ?? "off") ms=\(String(format: "%.1f", ms)) tokens=\(pattern.count) eos=\(session.isFinished ? 1 : 0) pattern=\(pattern)\n".utf8))
         return SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)
     }
 

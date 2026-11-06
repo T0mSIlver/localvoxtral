@@ -52,6 +52,8 @@ package final class PackagedSpeechHelper: @unchecked Sendable {
         let readyLine = "ready on 127.0.0.1:\(port)"
         let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
             stderrLog.append(line)
+            // MEASUREMENT ONLY (LVX-110): relay the per-flush token pattern.
+            if line.hasPrefix("BENCH flush ") { print(line) }
             if line.contains(readyLine), ready.set() {
                 readyOrExited.fulfill()
             }
