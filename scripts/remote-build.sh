@@ -157,7 +157,8 @@ set -euo pipefail
 # Optional: LV_BUILD_DIR — remote work dir, ~-relative. Defaults to a
 # per-worktree name derived from the local checkout path, so parallel agents
 # in separate worktrees never contend on remote build state or its SwiftPM
-# lock. The full remote output of every run is also written to
+# lock. A dir another worktree owns is refused with exit 77 unless
+# LV_BUILD_DIR_SHARED=1 (scripts/lib/build-dir-claim.sh). The full remote output of every run is also written to
 # .build/last-remote.log, so a crash mid-run can never eat the failing test's
 # name (don't pipe this script straight into grep — grep the log file).
 # Optional: a lock per build host, so runs on one Mac go one at a time:
@@ -174,7 +175,8 @@ HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost 
 TREE_SLUG="$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
 TREE_SLUG="${TREE_SLUG%-}"
 TREE_HASH="$(printf '%s' "$ROOT_DIR" | md5sum | cut -c1-8)"
-DIR="${LV_BUILD_DIR:-work/localvoxtral-${TREE_SLUG}-${TREE_HASH}}"
+DEFAULT_DIR="work/localvoxtral-${TREE_SLUG}-${TREE_HASH}"
+DIR="${LV_BUILD_DIR:-$DEFAULT_DIR}"
 
 REMOTE_LOG="${LOCALVOXTRAL_REMOTE_LOG:-$ROOT_DIR/.build/last-remote.log}"
 REMOTE_PAYLOAD_ACTIVE=0
@@ -185,6 +187,9 @@ REMOTE_REAP_ATTEMPTED=0
 LV_LOCK_DIR="${LV_LOCK_DIR:-$(git -C "$ROOT_DIR" config --get "localvoxtral.$HOST.lock" 2>/dev/null || true)}"
 # shellcheck source=lib/build-host-lock.sh
 . "$ROOT_DIR/scripts/lib/build-host-lock.sh"
+# Which worktree owns a build dir; another one never syncs into it (LVX-112).
+# shellcheck source=lib/build-dir-claim.sh
+. "$ROOT_DIR/scripts/lib/build-dir-claim.sh"
 
 # Everything that must run when the script exits, in the order added: a verb's
 # transient marker cleanup, then the lock release. One EXIT trap runs them all,
@@ -609,8 +614,12 @@ case "$CMD" in
       echo "remove: $target is not a work dir (work/localvoxtral-<id>)" >&2
       exit 1
     fi
-    run_remote "$(quote_remote_command remove "$target")"
-    exit $?
+    lv_build_dir_check "$target" "$DEFAULT_DIR" "$ROOT_DIR"
+    owner_before="$(lv_build_dir_owner "$target")"
+    status=0
+    run_remote "$(quote_remote_command remove "$target")" || status=$?
+    (( status != 0 )) || lv_build_dir_forget "$target" "$owner_before"
+    exit "$status"
     ;;
   applog|voxlog)
     if [[ $# -gt 1 ]]; then
@@ -1321,6 +1330,7 @@ reject_gate_blocked_args "${REMOTE_CMD[@]}"
 # wait for the build host's lock first, and hold it until the script exits.
 on_exit lv_lock_release
 lv_lock_acquire "$CMD"
+lv_build_dir_claim "$DIR" "$DEFAULT_DIR" "$ROOT_DIR"
 
 if [[ -n "$ENSURE_SERVER" ]]; then
   ensure_remote_server "$ENSURE_SERVER"
