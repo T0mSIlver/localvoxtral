@@ -488,7 +488,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let pipeline = viewModel.session.repoVocabularyPipeline
         pipeline.rootLookup = lookup
         pipeline.pipeline = { _ in
-            RepoVocabularyMatcher.GroundingOutcome(entries: [Self.repositoryEntry], isFallbackOnly: false)
+            RepoVocabularyMatcher.GroundingOutcome(entries: [Self.repositoryEntry])
         }
         return (harness, transcriber, polisher)
     }

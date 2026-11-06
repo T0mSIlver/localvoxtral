@@ -332,7 +332,6 @@ final class ClaudeRepoCollectorTests: XCTestCase {
             renderBudget: 0
         )
         XCTAssertEqual(prepared.grounding.entries.first?.replaceWith, ".env.production")
-        XCTAssertFalse(prepared.grounding.isFallbackOnly)
     }
 
     // A symlink is not a regular file. Lexical containment says where the NAME

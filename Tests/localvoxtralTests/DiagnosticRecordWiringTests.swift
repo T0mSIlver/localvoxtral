@@ -424,8 +424,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         }
         harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])]
             )
         }
         DiagnosticCaptureTap.shared.beginSession()
