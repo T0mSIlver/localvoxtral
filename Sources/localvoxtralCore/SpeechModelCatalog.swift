@@ -58,6 +58,32 @@ package enum SpeechModelCatalog {
             sizeOnDiskGB: 0.8,
             capabilities: .audioOnly
         ),
+        // NVIDIA's Nemotron Unified, the same RNN-T family, 8-bit. It streams buffered:
+        // each step re-encodes 5.6 s of left context, not cached state, so it costs about
+        // four times 3.5's GPU per step. In exchange it is more accurate (NVIDIA's card:
+        // 6.27 English WER at 320 ms, against 7.97 for 3.5) and covers 25 European
+        // languages. Converted by us; the speech helper picks its layout and float16
+        // compute (`NemotronUnifiedLayout`).
+        //
+        // LICENCE: OpenMDW 1.1, as the source model. The app downloads the weights at
+        // runtime and never bundles them.
+        SpeechModelOption(
+            repoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit",
+            revision: "b7108f135cd732fbdf86af5fa7bc8a30f38cb069",
+            displayName: "Nemotron Unified ASR 0.6B (8-bit)",
+            engine: .nemotron,
+            sizeOnDiskGB: 0.7,
+            // The 25 languages of NVIDIA's model card. Each is a key of the
+            // checkpoint's `prompt_dictionary`, which also holds other locales
+            // the model was not trained on.
+            capabilities: DictationModelCapabilities(
+                termBias: .none,
+                languages: [
+                    "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it",
+                    "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk",
+                ]
+            )
+        ),
     ]
 
     package static let defaultOption: SpeechModelOption = {
@@ -79,6 +105,18 @@ package enum SpeechModelPickerSupport {
     /// it is downloaded shows on the Status row.
     package static func menuLabel(for option: SpeechModelOption) -> String {
         "\(option.displayName) — \(ModelSizeLabel.gigabytes(option.sizeOnDiskGB))"
+    }
+
+    /// The Language picker's items: each code with its name in `locale`, sorted
+    /// by name. Auto comes first in the view, outside this list.
+    package static func languageEntries(
+        _ codes: [String], locale: Locale = .current
+    ) -> [(code: String, name: String)] {
+        codes.map { code in
+            let name = locale.localizedString(forLanguageCode: code).map { $0.capitalized(with: locale) } ?? code
+            return (code: code, name: name)
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
 

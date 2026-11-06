@@ -40,9 +40,11 @@ let package = Package(
         // and the removal of mlx-swift-lm from the graph (#287). It still carries #232
         // (quantized-tied-embedding loader, required by the catalog's -qhead model,
         // SpeechModelCatalog) and the Nemotron streaming session the second entry loads.
+        // TEMPORARY fork pin: upstream's 902920c plus the Nemotron Unified port. It must
+        // become an upstream SHA (Blaizzy/mlx-audio-swift) before this merges.
         .package(
-            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+            url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+            revision: "c793e5cc0891c3c0f1856a41ca9151b116ba7c36"
         ),
     ],
     targets: [

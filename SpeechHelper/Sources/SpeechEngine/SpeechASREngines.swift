@@ -19,7 +19,8 @@ final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms _: SessionTerms
+        terms _: SessionTerms,
+        language _: String?
     ) -> SpeechASRStreamingSession {
         // The decoder emits one token per audio frame, so the token cap is the
         // limit expressed in this model's frame rate.
@@ -84,17 +85,28 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms _: SessionTerms
+        terms _: SessionTerms,
+        language: String?
     ) -> SpeechASRStreamingSession {
-        NemotronASRSession(
-            session: model.makeStreamSession(
-                language: nil,
-                chunkMs: NemotronChunkLadder.chunkMilliseconds(
-                    forTranscriptionDelayMs: transcriptionDelayMs
-                )
-            ),
-            utteranceLimit: utteranceLimit
-        )
+        // Nil keeps the checkpoint's default prompt (`auto` for Unified).
+        let promptKey = NemotronPromptLanguage.key(for: language, in: model.promptDictionary)
+        let promptIndex = model.promptDictionary[promptKey ?? model.defaultLanguage]
+        FileHandle.standardError.write(Data(
+            "speechd: nemotron session language \(promptKey ?? model.defaultLanguage) prompt \(promptIndex.map(String.init) ?? "none")\n".utf8))
+        let session: NemotronASRStreamSession
+        if model.isBuffered {
+            let frames = NemotronUnifiedLayout.frames(forTranscriptionDelayMs: transcriptionDelayMs)
+            // Neither throw can happen: `isBuffered` is checked above, and
+            // NemotronUnifiedLayout's frames are valid by construction.
+            session = try! model.makeStreamSession(
+                language: promptKey,
+                bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
+            )
+        } else {
+            let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
+            session = model.makeStreamSession(language: promptKey, chunkMs: rung)
+        }
+        return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
     }
 }
 

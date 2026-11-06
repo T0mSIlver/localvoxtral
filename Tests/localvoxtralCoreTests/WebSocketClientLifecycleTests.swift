@@ -362,6 +362,24 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         )
     }
 
+    /// The dictation language rides the same frame, for a model that takes one
+    /// (Nemotron Unified); a session without one sends the frame it always did.
+    func testSessionUpdateCarriesTheDictationLanguage() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model", language: "fr")
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(
+            wire.texts(on: task).first,
+            #"{"language":"fr","model":"model","type":"session.update"}"#
+        )
+    }
+
     // The handshake fallback and the keepalive ping sleep on the session
     // clock the client was given, never on wall time (#1366).
 

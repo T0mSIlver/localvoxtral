@@ -59,16 +59,18 @@ final class SpeechModelCatalogTests: XCTestCase {
         }
     }
 
-    func testNemotronEntryPinsItsRevisionAndEngine() throws {
-        let option = try XCTUnwrap(
-            SpeechModelCatalog.option(
-                forRepoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-            )
-        )
-        XCTAssertEqual(option.engine, .nemotron)
-        XCTAssertEqual(option.revision, "7279359e4481b5e9e185a318bd618e429c6d86cd")
-        // The whole point of the second entry: it is the small one.
-        XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
+    func testNemotronEntriesPinTheirRevisionsAndEngine() throws {
+        let pins = [
+            "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": "7279359e4481b5e9e185a318bd618e429c6d86cd",
+            "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit": "b7108f135cd732fbdf86af5fa7bc8a30f38cb069",
+        ]
+        for (repoID, revision) in pins {
+            let option = try XCTUnwrap(SpeechModelCatalog.option(forRepoID: repoID))
+            XCTAssertEqual(option.engine, .nemotron, repoID)
+            XCTAssertEqual(option.revision, revision, repoID)
+            // The whole point of the Nemotron entries: they are the small ones.
+            XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB, repoID)
+        }
     }
 
     /// The app passes `--engine <rawValue>` and the helper's
@@ -78,6 +80,29 @@ final class SpeechModelCatalogTests: XCTestCase {
         for option in SpeechModelCatalog.options {
             XCTAssertTrue(["voxtral", "nemotron"].contains(option.engine.rawValue), option.repoID)
         }
+    }
+
+    /// Unified takes a language hint for exactly the 25 languages of NVIDIA's
+    /// model card; the other models detect the language themselves.
+    func testOnlyUnifiedTakesALanguageAndExactlyItsTwentyFive() throws {
+        let unified = try XCTUnwrap(
+            SpeechModelCatalog.option(forRepoID: "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit")
+        )
+        XCTAssertEqual(
+            Set(unified.capabilities.languages),
+            ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
+             "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"]
+        )
+        XCTAssertEqual(unified.capabilities.languages.count, 25)
+        for option in SpeechModelCatalog.options where option.repoID != unified.repoID {
+            XCTAssertEqual(option.capabilities.languages, [], option.repoID)
+        }
+    }
+
+    func testLanguagePickerListsNamesAlphabetically() {
+        let entries = SpeechModelPickerSupport.languageEntries(["fr", "de", "en"], locale: Locale(identifier: "en_US"))
+        XCTAssertEqual(entries.map(\.code), ["en", "fr", "de"])
+        XCTAssertEqual(entries.map(\.name), ["English", "French", "German"])
     }
 
     func testPickerMenuLabelNamesTheSize() throws {
