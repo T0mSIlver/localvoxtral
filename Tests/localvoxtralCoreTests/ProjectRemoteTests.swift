@@ -114,7 +114,6 @@ final class ProjectRemoteTests: XCTestCase {
             learned.confirmedTerms(projectKey: "/Users/tom/Desktop/projects/supervoxtral"), ["herdr", "Voxtral"]
         )
         XCTAssertEqual(learned.confirmedTerms(projectKey: "remote:localvoxtral"), ["herdr", "Voxtral"])
-        XCTAssertEqual(learned.listedProjects(now: now).map(\.key), ["repo:github.com/t0msilver/localvoxtral"])
     }
 
     /// The migration loses nothing: every term, its count, its pin, and the

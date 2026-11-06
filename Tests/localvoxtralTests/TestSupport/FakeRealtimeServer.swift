@@ -5,7 +5,7 @@ import XCTest
 
 /// An OpenAI Realtime-compatible server on a loopback port, for tests that
 /// put the real `RealtimeAPIWebSocketClient` and its socket on the session
-/// path. It answers each connection with `session.created` and records every
+/// path. It answers each connection with `sessionCreated` and records every
 /// frame the client sends; what it transcribes, and when, is the test's to
 /// say with `send`.
 ///
@@ -48,8 +48,12 @@ final class FakeRealtimeServer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "FakeRealtimeServer")
     private let state = Mutex(State())
+    /// What each connection is greeted with: vLLM's bare frame by default,
+    /// `RealtimeServerModel.sessionCreated(.llamaServer)` for llama-server.
+    private let sessionCreated: [String: Any]
 
-    init() throws {
+    init(sessionCreated: [String: Any] = ["type": "session.created"]) throws {
+        self.sessionCreated = sessionCreated
         let parameters = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
@@ -236,7 +240,7 @@ final class FakeRealtimeServer: @unchecked Sendable {
             switch connectionState {
             case .ready:
                 if !self.state.withLock({ $0.withholdsSessionCreated }) {
-                    self.send(["type": "session.created"], on: connection)
+                    self.send(self.sessionCreated, on: connection)
                 }
             case .failed, .cancelled:
                 self.markClosed(connection)

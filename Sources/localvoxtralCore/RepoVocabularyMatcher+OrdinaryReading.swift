@@ -111,12 +111,7 @@ extension RepoVocabularyMatcher {
         let verification = Array(
             (withheld + outcome.verificationCandidates).prefix(nominationCap(forTranscript: transcript))
         )
-        return GroundingOutcome(
-            entries: kept,
-            isFallbackOnly: outcome.isFallbackOnly,
-            phoneticEntries: outcome.phoneticEntries,
-            verificationCandidates: verification
-        )
+        return GroundingOutcome(entries: kept, verificationCandidates: verification)
     }
 
     private static let vowels = Set("aeiouyàâäéèêëîïôöùûüÿæœ")

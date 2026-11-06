@@ -103,6 +103,11 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     let targetStreamingDelayMilliseconds: Int?
 
     package let supportsPeriodicCommit = false
+    /// Voxtral Realtime 3 goes quiet for up to 1.2 s between its last deltas
+    /// and `transcription.done` (40 stops from the dev box, 2026-11-04; done
+    /// 1.04 s median, 2.18 s max after `input_audio.end`). At the app's 0.7 s,
+    /// 2 of those 40 stops closed before done (LVX-86).
+    package var finalizationInactivityThreshold: TimeInterval? { 1.5 }
 
     /// Monotonic seconds, injectable so the stall bookkeeping is testable
     /// without a wall clock.

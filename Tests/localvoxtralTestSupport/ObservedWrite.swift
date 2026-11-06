@@ -1,0 +1,52 @@
+import Observation
+import XCTest
+import localvoxtralCore
+
+/// Runs `trigger`, then returns once `value` has been written: how a test
+/// waits for what another main-actor task does in response, with no seam and
+/// no clock. Only wait for a write the code under test is certain to make. If
+/// it never makes one, the test fails after `failAfter` seconds of wall time
+/// instead of hanging the suite: a bound on a failure, never a wait a passing
+/// test relies on.
+@MainActor
+package func awaitNextWrite<Value>(
+    of value: @escaping @MainActor () -> Value,
+    failAfter: TimeInterval = 10,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    after trigger: () -> Void
+) async {
+    let written = BoundedWait()
+    withObservationTracking {
+        _ = value()
+    } onChange: {
+        written.resolve()
+    }
+    trigger()
+    if await written.value(failAfter: failAfter) { return }
+    XCTFail("the watched value was never written", file: file, line: line)
+}
+
+/// Returns once `condition` holds, re-reading it after each write to what it
+/// reads: a wait on whichever main-actor task makes it true, with no fixed
+/// number of yields. Bounded like `awaitNextWrite`: each wait for the next
+/// write fails after `failAfter` seconds of wall time.
+@MainActor
+package func awaitCondition(
+    failAfter: TimeInterval = 10,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ condition: @escaping @MainActor () -> Bool
+) async {
+    while !condition() {
+        let written = BoundedWait()
+        withObservationTracking {
+            _ = condition()
+        } onChange: {
+            written.resolve()
+        }
+        guard await written.value(failAfter: failAfter) else {
+            return XCTFail("the condition never held", file: file, line: line)
+        }
+    }
+}

@@ -1,11 +1,9 @@
 7.300 VibeRemoteShimTests
 4.092 ClaudeRemotePluginManifestTests
 2.780 AgentDictationE2EEvalSupportTests
-3.116 VibeRemoteHooksSetupTests
 2.716 LiveHoldBackReplacementStreamTests
 2.644 RepoVocabularyMatcherTests
 2.600 ClaudeRemoteHerdrForwardTests
-1.764 ClaudeIntegrationSettingsModelTests
 1.455 ClaudePluginManifestTests
 1.395 DictationViewModelOverlayLifecycleTests
 1.394 BackendProcessSupervisorTests
@@ -60,9 +58,7 @@
 0.056 SettingsStoreOnboardingTests
 0.054 BackendManagerTests
 0.051 DictationSessionStoreTests
-0.051 IntegrationsSettingsModelTests
 0.049 AppConfigDefaultsReconcileTests
-0.049 ClaudeMarketplaceMirrorTests
 0.049 DiagnosticsExporterTests
 0.048 ClaudeContextBrokerIntegrationTests
 0.046 OpencodePluginContractTests
@@ -104,7 +100,6 @@
 0.015 SSHDestinationTTYProbeTests
 0.015 SocketPaneScreenContextTests
 0.014 ClaudeContextBrokerLifecycleTests
-0.012 ClaudeRemoteForwardCoordinatorTests
 0.012 ClaudeStatuslineInstallServiceTests
 0.011 ClaudeRepoCollectorTests
 0.011 TerminalScreenContextSettingTests
@@ -140,7 +135,6 @@
 0.005 ClaudeSessionFocusResolutionTests
 0.005 ClaudeSocketGuardFilesystemTests
 0.005 HerdrMachineFederationTests
-0.005 HerdrMachineImportTests
 0.005 LiveVibeHooksFileSystemTests
 0.005 MicrophoneInputChannelTests
 0.005 OverlayBufferSessionCoordinatorTests
@@ -192,7 +186,6 @@
 0.002 ClaudeSessionPersistenceTests
 0.002 ClaudeSessionReducerTests
 0.002 ClaudeWorkspaceReferenceTests
-0.002 CmuxSocketPasswordStoreTests
 0.002 DictationHistoryRowTextTests
 0.002 LLMPolishingMistralShapeTests
 0.002 LLMPolishingServiceTests

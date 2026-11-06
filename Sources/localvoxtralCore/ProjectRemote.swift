@@ -200,25 +200,6 @@ extension LearnedTerms {
         projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms && !linked.contains($0.key) }
     }
 
-    /// The projects, most recent first: each repository once, as its own
-    /// record, and each checkout with no remote. What the Projects pane
-    /// lists (#891, #971). A repository is listed while one
-    /// of its checkouts is (`listedCheckouts`).
-    package func listedProjects(now: Date) -> [LearnedTermProject] {
-        var seen = Set<String>()
-        return listedCheckouts(now: now).compactMap { checkout in
-            guard checkout.isLinkedCheckout, let remote = checkout.projectRemote else {
-                return checkout
-            }
-            guard seen.insert(remote.key).inserted else { return nil }
-            if let record = projects.first(where: { $0.key == remote.key }) { return record }
-            var record = LearnedTermProject(key: remote.key, name: remote.name, terms: [], lastSeen: checkout.lastSeen)
-            record.remote = remote.value
-            record.repository = remote.githubRepository
-            return record
-        }
-    }
-
     /// Every checkout of `repositoryKey`, in `listedCheckouts` order.
     package func checkouts(ofRepository repositoryKey: String, now: Date) -> [LearnedTermProject] {
         listedCheckouts(now: now).filter { !$0.isRepositoryRecord && $0.repositoryRecordKey == repositoryKey }

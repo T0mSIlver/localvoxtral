@@ -92,9 +92,11 @@ package enum RealtimeContextLimitProbe {
     }
 
     /// The limit `body` reports for `model`: the entry whose `id` is the
-    /// model, else the first entry. Nil when `body` is no model list, which
-    /// is a server this does not apply to. A listed model without a usable
-    /// `max_model_len` gets the default.
+    /// model, else the first entry. vLLM names it `max_model_len`;
+    /// llama-server names each slot's context `meta.n_ctx` (#1943), which
+    /// `-c` / `-np` sets, not `meta.n_ctx_train`. Nil when `body` is no model
+    /// list, which is a server this does not apply to. A listed model with
+    /// neither gets the default.
     package static func budget(fromModelsResponse body: Data, model: String) -> RealtimeContextBudget? {
         guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let entries = json["data"] as? [[String: Any]],
@@ -103,6 +105,10 @@ package enum RealtimeContextLimitProbe {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let entry = entries.first { ($0["id"] as? String) == trimmed } ?? entries[0]
         if let limit = (entry["max_model_len"] as? NSNumber)?.intValue, limit > 0 {
+            return RealtimeContextBudget(maxModelLen: limit, source: .reported)
+        }
+        if let meta = entry["meta"] as? [String: Any],
+           let limit = (meta["n_ctx"] as? NSNumber)?.intValue, limit > 0 {
             return RealtimeContextBudget(maxModelLen: limit, source: .reported)
         }
         return RealtimeContextBudget(maxModelLen: RealtimeContextBudget.defaultMaxModelLen, source: .defaulted)

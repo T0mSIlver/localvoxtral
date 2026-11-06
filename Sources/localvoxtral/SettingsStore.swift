@@ -24,7 +24,6 @@ final class SettingsStore {
     }
 
     enum Keys {
-        static let realtimeProvider = "settings.realtime_provider"
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         /// LEGACY. The three API keys now live in the login Keychain
         /// (`SecretKey` / `KeychainSecretStore`); these defaults keys exist
@@ -53,8 +52,6 @@ final class SettingsStore {
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let managedSpeechModel = "settings.managed_speech_model"
         static let polishingBackendMode = "settings.polishing_backend_mode"
-        // Legacy global backend mode. Read only for one-time migration.
-        static let backendMode = "settings.backend_mode"
         static let onboardingCompleted = "settings.onboarding_completed"
         static let onboardingPolishingBeforeMistralChoice = "settings.onboarding_polishing_before_mistral_choice"
         static let opensWindowAtLaunch = "settings.opens_window_at_launch"
@@ -76,10 +73,6 @@ final class SettingsStore {
             "settings.audio_ducking_pending_restore_device_uid"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let selectedInputChannel = "settings.selected_input_channel"
-        static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
-        static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
-        static let dictationShortcutCarbonModifierFlags =
-            "settings.dictation_shortcut_carbon_modifiers"
         static let llmPolishingEnabled = "settings.llm_polishing_enabled"
         static let llmPolishingEndpointURL = "settings.llm_polishing_endpoint_url"
         /// LEGACY, see `apiKey`.
@@ -112,13 +105,17 @@ final class SettingsStore {
         /// as a JSON array of `UserTerminalApp`. Seeded from the legacy
         /// `terminal_apps.toml` once at startup (`UserTerminalAppsMigrator`).
         static let userTerminalApps = "settings.user_terminal_apps"
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
         /// diagnosing issue #13 (mid-word punctuation in Live Auto-Paste).
         /// Note the `debug.` prefix (not `settings.`): this is not a
         /// user-facing preference and must never surface in the settings UI.
+        /// Debug and harness builds only: it logs dictated text in cleartext,
+        /// so a release build has neither the key nor the log (LVX-80).
         static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
+        #endif
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         /// The runtime half of the control-socket gate, kept SEPARATE from the
         /// capture one: writing records and opening a socket that can start
@@ -198,9 +195,9 @@ final class SettingsStore {
     /// is expected to serve.
     static let defaultLLMPolishingModel = PolishModelCatalog.defaultOption.repoID
 
-    var realtimeProvider: RealtimeProvider {
-        didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
-    }
+    /// The only provider. Its old key, `settings.realtime_provider`, is in
+    /// `retiredKeys`; `dictationBackendMode` holds the real choice.
+    var realtimeProvider: RealtimeProvider { .realtimeAPI }
 
     var dictationBackendMode: BackendMode {
         didSet {
@@ -410,22 +407,6 @@ final class SettingsStore {
         didSet { defaults.set(selectedInputChannel, forKey: Keys.selectedInputChannel) }
     }
 
-    var dictationShortcutEnabled: Bool {
-        didSet { defaults.set(dictationShortcutEnabled, forKey: Keys.dictationShortcutEnabled) }
-    }
-
-    var dictationShortcutKeyCode: UInt32 {
-        didSet { defaults.set(dictationShortcutKeyCode, forKey: Keys.dictationShortcutKeyCode) }
-    }
-
-    var dictationShortcutCarbonModifierFlags: UInt32 {
-        didSet {
-            defaults.set(
-                dictationShortcutCarbonModifierFlags,
-                forKey: Keys.dictationShortcutCarbonModifierFlags)
-        }
-    }
-
     var llmPolishingEnabled: Bool {
         didSet {
             defaults.set(llmPolishingEnabled, forKey: Keys.llmPolishingEnabled)
@@ -504,7 +485,7 @@ final class SettingsStore {
     var polishSpeakerTerms: [String] {
         didSet {
             var terms = polishSpeakerTerms
-            if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
+            if let saved = savedList(Keys.polishSpeakerTerms, base: oldValue) {
                 // Capped and deduplicated as a launch reads it, or the next
                 // launch's shorter base takes the overflow for another copy's.
                 // At the cap, this copy's addition goes, not a saved term.
@@ -514,7 +495,7 @@ final class SettingsStore {
             }
             // Saved first: the assignment below re-enters this observer
             // (`@Observable`), which must find the merge already saved.
-            defaults.set(terms, forKey: Keys.polishSpeakerTerms)
+            saveList(terms, forKey: Keys.polishSpeakerTerms)
             if terms != polishSpeakerTerms { polishSpeakerTerms = terms }
             // A term the user adds by hand is no longer a refusal.
             let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
@@ -534,13 +515,26 @@ final class SettingsStore {
     var polishDismissedTermSuggestions: [String] {
         didSet {
             var dismissed = polishDismissedTermSuggestions
-            if let saved = defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) {
+            if let saved = savedList(Keys.polishDismissedTermSuggestions, base: oldValue) {
                 dismissed = Array(
                     ListSettingMerge.merge(base: oldValue, ours: dismissed, saved: saved)
                         .suffix(SpeakerTermSuggestions.maxDismissed))
             }
-            defaults.set(dismissed, forKey: Keys.polishDismissedTermSuggestions)
+            saveList(dismissed, forKey: Keys.polishDismissedTermSuggestions)
             if dismissed != polishDismissedTermSuggestions { polishDismissedTermSuggestions = dismissed }
+        }
+    }
+
+    /// Global terms and refused suggestions as saved right now, by this copy
+    /// of the app or another. Reads only `defaults`, so a project-term run
+    /// can call it off the main actor when its answer lands (LVX-90).
+    var savedTermExclusions: @Sendable () -> [String] {
+        // UserDefaults is thread-safe, but the hosted runner's SDK does not
+        // mark it Sendable (`AppDefaults`).
+        nonisolated(unsafe) let defaults = defaults
+        return {
+            (defaults.stringArray(forKey: Keys.polishSpeakerTerms) ?? [])
+                + (defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? [])
         }
     }
 
@@ -615,6 +609,37 @@ final class SettingsStore {
     /// History is "Don't keep", whatever this says.
     var diagnosticRecordsEnabled: Bool {
         didSet { defaults.set(diagnosticRecordsEnabled, forKey: Keys.diagnosticRecordsEnabled) }
+    }
+
+    /// Hashes of every value this copy saved for each merged list setting.
+    /// A read can return a value from many writes back when the preferences
+    /// daemon is slow: hosted runs kept 205 and then 77 of 401 refusals
+    /// (LVX-102), because the merge took each item missing from that old value
+    /// for another copy's removal. Content alone cannot tell that lag from
+    /// another copy that restored an earlier list (Codex review), so each save
+    /// also records its writer under `<key>.writer`; a saved list counts as
+    /// this copy's only while that names this copy. A build without it never
+    /// updates the writer, so a removal it makes while this copy runs can
+    /// still be missed. One integer per save.
+    @ObservationIgnored
+    private var listWrites: [String: Set<Int>] = [:]
+    @ObservationIgnored
+    private let listWriterID = UUID().uuidString
+
+    /// The saved list to merge with, nil when nothing is saved. A list this
+    /// copy saved at any point, while no other copy has saved since, stands
+    /// for `base`.
+    private func savedList(_ key: String, base: [String]) -> [String]? {
+        guard let saved = defaults.stringArray(forKey: key) else { return nil }
+        let ownWrite = defaults.string(forKey: key + ".writer") == listWriterID
+            && listWrites[key]?.contains(saved.hashValue) == true
+        return ownWrite ? base : saved
+    }
+
+    private func saveList(_ value: [String], forKey key: String) {
+        defaults.set(listWriterID, forKey: key + ".writer")
+        defaults.set(value, forKey: key)
+        listWrites[key, default: []].insert(value.hashValue)
     }
 
     func dismissTermSuggestion(_ term: String) {
@@ -835,9 +860,12 @@ final class SettingsStore {
     /// enable it for a capture you intend to share; leave it off otherwise.
     /// There is no UI for this setting — it is toggled via `defaults`:
     ///   `defaults write com.localvoxtral.app debug.log_realtime_deltas -bool true`
+    /// A release build compiles none of it, and ignores the key if set.
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     var debugLogRealtimeDeltas: Bool {
         didSet { defaults.set(debugLogRealtimeDeltas, forKey: Keys.debugLogRealtimeDeltas) }
     }
+    #endif
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// Whether this instrumented build opens its local control socket
@@ -1054,21 +1082,9 @@ final class SettingsStore {
             }
         }
 
-        let configuredProvider = Self.loadString(
-            defaults: defaults, key: Keys.realtimeProvider,
-            envKey: "REALTIME_PROVIDER", fallback: RealtimeProvider.realtimeAPI.rawValue,
-            environment: environment
-        )
-        // A previously-selected provider may no longer exist (deprecated backends
-        // have been removed). Fall back to the default rather than crash or
-        // produce an invalid state.
-        realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
-
-        // The commit interval setting was removed. Clean up stale persisted
-        // values so future defaults migrations do not preserve dead state.
-        defaults.removeObject(forKey: "settings.commit_interval_seconds")
-        // So was the step interval: the helper sizes its steps itself (#639).
-        defaults.removeObject(forKey: "settings.speechd_step_cadence")
+        for key in Self.retiredKeys {
+            defaults.removeObject(forKey: key)
+        }
 
         realtimeAPIEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.realtimeAPIEndpointURL,
@@ -1176,31 +1192,6 @@ final class SettingsStore {
             dictationShortcutMode = .toggle
         }
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
-        dictationShortcutEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)
-
-        let storedKeyCode = (defaults.object(forKey: Keys.dictationShortcutKeyCode) as? NSNumber)?
-            .uint32Value
-        let storedModifierFlags =
-            (defaults.object(forKey: Keys.dictationShortcutCarbonModifierFlags) as? NSNumber)?
-            .uint32Value
-
-        let resolvedShortcut: DictationShortcut
-        if let storedKeyCode, let storedModifierFlags {
-            let candidate = DictationShortcut(
-                keyCode: storedKeyCode,
-                carbonModifierFlags: storedModifierFlags
-            ).normalized
-            resolvedShortcut =
-                DictationShortcutValidation.persistenceErrorMessage(for: candidate) == nil
-                ? candidate : Self.defaultDictationShortcut
-        } else {
-            resolvedShortcut = Self.defaultDictationShortcut
-        }
-
-        dictationShortcutKeyCode = resolvedShortcut.keyCode
-        dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
-
         llmPolishingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.llmPolishingEnabled, fallback: false)
         llmPolishingEndpointURL = Self.loadString(
@@ -1262,8 +1253,10 @@ final class SettingsStore {
         userTerminalApps = Self.loadUserTerminalApps(from: defaults)
         polishContextTrustedEndpointEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
+        #endif
         diagnosticRecordsEnabled = Self.loadBool(
             defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
@@ -1314,8 +1307,6 @@ final class SettingsStore {
 
         // --- Dual shortcut keys ---
         let hasExistingOverlayKeys = defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) != nil
-        var needsOverlayMigrationPersist = false
-
         if hasExistingOverlayKeys {
             let obKeyCode = (defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) as? NSNumber)?
                 .uint32Value ?? 0
@@ -1331,12 +1322,6 @@ final class SettingsStore {
             }
             overlayBufferShortcutEnabled = Self.loadBool(
                 defaults: defaults, key: Keys.overlayBufferShortcutEnabled, fallback: true)
-        } else if storedKeyCode != nil, storedModifierFlags != nil {
-            overlayBufferShortcutKeyCode = resolvedShortcut.keyCode
-            overlayBufferShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
-            overlayBufferShortcutEnabled = Self.loadBool(
-                defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)
-            needsOverlayMigrationPersist = true
         } else {
             overlayBufferShortcutKeyCode = Self.defaultDictationShortcut.keyCode
             overlayBufferShortcutCarbonModifierFlags = Self.defaultDictationShortcut.carbonModifierFlags
@@ -1382,14 +1367,6 @@ final class SettingsStore {
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         copyLastDictationShortcutChord = defaults.string(forKey: Keys.copyLastDictationShortcutChord) ?? ""
-
-        if needsOverlayMigrationPersist {
-            defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)
-            defaults.set(
-                overlayBufferShortcutCarbonModifierFlags,
-                forKey: Keys.overlayBufferShortcutModifiers)
-            defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled)
-        }
 
         // The sweep above already holds these values; reading them back would
         // be a second keychain operation for nothing.
@@ -1452,10 +1429,9 @@ final class SettingsStore {
     ///
     /// - If the flag was already persisted, honor it verbatim.
     /// - Otherwise treat the install as "not fresh" (skip the wizard) when any
-    ///   signal of a prior configured install is present: the legacy global
-    ///   backend-mode key, a persisted realtime endpoint, the REALTIME_ENDPOINT
-    ///   env override, or either per-backend mode key. These mirror the exact
-    ///   signals the backend-mode migration keys off, plus the newer mode keys.
+    ///   signal of a prior configured install is present: a persisted realtime
+    ///   endpoint, the REALTIME_ENDPOINT env override, or either per-backend
+    ///   mode key.
     /// - A genuinely fresh install has none of these → show the wizard.
     private static func resolveOnboardingCompleted(
         defaults: UserDefaults,
@@ -1466,8 +1442,7 @@ final class SettingsStore {
         }
 
         let isExistingInstall =
-            defaults.string(forKey: Keys.backendMode) != nil
-            || defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
+            defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
             || environment["REALTIME_ENDPOINT"] != nil
             || defaults.string(forKey: Keys.dictationBackendMode) != nil
             || defaults.string(forKey: Keys.polishingBackendMode) != nil
@@ -1492,12 +1467,7 @@ final class SettingsStore {
         }
 
         let migratedMode: BackendMode
-        if let storedBackendMode = defaults.string(forKey: Keys.backendMode),
-            let parsedBackendMode = BackendMode(rawValue: storedBackendMode),
-            BackendMode.dictationModes.contains(parsedBackendMode)
-        {
-            migratedMode = parsedBackendMode
-        } else if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
+        if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
             || environment["REALTIME_ENDPOINT"] != nil
         {
             migratedMode = .externalURL

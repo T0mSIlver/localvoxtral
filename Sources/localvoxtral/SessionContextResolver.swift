@@ -318,6 +318,10 @@ final class SessionContextResolver {
            !settings.claudeRepoContextEnabled {
             return .gated(.desktopWithoutSessionContext)
         }
+        if T3CodeAllowlist.isSupported(target.bundleID),
+           !settings.claudeRepoContextEnabled {
+            return .gated(.t3WithoutSessionContext)
+        }
         return .resolved(await resolver.resolution(target: target))
     }
 

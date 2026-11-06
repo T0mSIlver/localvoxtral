@@ -55,7 +55,7 @@ filter_expect true "the WAV source the check dictates from" Sources/localvoxtral
 filter_expect true "a scenario" scripts/e2e/scenarios/overlay-buffer.scenario
 filter_expect true "the lane's workflow" .github/workflows/ui-smoke.yml
 filter_expect true "one match among unrelated files" docs/README.md Sources/localvoxtral/RealtimeClient.swift Sources/localvoxtral/TextInsertionService.swift
-filter_expect false "the polish path (goldens prove it)" Sources/localvoxtral/PolishRequestAssembler.swift Sources/localvoxtral/LLMPolishingService.swift
+filter_expect false "the polish path (goldens prove it)" Sources/localvoxtral/PolishRequestAssembler.swift Sources/localvoxtralCore/LLMPolishingService.swift
 filter_expect false "the overlay's look" Sources/localvoxtral/OverlayStableLineWrapper.swift Sources/localvoxtral/DictationOverlayView.swift
 filter_expect false "settings and docs" Sources/localvoxtral/Settings/DictationSettingsPane.swift docs/agent/test-tiers.md AGENTS.md
 filter_expect false "the AX drill alone" scripts/ui-smoke.sh
