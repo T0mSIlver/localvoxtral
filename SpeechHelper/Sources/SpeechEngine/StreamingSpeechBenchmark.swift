@@ -252,6 +252,18 @@ public enum StreamingSpeechBenchmark {
                 benchmark.micBufferMicroseconds
             )
         )
+        // Measurement (LVX-111): every step's wall time, and the slow ones with the
+        // audio position and memory they ran at.
+        print("BENCH steps_ms=" + records.map { String(format: "%.0f", $0.latencyMilliseconds) }.joined(separator: ","))
+        for (index, record) in records.enumerated() where record.latencyMilliseconds >= 300 {
+            print(
+                String(
+                    format: "BENCH slow_step index=%d audio_s=%.3f step_ms=%.1f active_mb=%.1f cache_mb=%.1f",
+                    index, Double(record.audioSamples) / Double(sampleRate), record.latencyMilliseconds,
+                    Double(record.memory.activeMemory) / bytesPerMB, Double(record.memory.cacheMemory) / bytesPerMB
+                )
+            )
+        }
         // Word k's appearance time, comparable across runs of one model on the same audio.
         print("BENCH words_s=" + words.map { String(format: "%.3f", $0) }.joined(separator: ","))
     }

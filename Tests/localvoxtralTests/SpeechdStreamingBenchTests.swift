@@ -29,6 +29,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         /// helper's synthetic noise, which decodes to no words and so cannot show
         /// when text appears (#486).
         let audio: String?
+        /// Measurement only (LVX-111): a checkpoint dir (relative to the repo) loaded with
+        /// `--model-dir` instead of the HF cache, for weights the builder lacks.
+        let modelDirectory: String?
     }
 
     /// About twenty seconds of plain dictation. The bench loops it to fill the run.
@@ -75,9 +78,13 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             return
         }
         print("BENCH model=\(model.repoID)")
-        var arguments = [
-            "--model", model.repoID,
-            "--model-revision", model.revision,
+        let modelArguments = config.modelDirectory.map {
+            [
+                "--model-dir", repoRoot.appendingPathComponent($0).path,
+                "--engine", model.engine == .nemotron ? "nemotron" : "voxtral",
+            ]
+        } ?? ["--model", model.repoID, "--model-revision", model.revision]
+        var arguments = modelArguments + [
             "--bench",
             "--seconds", "\(config.seconds)",
             "--cadence-ms", "\(config.cadenceMilliseconds)",
@@ -90,7 +97,8 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         if let spokenWAV {
             arguments.append(contentsOf: ["--wav", spokenWAV.path])
         } else if let wavPath = config.wavPath, !wavPath.isEmpty {
-            arguments.append(contentsOf: ["--wav", wavPath])
+            let resolved = wavPath.hasPrefix("/") ? wavPath : repoRoot.appendingPathComponent(wavPath).path
+            arguments.append(contentsOf: ["--wav", resolved])
         }
         if let cacheLimitMB = config.cacheLimitMB {
             arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])

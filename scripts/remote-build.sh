@@ -911,6 +911,16 @@ case "$CMD" in
     if [[ "$SPEECHD_BENCH_MIC_BUFFER" != 0 ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"micBufferMicroseconds\":$SPEECHD_BENCH_MIC_BUFFER"
     fi
+    # Measurement only (LVX-111): weights and a recorded WAV under EvalRecordings/.
+    if [[ -n "${LV_BENCH_MODEL_DIR:-}" ]]; then
+      [[ "$LV_BENCH_MODEL_DIR" =~ ^EvalRecordings/[A-Za-z0-9._/-]+$ ]] || { echo "LV_BENCH_MODEL_DIR must be under EvalRecordings/" >&2; exit 1; }
+      SPEECHD_BENCH_OPTIONAL+=",\"modelDirectory\":\"$LV_BENCH_MODEL_DIR\""
+    fi
+    if [[ -n "${LV_BENCH_WAV:-}" ]]; then
+      [[ "$LV_BENCH_WAV" =~ ^EvalRecordings/[A-Za-z0-9._/-]+\.wav$ ]] || { echo "LV_BENCH_WAV must be a .wav under EvalRecordings/" >&2; exit 1; }
+      [[ "$SPEECHD_BENCH_AUDIO" == noise ]] || { echo "LV_BENCH_WAV replaces the speech audio: pass noise" >&2; exit 1; }
+      SPEECHD_BENCH_OPTIONAL+=",\"wavPath\":\"$LV_BENCH_WAV\""
+    fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
       "$SPEECHD_BENCH_SECONDS" \
