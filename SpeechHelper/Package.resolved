@@ -1,5 +1,5 @@
 {
-  "originHash" : "f58a926cb5fd822fb852c949736ad1798a8ebd919395ae14be46c596f94f6a32",
+  "originHash" : "413be34daa3776112f82ecd565215c5839fc7813ec645479356d6ecbed747f8f",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -13,9 +13,9 @@
     {
       "identity" : "mlx-audio-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/T0mSIlver/mlx-audio-swift.git",
+      "location" : "https://github.com/Neywa-Labs/mlx-audio-swift.git",
       "state" : {
-        "revision" : "c793e5cc0891c3c0f1856a41ca9151b116ba7c36"
+        "revision" : "373644559fe15f3e8a4d3f68d36b94a111e66dbb"
       }
     },
     {
@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift.git",
       "state" : {
-        "revision" : "19601207e9a0de51e03ee6ec0c3c5f3784275075",
-        "version" : "0.32.3"
+        "revision" : "7ede4fd6d05f63305c1c0ebf4f8c1909a637c574",
+        "version" : "0.33.0"
       }
     },
     {
@@ -98,7 +98,17 @@
         "revision" : "8b4a38dc994a110abaec8a400615567bd996105f",
         "version" : "0.12.0"
       }
+    },
+    {
+      "identity" : "zstd",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/facebook/zstd.git",
+      "state" : {
+        "revision" : "f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+        "version" : "1.5.7"
+      }
     }
   ],
   "version" : 3
 }
+
