@@ -156,7 +156,7 @@ for args in 'test' 'test --skip AlphaTests'; do
 done
 for command in integration integration-keychain integration-mistral \
   integration-polishd integration-speechd integration-herdr eval-llm eval-e2e \
-  eval-term-recall eval-capture-polish-latency speechd-bench polishd-bench; do
+  eval-term-recall speechd-bench polishd-bench; do
   without_opt_in "$command" 2 "$command"
   assert_stderr_has "$command runs live inference"
   assert_stderr_has 'AGENTS.md'
@@ -195,6 +195,14 @@ assert_stderr_has 'need --asr apple'
 run_remote_build 'unknown pace' 1 eval-term-recall --asr apple --pace slow
 assert_stderr_has '--pace realtime|fast'
 assert_no_transport 'a refused apple option'
+
+# #2041: the replay cap needs a replay and a count, refused before any sync.
+new_transport_log
+run_remote_build 'replay cap without a replay' 1 eval-e2e --replay-newest 40
+assert_stderr_has '--replay-newest needs --replay'
+run_remote_build 'replay cap of zero' 1 eval-e2e --replay /Users/Shared/lv-replay-x --replay-newest 0
+assert_stderr_has 'needs a count from 1 to 99999'
+assert_no_transport 'a refused replay cap'
 
 printf 'PASS: remote-build refuses gate-blocked arguments before the tree sync\n'
 printf 'PASS: the full suite and the live lanes need LV_ALLOW_HEAVY_MAC_RUN=1\n'

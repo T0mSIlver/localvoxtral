@@ -313,8 +313,37 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG (channel=$CHANNEL, prerelease=$PRERELEASE, publish=$PUBLISH) from $GITHUB_REF_NAME @ $(git rev-parse --short HEAD)"
 
+      - name: Resolve packages
+        # Sparkle (LVX-57) is a binary target: a cold checkout downloads its
+        # 10 MB zip, and SwiftPM never times a download out. Run 41742286992
+        # sat in the build gate for 2 h 20 min on a stalled one, with the Mac
+        # idle and seven mac-lanes jobs queued behind it. Bounded and retried
+        # here instead, so a stall costs minutes and says what it was.
+        if: steps.plan.outputs.proceed != 'false'
+        run: |
+          for attempt in 1 2 3; do
+            if ./scripts/ci/run-supervised-command.sh 300 \
+                "$RUNNER_TEMP/localvoxtral-resolve-$attempt.log" -- swift package resolve; then
+              exit 0
+            fi
+            echo "::warning::swift package resolve failed or stalled (attempt $attempt of 3)"
+            # The supervisor appends its process dumps to the same log and
+            # echoes only the tail, which a timeout fills with sample's image
+            # list (run 41815723413). SwiftPM's own lines come first.
+            echo "SwiftPM's output, attempt $attempt:"
+            sed -n '/^=== supervisor/q;p' "$RUNNER_TEMP/localvoxtral-resolve-$attempt.log" \
+              | grep -v -E '^\[[0-9]+/[0-9]+\] Downloading' | tail -n 40
+            grep -E '^\[[0-9]+/[0-9]+\] Downloading' "$RUNNER_TEMP/localvoxtral-resolve-$attempt.log" | tail -n 1 || true
+          done
+          echo "::error::could not resolve packages in 3 attempts of 5 min; see the logs above"
+          exit 1
+
       - name: Gate — build
         if: steps.plan.outputs.proceed != 'false'
+        # Packages are resolved above, so this is compiling alone: about 10
+        # min cold on the Mini. The bound catches a hang an hour early instead
+        # of at the job's 420 min.
+        timeout-minutes: 60
         run: swift build --build-system native -c release
 
       - name: Gate — unit tests
@@ -377,6 +406,12 @@ jobs:
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
+        # Every step that compiles, downloads or waits on a service has its
+        # own bound below, so a stall names its step within the hour instead
+        # of holding the Mini, and every mac-lanes job queued behind it, for
+        # the job's 420 min (run 41742286992). Notarization is bounded by
+        # notarize.sh, not here.
+        timeout-minutes: 45
         run: swift test --build-system native --filter RealtimeAPIVLLMIntegrationTests
 
       - name: Name the STT service's state
@@ -437,6 +472,9 @@ jobs:
           # Empty for an ad-hoc nightly, so package_app.sh signs ad-hoc.
           LOCALVOXTRAL_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && env.DEVELOPER_ID_IDENTITY || '' }}
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && '1' || '0' }}
+        # Cold: the app, then both MLX helpers through xcodebuild, which
+        # resolves their own packages.
+        timeout-minutes: 90
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
       - name: Gate — packaged app launch smoke test
@@ -446,6 +484,7 @@ jobs:
           # startup TCC prompts off the runner's GUI session (node's
           # Accessibility grant dies on every runner auto-update).
           LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
+        timeout-minutes: 15
         run: |
           # A home of its own, as in ci.yml: never the owner's history (#985).
           SMOKE_HOME="$(mktemp -d)"
@@ -517,6 +556,25 @@ jobs:
             shasum -a 256 "localvoxtral-$TAG.dmg" > "localvoxtral-$TAG.dmg.sha256"
           )
 
+      - name: Build the update feed
+        # The Sparkle appcast the installed apps read through
+        # /releases/latest/download/appcast.xml (LVX-57), and deltas from the
+        # last three releases the Mini kept (the "Keep this release" step
+        # below). Stable and daily only, and only notarized: a feed must
+        # never offer an ad-hoc build. A rehearsal builds it too, so a change
+        # here is proved before it merges. The key and the kept releases
+        # live in the runner account's home, never in the workspace. From
+        # $RELEASE_CI: a daily release may build a commit older than the
+        # feed script.
+        if: >-
+          steps.plan.outputs.proceed != 'false'
+          && steps.signing.outputs.notarize == 'true'
+          && steps.meta.outputs.prerelease == 'false'
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        timeout-minutes: 30
+        run: '"$RELEASE_CI/build-update-feed.sh" feed "$TAG" dist'
+
       - name: Upload rehearsal artifacts (no tag, no release)
         # The rehearsal's whole output. Named so it can never be mistaken for
         # a release: it lives on the run, not on a tag, and expires in a week.
@@ -529,6 +587,8 @@ jobs:
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip.sha256
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256
+            dist/appcast.xml
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}-from-*.delta
           if-no-files-found: error
           retention-days: 7
 
@@ -556,6 +616,13 @@ jobs:
           RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
         run: |
           set -euo pipefail
+          # The last word before anything leaves the runner: Plan and Compute
+          # version already refuse this, and a tag is what Publish, Keep and
+          # the cask job all follow.
+          if [[ "$GITHUB_REF_NAME" != "main" && "$TAG" != *-rc.* ]]; then
+            echo "::error::$TAG is not a prerelease and $GITHUB_REF_NAME is not main: only main tags a release. Nothing was tagged."
+            exit 1
+          fi
           if [[ -z "$RELEASE_TAG_TOKEN" ]]; then
             echo "::error::The RELEASE_TAG_TOKEN repo secret is missing or empty; GITHUB_TOKEN cannot push this tag (#964). Nothing was tagged."
             exit 1
@@ -635,7 +702,8 @@ jobs:
       - name: Publish GitHub release
         # scripts/ci/publish-release.sh creates the release as a draft whose
         # body is the notes above GitHub's generated PR list, uploads the
-        # seven assets with retries, checks them, and only then publishes.
+        # seven assets with retries (a stable release adds the update feed
+        # and its deltas), checks them, and only then publishes.
         # A nightly or rc is a prerelease and never marked Latest, so
         # /releases/latest, which install.sh's stable path and the README
         # follow, keeps pointing at the newest stable release.
@@ -651,6 +719,19 @@ jobs:
           NOTES: ${{ steps.notes.outputs.path }}
         run: '"$RELEASE_CI/publish-release.sh" "$TAG" dist "$NOTES"'
 
+      - name: Keep this release as a base for the next deltas
+        # After the publish, so a release that never went out is never a
+        # delta base. A failure here costs the next releases their delta
+        # from this one, nothing else.
+        if: >-
+          steps.plan.outputs.proceed != 'false'
+          && steps.plan.outputs.publish == 'true'
+          && steps.signing.outputs.notarize == 'true'
+          && steps.meta.outputs.prerelease == 'false'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: '"$RELEASE_CI/build-update-feed.sh" keep dist'
+
       - name: Keep the assets of a release that did not publish
         # A failure or cancel after the tag went up leaves a tagged commit
         # whose notarized assets exist only in this workspace, which the next
@@ -660,7 +741,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: localvoxtral-release-${{ steps.meta.outputs.tag }}
-          path: dist/localvoxtral-*${{ steps.meta.outputs.tag }}*
+          path: |
+            dist/localvoxtral-*${{ steps.meta.outputs.tag }}*
+            dist/appcast.xml
           if-no-files-found: error
           retention-days: 14
 

@@ -257,6 +257,12 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             lock.unlock()
         }
 
+        func texts(on task: URLSessionWebSocketTask) -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return frames.filter { $0.task === task }.map(\.text)
+        }
+
         /// Each frame's JSON `type`, or its text when it is not JSON.
         func kinds(on task: URLSessionWebSocketTask) -> [String] {
             lock.lock()
@@ -326,6 +332,34 @@ final class WebSocketClientLifecycleTests: XCTestCase {
 
         XCTAssertEqual(secondReplay.kinds(on: task), [], "the late handshake must not race the timer's replay")
         XCTAssertTrue(client.debugStateSnapshot().hasReceivedSessionCreated)
+    }
+
+    // The term list rides the one session.update as `context_bias` (LVX-29),
+    // and only when the model takes terms: a server whose model takes none
+    // (every local and External URL model today) gets the frame it always got.
+
+    func testSessionUpdateCarriesNoContextBiasWhenTheModelTakesNoTerms() {
+        XCTAssertEqual(
+            RealtimeAPIWebSocketClient.sessionUpdateFrame(model: "model", contextBias: []),
+            #"{"model":"model","type":"session.update"}"#
+        )
+    }
+
+    func testSessionUpdateCarriesTheTermListOnTheSocketItWasDialledWith() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(
+            task: task, modelName: "model", contextBias: ["Claude Code", "herdr"])
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(
+            wire.texts(on: task).first,
+            #"{"context_bias":["Claude Code","herdr"],"model":"model","type":"session.update"}"#
+        )
     }
 
     // The handshake fallback and the keepalive ping sleep on the session

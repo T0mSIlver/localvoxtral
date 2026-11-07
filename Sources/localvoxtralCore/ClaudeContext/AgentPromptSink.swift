@@ -22,8 +22,8 @@ package enum AgentPromptDelivery: Sendable, Equatable {
 }
 
 /// One way into one agent's prompt, resolved at dictation start for the
-/// session the join named: opencode's prompt relay (#719), a herdr pane
-/// (#726) or a cmux surface (#727).
+/// session the join named: the session's mod (#1645) or a cmux surface
+/// (#727).
 package protocol AgentPromptRoute: Sendable {
     /// For the log: which route refused or delivered.
     var name: String { get }

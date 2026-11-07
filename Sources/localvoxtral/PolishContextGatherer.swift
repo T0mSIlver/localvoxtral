@@ -268,7 +268,7 @@ enum PolishContextGatherer {
         }
 
         // Only RENDERABLE material declares a demand — the repo's
-        // demand is what it could show, never `groundingText.count`.
+        // demand is what it could show, never the grounding harvest.
         // That string is mostly `trackedPaths`, which ground but
         // never render, so counting it made a monorepo bid hundreds
         // of thousands of characters for content it would not
@@ -463,8 +463,6 @@ enum PolishContextGatherer {
                 PolishContextGrounding.Candidate(
                     source: source,
                     entries: outcome.entries,
-                    isFallbackOnly: outcome.isFallbackOnly,
-                    phoneticEntries: outcome.phoneticEntries,
                     verificationEntries: outcome.verificationCandidates
                 )
             },
@@ -566,8 +564,6 @@ extension PolishContextMaterial {
             let learned = learnedVocabularyOutcome
             material.learnedVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
                 entries: learned.entries.filter(keep),
-                isFallbackOnly: learned.isFallbackOnly,
-                phoneticEntries: learned.phoneticEntries.filter(keep),
                 verificationCandidates: learned.verificationCandidates.filter(keep)
             )
             material.learnedProposals = []

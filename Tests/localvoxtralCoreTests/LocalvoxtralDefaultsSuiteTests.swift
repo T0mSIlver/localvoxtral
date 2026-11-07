@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 import localvoxtralCore
 
 /// `LOCALVOXTRAL_DEFAULTS_SUITE` moves the app's preferences into a suite of
@@ -17,18 +18,18 @@ final class LocalvoxtralDefaultsSuiteTests: XCTestCase {
     }
 
     func testASuiteKeepsItsWritesOutOfTheStandardDomain() throws {
-        let name = "com.localvoxtral.harness-test-\(UUID().uuidString)"
+        let suite = makeTestDefaultsSuite()
+        let name = suite.suiteName
         let key = "settings.lvx_defaults_suite_test_\(UUID().uuidString)"
         guard case .suite(let resolvedName, let defaults) = LocalvoxtralDefaultsSuite.resolve(
             environment: [LocalvoxtralDefaultsSuite.environmentKey: name],
             bundleIdentifier: bundleIdentifier
         ) else { return XCTFail("\(name) was not opened as a suite") }
-        defer { defaults.removePersistentDomain(forName: name) }
 
         defaults.set("external_url", forKey: key)
 
         XCTAssertEqual(resolvedName, name)
-        XCTAssertEqual(UserDefaults(suiteName: name)?.string(forKey: key), "external_url")
+        XCTAssertEqual(suite.reopened().string(forKey: key), "external_url")
         XCTAssertNil(UserDefaults.standard.object(forKey: key))
     }
 

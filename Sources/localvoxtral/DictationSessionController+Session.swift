@@ -48,10 +48,6 @@ extension DictationSessionController {
         // it just gave up still emits is refused from here on (#417).
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
-        sessionIsQuickCapture = false
-        sessionDraftReview = nil
-        sessionCommitGuard = nil
-        sessionPickedPane = nil
         sessionStartedAt = nil
         sessionStoppedAt = nil
         sessionCaptureTimeline = nil
@@ -66,6 +62,7 @@ extension DictationSessionController {
         sessionHasStallBackfill = false
         stallBackfillTasks.forEach { $0.cancel() }
         stallBackfillTasks = []
+        stallBackfillsInFlight = []
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
     }
@@ -216,14 +213,27 @@ extension DictationSessionController {
                 return
             }
 
-            guard !Task.isCancelled,
-                  (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
+            guard !Task.isCancelled else { return }
+            // Polishing turned off while the helpers started: nothing is left
+            // to wait for, so the dictation goes ahead unpolished. A backend
+            // mode that moved off managed unwinds the connect; returning with
+            // the latch set would refuse every later start (LVX-72).
+            let polishingStillManaged = self.settings.llmPolishingEnabled
+                && self.settings.polishingBackendMode == .managedLocal
+            guard (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
                   (!needsManagedPolishing
-                      || (self.settings.llmPolishingEnabled
-                          && self.settings.polishingBackendMode == .managedLocal)),
+                      || !self.settings.llmPolishingEnabled
+                      || polishingStillManaged),
                   self.isConnectingRealtimeSession
-            else { return }
-            if splitsPolishing, self.backendManager.polishdStatus != .ready {
+            else {
+                if self.isConnectingRealtimeSession {
+                    Log.backends.notice("managed startup superseded by a settings change; connect aborted")
+                    self.abortConnectingSession()
+                    self.statusText = StatusStrings.ready
+                }
+                return
+            }
+            if splitsPolishing, polishingStillManaged, self.backendManager.polishdStatus != .ready {
                 Log.polishing.notice("dictation starts before the polishing helper is ready")
                 self.managedPolishingSkippedAtStart = true
             }
@@ -420,6 +430,9 @@ extension DictationSessionController {
         await captureTerminalScreenContextForSession(isCurrent: {
             !Task.isCancelled && self.ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         })
+        // Before the ownership check, which then covers this wait too.
+        let startContextBias = await realtimeStartContextBias(
+            endpoint: endpoint, capabilities: modelCapabilities)
         let ownsSharedSessionState = ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
             if ownsSharedSessionState {
@@ -462,10 +475,45 @@ extension DictationSessionController {
             apiKey: apiKey,
             model: model,
             usageBackend: usageBackend,
-            contextBias: Self.realtimeContextBias(
-                settings: settings, dictionary: sessionReplacementDictionary,
-                capabilities: modelCapabilities)
+            contextBias: startContextBias
         )
+    }
+
+    /// The terms a realtime socket takes at session start, cut as the
+    /// session's model takes them; empty for a model that takes none.
+    /// Voxtral Realtime 3 locks its session at the first audio chunk, so a
+    /// term not listed here never reaches it (#1944).
+    ///
+    /// The user's own terms go to any endpoint. With the trusted-endpoint
+    /// opt-in, so does what the second pass would send from the joined
+    /// session and its project: learned and group terms, the agent's
+    /// proposals where repo vocabulary may go, and the session's terms. Not
+    /// the screen's, which hold the most terms nobody is about to say. The
+    /// project's git root is waited for at most
+    /// `StopSecondPass.repositoryRootBound`, as at stop, through the lookup
+    /// the capture already started when it needs one.
+    func realtimeStartContextBias(
+        endpoint: URL, capabilities: DictationModelCapabilities
+    ) async -> [String] {
+        guard capabilities != .audioOnly else { return [] }
+        let contextTrusted = PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpoint, trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled)
+        // The capture started the join's own root lookup, which holds the
+        // single-flight gate: wait for its answer (bounded like any lookup)
+        // rather than race it, or the project's group stays unknown and the
+        // list takes every group's terms (Codex review, 2026-11-04).
+        if contextTrusted { await joinedRepositoryRootLookup?.value }
+        let join = context.claudeSessionJoin
+        var terms = StopSecondPass.ContextTerms()
+        if contextTrusted {
+            terms.session = StopSecondPass.speakableTerms(
+                in: context.claudeSessionTextIfEnabled(join: join, endpointURL: endpoint))
+        }
+        return await contextBias(
+            from: contextTermSources(
+                endpoint: endpoint, contextTrusted: contextTrusted, join: join, context: terms),
+            cut: capabilities.sessionTerms(from:),
+            logLabel: "realtime start terms")
     }
 
     /// Whether the start that took `generation` and `ownerTaskID` before its
@@ -481,10 +529,9 @@ extension DictationSessionController {
             && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
     }
 
-    /// The terms a realtime socket takes at session start: the user's own,
-    /// as the stall backfill sends them, since the context sources pass their
-    /// gates only at stop, cut as the session's model takes them. Empty for a
-    /// model that takes none. `capabilities` comes from the same snapshot as
+    /// The user's own terms, as the stall backfill sends them, cut as the
+    /// model takes them: what a transcription with no session behind it
+    /// (a recorded file) can send. Empty for a model that takes none. `capabilities` comes from the same snapshot as
     /// the session's model and key (`SettingsStore.dictationModelCapabilities`).
     static func realtimeContextBias(
         settings: SettingsStore, dictionary: ReplacementDictionary?,
@@ -648,14 +695,9 @@ extension DictationSessionController {
         sessionClaudeJoinBadge = .hidden
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
-        sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
-        sessionDraftReview = requestedOutputMode == .overlayBuffer ? requestedDraftReview : nil
         sessionStoppedBySpokenPhrase = false
-        requestedQuickCapture = false
-        requestedDraftReview = nil
         sessionStartedAt = Date()
         sessionStoppedAt = nil
-        yieldVoiceMemoEngine()
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
@@ -671,14 +713,12 @@ extension DictationSessionController {
     /// speaks (#709), unless early polish is off: then the stop polishes the
     /// whole text, as before #709. Not with a second pass: Mistral's realtime
     /// stream settles nothing before the stop, and the batch text replaces
-    /// the realtime text there anyway. Not for a quick capture or a draft
-    /// review either: their stops never use the pieces. Latched after
-    /// `latchSessionAudio`, which decides the second pass.
+    /// the realtime text there anyway. Latched after `latchSessionAudio`,
+    /// which decides the second pass.
     func armEarlyPolish(outputMode: DictationOutputMode) {
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
         guard outputMode == .overlayBuffer, settings.earlyPolishEnabled, !sessionHasStopSecondPass,
-            !sessionIsQuickCapture, sessionDraftReview == nil,
             !managedPolishingIsUnavailable(outputMode: outputMode),
             let configuration = settings.llmPolishingConfiguration
         else { return }
@@ -894,7 +934,8 @@ extension DictationSessionController {
 
                 if !self.stopReplaysReconnectGap,
                    let sentAt, now.timeIntervalSince(sentAt) >= TimingConstants.finalizationMinimumOpen,
-                   inactivity >= TimingConstants.finalizationInactivityThreshold
+                   inactivity >= self.activeRealtimeClient.finalizationInactivityThreshold
+                       ?? TimingConstants.finalizationInactivityThreshold
                 {
                     Log.backends.notice(
                         "stop finalization idle for \(inactivity, format: .fixed(precision: 2), privacy: .public) s; disconnecting"
@@ -953,7 +994,6 @@ extension DictationSessionController {
         // session and silently skips its overlay commit.
         wasCancelled = false
         escapeCancelHandler.stop()
-        endDestinations()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
@@ -1150,7 +1190,8 @@ extension DictationSessionController {
     func handleLLMPolishingConnectionFailure(
         title: String = "LLM Polishing Connection Failed",
         message: String,
-        technicalDetails: String? = nil
+        technicalDetails: String? = nil,
+        publicSummary: String? = nil
     ) {
         let trimmedMessage = message.trimmed
         let resolvedMessage =
@@ -1163,7 +1204,8 @@ extension DictationSessionController {
         lastError = resolvedDetails ?? resolvedMessage
         logLLMPolishingConnectionFailure(
             message: resolvedMessage,
-            technicalDetails: resolvedDetails
+            technicalDetails: resolvedDetails,
+            publicSummary: publicSummary
         )
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
@@ -1220,9 +1262,15 @@ extension DictationSessionController {
         }
     }
 
-    func logLLMPolishingConnectionFailure(message: String, technicalDetails: String?) {
+    /// `publicSummary` is the failure's provider-text-free line; when given,
+    /// the message and details (which can quote the dictated text) log `.private`.
+    func logLLMPolishingConnectionFailure(message: String, technicalDetails: String?, publicSummary: String? = nil) {
         let endpoint = sanitizedLLMPolishingEndpointForLogging()
-        if let technicalDetails {
+        if let publicSummary {
+            Log.polishing.error(
+                "LLM polishing connection failure [endpoint: \(endpoint, privacy: .public)] \(publicSummary, privacy: .public) message: \(message, privacy: .private) details: \(technicalDetails ?? "", privacy: .private)"
+            )
+        } else if let technicalDetails {
             Log.polishing.error(
                 "LLM polishing connection failure [endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(technicalDetails, privacy: .public)"
             )
@@ -1340,12 +1388,6 @@ extension DictationSessionController {
             // buffering — warn there, not just in the (closed) popover. The
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
-        }
-        // A review shows its one draft and offers no other destination.
-        if let review = sessionDraftReview {
-            overlayBufferCoordinator.showDraftReview(review)
-        } else {
-            beginDestinations()
         }
     }
 

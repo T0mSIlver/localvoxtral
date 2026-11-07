@@ -1,0 +1,99 @@
+import Foundation
+import localvoxtralCore
+
+/// Recorded audio through a streaming realtime socket, as fast as the backend
+/// takes it (#925): every chunk queued at once, then one final commit. The
+/// live STT lane's warm-up and the vLLM integration test use it; voice memos,
+/// its app caller, are gone, and with them the cutting of a memo longer than
+/// a vLLM server's context (#1148).
+package struct RealtimeFileTranscriber: Sendable {
+    package enum Failure: Error, Equatable {
+        case connectFailed(String)
+        case backend(String)
+        /// The socket closed before the final commit's answer.
+        case disconnected
+        case timedOut
+    }
+
+    /// 100 ms of 16 kHz mono PCM16, the size the live send loop uses.
+    package static let chunkBytes = 3_200
+
+    private let makeClient: @Sendable () -> any RealtimeClient
+    private let clock: SessionClock
+
+    package init(makeClient: @escaping @Sendable () -> any RealtimeClient, clock: SessionClock = .live) {
+        self.makeClient = makeClient
+        self.clock = clock
+    }
+
+    /// How long a file may take: the connect, then the audio's own length
+    /// again, which a backend that keeps up with live dictation never needs.
+    package static func timeout(forPCM16Bytes bytes: Int) -> Duration {
+        .seconds(30 + bytes / AudioChunkBuffer.bytesPerSecond)
+    }
+
+    /// The final transcript, or the streamed text when the backend sent no
+    /// final one. Empty when nothing was said. One session: the callers send
+    /// a short clip, well inside any server's context.
+    package func transcribe(pcm16: Data, configuration: RealtimeSessionConfiguration) async throws -> String {
+        let client = makeClient()
+        let (events, continuation) = AsyncStream<RealtimeEvent>.makeStream()
+        client.setEventHandler { event, _ in continuation.yield(event) }
+        do {
+            try client.connect(configuration: configuration)
+        } catch {
+            continuation.finish()
+            throw Failure.connectFailed(error.localizedDescription)
+        }
+        defer {
+            client.disconnect()
+            continuation.finish()
+        }
+
+        let chunks = stride(from: 0, to: pcm16.count, by: Self.chunkBytes).map {
+            pcm16.subdata(in: $0 ..< min($0 + Self.chunkBytes, pcm16.count))
+        }
+        let clock = clock
+        let timeout = Self.timeout(forPCM16Bytes: pcm16.count)
+        return try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask {
+                var finals: [String] = []
+                var partials = ""
+                var sent = false
+                for await event in events {
+                    switch event {
+                    case .connected:
+                        // Once: a socket a rollover opens connects too (#1139).
+                        guard !sent else { break }
+                        sent = true
+                        // The client holds these until the session is ready.
+                        for chunk in chunks { client.sendAudioChunk(chunk) }
+                        client.sendCommit(final: true)
+                    case .partialTranscript(let delta):
+                        partials += delta
+                    case .finalTranscript(let text):
+                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty { finals.append(trimmed) }
+                    case .transcriptionFinalized:
+                        let text = finals.isEmpty ? partials : finals.joined(separator: " ")
+                        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    case .error(let message), .transcriptionStopped(let message):
+                        throw Failure.backend(message)
+                    case .disconnected:
+                        throw Failure.disconnected
+                    case .status, .sessionRolledOver, .serverStallEnded:
+                        break
+                    }
+                }
+                throw Failure.disconnected
+            }
+            group.addTask {
+                await clock.sleep(timeout)
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let text = try await group.next() ?? nil else { throw Failure.timedOut }
+            return text
+        }
+    }
+}

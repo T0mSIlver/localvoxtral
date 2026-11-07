@@ -1,5 +1,6 @@
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// Every timer a session arms sleeps on `Dependencies.clock`. Each test here
 /// advances a `ManualSessionClock` to just short of a deadline, sees nothing
@@ -218,13 +219,53 @@ final class SessionClockTests: XCTestCase {
         XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
-    /// Only the bundled helper serves one connection at a time.
-    func testOnlyAMemoOnTheBundledHelperYieldsToADictationThere() {
-        XCTAssertTrue(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .managedLocal))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .mistralAPI))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .managedLocal))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .externalURL))
-        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: nil, dictation: .managedLocal))
+    /// Voxtral Realtime 3 goes quiet for up to 1.2 s between its last delta
+    /// and its done (LVX-86). A client that asks for a longer idle keeps the
+    /// socket open past the app's 0.7 s, and closes once its own has passed.
+    func testStopFinalizationWaitsTheClientsOwnIdleThreshold() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeViewModel(clock: clock)
+        let client = FakeRealtimeClient()
+        client.setConnected(true)
+        client.setFinalizationInactivityThreshold(1.5)
+        viewModel.session.activeRealtimeClient = client
+        viewModel.isFinalizingStop = true
+        viewModel.session.sessionOutputMode = .liveAutoPaste
+
+        viewModel.session.scheduleStopFinalization()
+        let finalization = viewModel.session.stopFinalizationTask
+        func poll(_ count: Int) async {
+            for _ in 0..<count {
+                await clock.waitForSleepers(1)
+                clock.advance(by: TimingConstants.finalizationPollInterval)
+            }
+            await clock.waitForSleepers(1)
+        }
+
+        // A last delta 1 s after the final commit, then silence.
+        await poll(10)
+        viewModel.session.realtimeFinalizationLastActivityAt = clock.now
+        // 1.2 s later: past the minimum open and the app's threshold.
+        await poll(12)
+        XCTAssertEqual(client.disconnectCount, 0, "closed on the app's idle threshold, not the client's")
+        XCTAssertTrue(viewModel.isFinalizingStop)
+
+        // The poll that closes it, counted with the clock's own sums.
+        var elapsed: TimeInterval = 0
+        for _ in 0..<10 { elapsed += TimingConstants.finalizationPollInterval }
+        let lastActivity = elapsed
+        var polls = 10
+        repeat {
+            polls += 1
+            elapsed += TimingConstants.finalizationPollInterval
+        } while elapsed - lastActivity < 1.5
+        await poll(polls - 22 - 1)
+        XCTAssertEqual(client.disconnectCount, 0, "one poll short of the client's 1.5 s, the socket is still open")
+
+        clock.advance(by: TimingConstants.finalizationPollInterval)
+        await finalization?.value
+        XCTAssertEqual(client.disconnectCount, 1)
+        XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
     func testAudioSendLoopDrainsTheBufferOnTheClock() async {

@@ -6,11 +6,11 @@ import Foundation
 ///
 /// Defaults to abstain in tests the same way the other surface reads do: the
 /// live implementation talks to another process over Accessibility, so no test
-/// may reach it by forgetting an injection. Nil means "abstain" in every
-/// failure mode.
+/// may reach it by forgetting an injection. Every answer but `.address` means
+/// "abstain", and says why.
 @MainActor
 protocol FocusedClaudeDesktopSessionURLReading {
-    func focusedSessionURL(applicationPID pid: pid_t) async -> String?
+    func focusedSessionURL(applicationPID pid: pid_t) async -> ClaudeDesktopFocusRead
 }
 
 /// What one walk up from the focused element found.
@@ -66,7 +66,8 @@ enum ClaudeDesktopFocusPlace: Equatable {
 /// panel, and on a single-session window being one pane classed
 /// `dframe-pane dframe-pane-primary` (both measured); a layout that nests one
 /// pane inside another gets measured again before it can be trusted. The
-/// focused prompt box sits 22–24 parents below the web area.
+/// focused prompt box sits 22–24 parents below the web area. Measured again
+/// on 4.16336.0 (2026-11-03): same classes and address.
 /// (Claude Desktop 2.2553.1, 2026-09-18, had a web area per session; the
 /// class rule refuses that layout, which no longer ships.)
 ///
@@ -119,7 +120,7 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         self.sleepFor = sleepFor
     }
 
-    func focusedSessionURL(applicationPID pid: pid_t) async -> String? {
+    func focusedSessionURL(applicationPID pid: pid_t) async -> ClaudeDesktopFocusRead {
         var lookup = readOnce(pid)
         if lookup == .noWebArea {
             await sleepFor(Self.treeBuildWaitSeconds)
@@ -129,30 +130,32 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         case .webArea(let url):
             // Shape-only, the browser reader's rule: an address is content, so
             // it is neither logged nor interpreted here.
-            return AppleScriptFocusedBrowserTabURLReader.validatedURL(url)
+            return ClaudeDesktopFocusRead(address: AppleScriptFocusedBrowserTabURLReader.validatedURL(url))
         case .outsidePrimaryChat(let place):
             switch place {
             case .secondaryPane:
                 Log.claudeContext.notice(
                     "Claude Desktop focus is in the second pane of a split view, whose session the web view's address does not name: no join"
                 )
+                return .refused(.secondaryPane)
             case .primaryPaneOutsideChat:
                 Log.claudeContext.notice(
                     "Claude Desktop focus is in a session's terminal, files or changes panel, not its prompt: no join"
                 )
+                return .refused(.primaryPaneOutsideChat)
             case .outsidePanes:
                 Log.claudeContext.notice(
                     "Claude Desktop focus is outside every session pane (sidebar?): no join"
                 )
+                return .refused(.outsidePanes)
             }
-            return nil
         case .noWebArea:
             Log.claudeContext.info(
                 "Claude Desktop focus is not inside a web view (accessibility tree not built yet?)"
             )
-            return nil
+            return .refused(.noWebView)
         case .unavailable:
-            return nil
+            return .refused(.unavailable)
         }
     }
 
@@ -273,7 +276,7 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         )
     }
 
-    private static func copy(_ element: AXUIElement, _ attribute: String) -> Result<AnyObject?, AXLookupError> {
+    static func copy(_ element: AXUIElement, _ attribute: String) -> Result<AnyObject?, AXLookupError> {
         AXUIElementSetMessagingTimeout(element, TerminalScreenAXReader.messagingTimeoutSeconds)
         var value: AnyObject?
         switch AXUIElementCopyAttributeValue(element, attribute as CFString, &value) {
@@ -286,11 +289,11 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
         }
     }
 
-    private static func string(_ element: AXUIElement, _ attribute: String) -> Result<String?, AXLookupError> {
+    static func string(_ element: AXUIElement, _ attribute: String) -> Result<String?, AXLookupError> {
         copy(element, attribute).map { $0 as? String }
     }
 
-    private static func element(_ element: AXUIElement, _ attribute: String) -> Result<AXUIElement?, AXLookupError> {
+    static func element(_ element: AXUIElement, _ attribute: String) -> Result<AXUIElement?, AXLookupError> {
         copy(element, attribute).map { value in
             guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
             return unsafeDowncast(value, to: AXUIElement.self)
@@ -299,12 +302,12 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
 
     /// Chromium's `AXDOMClassList`: the element's class tokens, empty when it
     /// has none.
-    private static func classList(_ element: AXUIElement) -> Result<[String], AXLookupError> {
+    static func classList(_ element: AXUIElement) -> Result<[String], AXLookupError> {
         copy(element, "AXDOMClassList").map { ($0 as? [String]) ?? [] }
     }
 
     /// `AXURL` arrives as a CFURL from Chromium; a string is accepted too.
-    private static func address(_ element: AXUIElement) -> Result<String?, AXLookupError> {
+    static func address(_ element: AXUIElement) -> Result<String?, AXLookupError> {
         copy(element, "AXURL").map { value in
             if let url = value as? URL { return url.absoluteString }
             return value as? String

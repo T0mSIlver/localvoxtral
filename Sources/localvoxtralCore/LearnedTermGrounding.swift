@@ -21,19 +21,22 @@ package enum LearnedTermGrounding {
         let proposalOnly = proposals.filter { !confirmedKeys.contains($0.caseFoldedForMatching) }
         let terms = confirmed + proposalOnly
         guard !terms.isEmpty else { return .empty }
+        let proposalTerms = Set(proposalOnly)
+        // Proposals never reach the nomination cap, so they cannot crowd a
+        // confirmed sound-alike out of it (LVX-92).
         let outcome = RepoVocabularyMatcher.withholdingOrdinaryReadings(
             RepoVocabularyMatcher.groundedCandidates(
                 transcript: transcript,
-                vocabulary: RepoVocabulary(terms: terms, branch: nil)
+                vocabulary: RepoVocabulary(terms: terms, branch: nil),
+                exactOnly: proposalTerms
             ),
             transcript: transcript
         )
         guard !proposalOnly.isEmpty else { return outcome }
-        let proposalTerms = Set(proposalOnly)
+        // The guard below moves a held-back exact hit into the pairs: a
+        // proposal is never offered as one either.
         return RepoVocabularyMatcher.GroundingOutcome(
             entries: outcome.entries,
-            isFallbackOnly: outcome.isFallbackOnly,
-            phoneticEntries: outcome.phoneticEntries.filter { !proposalTerms.contains($0.replaceWith) },
             verificationCandidates: outcome.verificationCandidates.filter {
                 !proposalTerms.contains($0.replaceWith)
             }

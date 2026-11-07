@@ -172,7 +172,7 @@ approved, then uses the aligned fallback only when no mapping was emitted. It
 deliberately does not repair the model output afterward; a model that changes an
 approved literal remains visible as a failure.
 
-Production grounding lives in `RepoVocabularyMatcher.groundedCandidateEntries`
+Production grounding lives in `RepoVocabularyMatcher.groundedCandidates`
 and `preapplying`: it ports the same one-fallback/pre-apply shape, but adds a
 production-scale character n-gram index, a per-span candidate-work cap, and an
 unspoken-file-extension cue gate. The Python arm remains a fixture-level

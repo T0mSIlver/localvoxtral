@@ -1,0 +1,49 @@
+name: Release Freshness
+
+# Goes red when main has gone more than three days without a stable release.
+# Hosted, because the release job runs on the Mac Mini's runner and cannot
+# report its own absence: between 2026-10-22 and 2026-11-03 the daily release
+# skipped green (no commit had passed the e2e dictation check) or sat in the
+# runner's queue until GitHub cancelled it, and nothing said so.
+#
+# A scheduled run that fails emails the account that last changed this cron.
+# Read scripts/ci/release-freshness.sh for the three places to look.
+
+on:
+  schedule:
+    # After the daily release's 03:15 dispatch and its cron fallback, which
+    # GitHub fires up to ~08:45-11:00 late.
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout main with tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Main has a recent release
+        run: |
+          set -euo pipefail
+          status=0
+          OUT="$(./scripts/ci/release-freshness.sh)" || status=$?
+          echo "$OUT"
+          REASON="$(sed -n 's/^reason=//p' <<<"$OUT")"
+          {
+            echo "## Release freshness"
+            echo ""
+            echo "$REASON"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$status" -ne 0 ]]; then
+            echo "::error title=No release for days::$REASON"
+          fi
+          exit "$status"

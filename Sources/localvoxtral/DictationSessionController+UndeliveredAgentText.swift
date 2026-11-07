@@ -34,9 +34,8 @@ extension DictationSessionController {
         settings.dictationHistoryRetention.savesDictations && sessionStore != nil
     }
 
-    /// Keeps `text`, which a stop saved as not inserted and typed nowhere: a
-    /// send to a name several panes share or to a session with no route, or
-    /// a picked destination that left the front (#1546).
+    /// Keeps `text`, which a stop saved as not inserted and typed nowhere:
+    /// words an agent's prompt did not take (#1546).
     ///
     /// - Returns: `status` while History keeps the text; the clipboard's
     ///   sentence when it was copied instead.
@@ -50,15 +49,24 @@ extension DictationSessionController {
     /// keeps it too. `ifCopyFails` runs when the clipboard did not take it,
     /// now or once the pending pastes settled.
     ///
+    /// `atQuit` writes now: no restore runs once the app quits (LVX-54).
+    ///
     /// - Returns: the popover's sentence for a copy.
-    func copyUntypedText(_ text: String, ifCopyFails: (@MainActor () -> Void)? = nil) -> String {
-        // A Cmd+V paste may still read the clipboard (#1467). The relay
-        // keeps the whole text each time, so a later write may replace a
-        // held one.
-        textInsertion.writeClipboardAfterPendingPastes { [weak self] in
+    func copyUntypedText(
+        _ text: String, atQuit: Bool = false, ifCopyFails: (@MainActor () -> Void)? = nil
+    ) -> String {
+        let write: @MainActor () -> Void = { [weak self] in
             guard let self, !self.dependencies.pasteboardWriter(text) else { return }
             Log.dictation.error("clipboard did not take the untyped text")
             ifCopyFails?()
+        }
+        if atQuit {
+            textInsertion.writeClipboardNowForQuit(write)
+        } else {
+            // A Cmd+V paste may still read the clipboard (#1467). The relay
+            // keeps the whole text each time, so a later write may replace a
+            // held one.
+            textInsertion.writeClipboardAfterPendingPastes(write)
         }
         return StatusStrings.overlayCopiedToClipboard
     }

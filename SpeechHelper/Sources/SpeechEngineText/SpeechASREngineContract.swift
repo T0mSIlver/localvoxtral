@@ -43,9 +43,13 @@ public protocol SpeechASREngine: Sendable {
     ///     own equivalent (Voxtral's transcription delay, Nemotron's chunk size).
     ///   - utteranceLimit: how long one session may run before it stops decoding
     ///     and reports `UtteranceStop.lengthLimit` (#314).
+    ///   - terms: the connection's `context_bias` list. An engine that can bias
+    ///     its decoding toward them does; neither shipped engine can yet
+    ///     (LVX-2, LVX-12), so both ignore it.
     func makeSession(
         transcriptionDelayMs: Int?,
-        utteranceLimit: UtteranceLimit
+        utteranceLimit: UtteranceLimit,
+        terms: SessionTerms
     ) -> SpeechASRStreamingSession
 }
 

@@ -1,0 +1,191 @@
+import ClaudeContextWire
+import Foundation
+
+/// One row of the Projects pane (#939): a project the learned terms list,
+/// where it is checked out, what it has learned and what runs in it. A
+/// repository checked out on the Mac and on a host is one row.
+package struct ProjectsPaneRow: Equatable, Sendable, Identifiable {
+    package struct Sessions: Equatable, Sendable {
+        package var running: Int
+        /// The agents running, each once, in `ClaudeHookAgent` order.
+        package var agents: [ClaudeHookAgent]
+    }
+
+    package var id: String { key }
+    package let key: String
+    package let keys: [String]
+    package let name: String
+    /// `owner/name` from `origin` or a host's report.
+    package let repository: String?
+    package let checkedOutOnMac: Bool
+    /// The hosts' names, in the order the hosts registry lists them.
+    package let hostNames: [String]
+    /// A remote checkout with no enrolled host to name: no hook named one
+    /// since hosts were recorded, or its host was removed.
+    package let hasUnnamedHost: Bool
+    package let lastUsed: Date
+    /// The project's terms, strongest evidence first, each spelling once:
+    /// a pinned copy wins over the other checkouts' copies.
+    package let terms: [LearnedTerm]
+    package let sessions: Sessions
+    package let dictationsThisWeek: Int
+    /// Work, Personal, or nil for no group (#1005).
+    package var group: ProjectGroup? = nil
+
+    /// "Mac · devbox", as the table shows it; "This Mac · devbox" in the
+    /// project's sheet.
+    package func checkouts(macName: String = "Mac") -> String {
+        var names: [String] = checkedOutOnMac ? [macName] : []
+        names += hostNames
+        if hasUnnamedHost { names.append("A remote host") }
+        return names.joined(separator: " · ")
+    }
+}
+
+/// The terms outside every row: the buckets no listed project holds, such
+/// as a worktree name from before #652, a remote label no host named, or
+/// the shared bucket. The last entry of the Projects table, "No project".
+package struct ProjectsPaneUnlisted: Equatable, Sendable {
+    /// The buckets, most recent first and the shared bucket last.
+    package let keys: [String]
+    package let terms: [LearnedTerm]
+    package let lastUsed: Date
+}
+
+package enum ProjectsPane {
+    /// Every row, most recently used first.
+    ///
+    /// - Parameters:
+    ///   - projects: `ListedProjects.projects`.
+    ///   - hostNames: an enrolled host's name by its id, in the registry's
+    ///     order; a host no longer enrolled is left out.
+    ///   - dictationProjectKeys: the project key of each dictation in the
+    ///     last seven days, nil for one outside any project.
+    package static func rows(
+        projects: [ListedProject],
+        learned: LearnedTerms,
+        hostNames: [(id: String, name: String)],
+        liveSessions: [ClaudeSessionSnapshot],
+        dictationProjectKeys: [String?]
+    ) -> [ProjectsPaneRow] {
+        let byKey = Dictionary(learned.projects.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let sessionKeys = liveSessions.map { (projectKey(of: $0, localKeys: projects.flatMap(\.keys)), $0.agent) }
+        let rows = projects.map { project -> ProjectsPaneRow in
+            let members = project.keys.compactMap { byKey[$0] }
+            let keys = Set(project.keys)
+            let recordedHosts = Set(members.flatMap { $0.hostIDs ?? [] })
+            let named = hostNames.filter { recordedHosts.contains($0.id) }.map(\.name)
+            let isRemote = project.keys.contains { $0.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) }
+            let running: [ClaudeHookAgent] = sessionKeys.filter { $0.0.map(keys.contains) ?? false }.map(\.1)
+            let sessions = ProjectsPaneRow.Sessions(
+                running: running.count, agents: ClaudeHookAgent.allCases.filter(running.contains)
+            )
+            let lastUsed: Date = members.map(\.lastActivity).max() ?? .distantPast
+            let dictations = dictationProjectKeys.filter { $0.map(keys.contains) ?? false }.count
+            return ProjectsPaneRow(
+                key: project.key,
+                keys: project.keys,
+                name: project.name,
+                repository: project.repository,
+                checkedOutOnMac: project.keys.contains { $0.hasPrefix("/") },
+                hostNames: named,
+                hasUnnamedHost: isRemote && named.isEmpty,
+                lastUsed: lastUsed,
+                terms: terms(of: members),
+                sessions: sessions,
+                dictationsThisWeek: dictations,
+                group: project.group
+            )
+        }
+        return rows.sorted { lhs, rhs in
+            lhs.lastUsed != rhs.lastUsed ? lhs.lastUsed > rhs.lastUsed : lhs.name < rhs.name
+        }
+    }
+
+    static func terms(of members: [LearnedTermProject]) -> [LearnedTerm] {
+        var seen = Set<String>()
+        return members.flatMap(\.terms)
+            .sorted(by: LearnedTerms.isStrongerEvidence)
+            .filter { seen.insert($0.term.caseFoldedForMatching).inserted }
+    }
+
+    /// The "No project" entry: every bucket that holds terms and that no
+    /// row's keys name, so each stored term shows under exactly one entry.
+    /// Nil when there is none.
+    package static func unlisted(learned: LearnedTerms, rows: [ProjectsPaneRow]) -> ProjectsPaneUnlisted? {
+        let listed = Set(rows.flatMap(\.keys))
+        let shared = LearnedTermProjectResolver.shared.key
+        let buckets = learned.projects
+            .filter { !listed.contains($0.key) && !$0.terms.isEmpty }
+            .sorted { lhs, rhs in
+                if (lhs.key == shared) != (rhs.key == shared) { return rhs.key == shared }
+                return lhs.lastSeen != rhs.lastSeen ? lhs.lastSeen > rhs.lastSeen : lhs.key < rhs.key
+            }
+        guard let latest = buckets.map(\.lastSeen).max() else { return nil }
+        return ProjectsPaneUnlisted(keys: buckets.map(\.key), terms: terms(of: buckets), lastUsed: latest)
+    }
+
+    /// More terms than this and a project's sheet leads its list with a
+    /// search field.
+    package static let searchAbove = 12
+
+    /// What a project's sheet lists: `matching` while the search field
+    /// shows, every term once a forget has dropped the list to the
+    /// threshold and hidden the field with the query still in it.
+    package static func shown(_ terms: [LearnedTerm], query: String) -> [LearnedTerm] {
+        terms.count > searchAbove ? matching(terms, query: query) : terms
+    }
+
+    /// The sheet's search: the terms whose spelling holds `query`, ignoring
+    /// case; every term for an empty query.
+    package static func matching(_ terms: [LearnedTerm], query: String) -> [LearnedTerm] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).caseFoldedForMatching
+        guard !needle.isEmpty else { return terms }
+        return terms.filter { $0.term.caseFoldedForMatching.contains(needle) }
+    }
+
+    /// The line under a term in the sheet. A term below the bar is still
+    /// being learned, or was proposed by the project's coding agent (#609),
+    /// so it says how far along it is instead.
+    package static func detail(for term: LearnedTerm) -> (text: String, lastApplied: Date?) {
+        guard term.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) else {
+            let progress = "heard in \(term.dictations) of \(LearnedTerms.confirmedDictations) dictations"
+            if let proposer = term.proposerDisplayName {
+                return ("Proposed by \(proposer): \(progress)", nil)
+            }
+            return ("Learning: \(progress)", nil)
+        }
+        switch term.appliedCount {
+        case 0: return ("Not applied yet", nil)
+        case 1: return ("Applied once,", term.lastApplied)
+        case let count: return ("Applied \(count) times, last", term.lastApplied)
+        }
+    }
+
+    /// The project a live session works in: a remote one's label key, a
+    /// local one's checkout that holds its directory (worktrees inside the
+    /// checkout included). Nil for a session outside every listed checkout.
+    static func projectKey(of session: ClaudeSessionSnapshot, localKeys: [String]) -> String? {
+        switch session.learnedTermWorkspace {
+        case .remoteOpaque(let label)?:
+            return LearnedTermProjectResolver.remoteKeyPrefix + label
+        case .local(let path)?:
+            let directory = path.path
+            return localKeys
+                .filter { $0.hasPrefix("/") && (directory == $0 || directory.hasPrefix($0 + "/")) }
+                .max { $0.count < $1.count }
+        case nil:
+            return nil
+        }
+    }
+
+    /// "now", "2 h", "yesterday", "3 days": the table's Last used column.
+    package static func lastUsed(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+        let seconds = now.timeIntervalSince(date)
+        if seconds < 3_600 { return "now" }
+        let startOfToday = calendar.startOfDay(for: now)
+        if date >= startOfToday { return "\(Int(seconds / 3_600)) h" }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: startOfToday).day ?? 0
+        return days <= 1 ? "yesterday" : "\(days) days"
+    }
+}

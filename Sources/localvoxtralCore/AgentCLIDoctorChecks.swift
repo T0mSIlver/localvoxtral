@@ -290,7 +290,9 @@ package enum AgentCLIDoctorChecks {
                 id: "accessibility", title: pane.name, state: .failed,
                 detail: "Not allowed, so text cannot be inserted.",
                 fix: "\(pane.path): turn localvoxtral off, then on. "
-                    + "A copy with another signature loses the grant without saying so."
+                    + "If it stays off, another build with the same bundle id but another signature "
+                    + "(a try-pr or dev build) holds the grant: run "
+                    + "`tccutil reset Accessibility com.localvoxtral.app`, relaunch localvoxtral and allow it again."
             )
     }
 

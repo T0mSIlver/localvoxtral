@@ -2,7 +2,7 @@
 
 The opencode plugin lets localvoxtral use what your
 [opencode](https://github.com/sst/opencode) session is doing to transcribe
-your dictation, and write the words straight into the session's prompt. The
+your dictation. The
 [Claude Code plugin](https://t0msilver.github.io/localvoxtral/integrations/claude-code/) does the same for Claude Code.
 
 ## What you get
@@ -12,25 +12,15 @@ localvoxtral grounds the transcription on the session's prior prompt, its
 working directory and the files it touched recently. It does this without
 reading your screen.
 
-**Words that land in the prompt.** localvoxtral writes your dictation into the
-pane's prompt, and submits it when you say "send it", without typing keys. A
-window switch mid-dictation, Secure Keyboard Entry or the clipboard cannot
-send the text elsewhere.
-
-**No tokens spent.** The plugin itself spends none. Two features outside it
-do, each through a read-only opencode run the app starts on its own, never in
-your session, with your default model:
-
-- With **Ask the coding agent for each new project's terms** on, the app runs
-  it once per project. See
-  [Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent).
-- When neither Claude Code nor Mistral Vibe is installed, a
-  [quick capture](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#quick-capture) routed to a
-  project on this Mac runs it once to draft the issue.
+**No tokens spent.** The plugin itself spends none. One feature outside it
+does, through a read-only opencode run the app starts on its own, never in
+your session, with your default model: with **Ask the coding agent for each
+new project's terms** on, the app runs it once per project. See
+[Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent).
 
 ## Install
 
-1. In localvoxtral, open **Settings → opencode → Plugin → Set Up…**. One
+1. In localvoxtral, open **Settings → opencode → Plugin → Set up…**. One
    consent sentence names both files the app writes, and **Details** opens
    this page.
 2. Confirm. The app copies its bundled plugin into opencode's global plugin
@@ -105,9 +95,6 @@ When a session asks for a permission or asks you a question, the plugin sends
 only which of the two it is, so localvoxtral can tell you the session needs
 you. The command, patterns and question text stay in opencode.
 
-The plugin's one listener is the prompt relay on 127.0.0.1, described under
-[How it is built](#how-it-is-built).
-
 ## What doesn't work
 
 - `opencode run` and `opencode serve` publish nothing. Their main-realm server
@@ -162,17 +149,8 @@ Then remove the plugin's line from `~/.config/opencode/tui.json`.
   socket and prints nothing, and localvoxtral has no channel into a terminal.
   localvoxtral used to hand Claude Code a window-title marker, and that
   mechanism was removed on 2026-09-05.
-- **The prompt relay appends and submits, nothing else.** A plain opencode
-  runs no HTTP server, because its TUI talks to its worker in process. So the
-  TUI half listens itself, on 127.0.0.1 with a random port and a random
-  32-byte token, and publishes the port and token only in its focus
-  declarations over the socket.
-- **The relay goes through opencode's own client.** The relay takes two
-  requests with that token, append to the prompt and submit the prompt, for
-  the session the pane displays when the call arrives. It forwards them
-  through opencode's own in-process client, so a server password is never
-  needed. It refuses any other request, and any refusal makes localvoxtral
-  type the text instead.
+- **The plugin opens no listener.** It only publishes to the socket;
+  localvoxtral types your words as keystrokes.
 - **The plugin skips subagent sessions and any session it cannot place.**
   It publishes a session's activity only while that session is in a bounded allowlist of
   known top-level sessions. A child (task-tool) session, or any session whose

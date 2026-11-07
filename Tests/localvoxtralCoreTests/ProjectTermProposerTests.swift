@@ -11,11 +11,17 @@ final class ProjectTermProposerTests: XCTestCase {
     private final class FakeRunner: ProjectTermProposalRunning, @unchecked Sendable {
         let invocations = Mutex<[ProjectTermProposal.Invocation]>([])
         let outcome: ProjectTermProposal.Outcome
+        /// Runs while the agent runs, before its answer is stored.
+        let whileRunning: @Sendable () -> Void
 
-        init(_ outcome: ProjectTermProposal.Outcome) { self.outcome = outcome }
+        init(_ outcome: ProjectTermProposal.Outcome, whileRunning: @escaping @Sendable () -> Void = {}) {
+            self.outcome = outcome
+            self.whileRunning = whileRunning
+        }
 
         func run(_ invocation: ProjectTermProposal.Invocation) async -> ProjectTermProposal.Outcome {
             invocations.withLock { $0.append(invocation) }
+            whileRunning()
             return outcome
         }
 
@@ -127,7 +133,7 @@ final class ProjectTermProposerTests: XCTestCase {
         enabled: Bool = true,
         excluding: [String] = []
     ) async {
-        await proposer.dictationCommitted(join: snapshot, enabled: enabled, excluding: excluding)?.value
+        await proposer.dictationCommitted(join: snapshot, enabled: enabled, excluding: { excluding })?.value
     }
 
     // MARK: From the joined session's own transcript (#1410)
@@ -255,6 +261,20 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertFalse(memory.needsProposal(projectKey: repo, now: clock.now()))
     }
 
+    /// LVX-90: the run takes minutes. A suggestion the user refuses while it
+    /// runs stays out of the answer it stores.
+    func testATermRefusedWhileTheAgentRunsStaysOutOfItsAnswer() async throws {
+        let repo = try checkout("quillmark")
+        let refused = Mutex<[String]>([])
+        let runner = FakeRunner(.terms(["inkwell", "Bindery"])) { refused.withLock { $0.append("bindery") } }
+        let (proposer, store) = proposer(runner)
+
+        await proposer.dictationCommitted(
+            join: join(repo), enabled: true, excluding: { refused.withLock { $0 } })?.value
+
+        XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["inkwell"])
+    }
+
     /// A new clone of an ignored repository has no record to say so; its
     /// `origin` does, and its agent is never asked (#1006).
     func testANewCloneOfAnIgnoredRepositoryAsksNoAgent() async throws {
@@ -349,8 +369,8 @@ final class ProjectTermProposerTests: XCTestCase {
         let lagging = FakeStore(now: clock.now)
         let (proposer, _) = proposer(runner, store: lagging)
 
-        let first = proposer.dictationCommitted(join: join(repo), enabled: true, excluding: [])
-        let second = proposer.dictationCommitted(join: join(repo), enabled: true, excluding: [])
+        let first = proposer.dictationCommitted(join: join(repo), enabled: true, excluding: { [] })
+        let second = proposer.dictationCommitted(join: join(repo), enabled: true, excluding: { [] })
         await first?.value
         await second?.value
 
@@ -442,17 +462,17 @@ final class ProjectTermProposerTests: XCTestCase {
         let runner = FakeRunner(.terms(["inkwell"]))
         let (proposer, _) = proposer(runner)
 
-        XCTAssertNil(proposer.dictationCommitted(join: nil, enabled: true, excluding: []))
+        XCTAssertNil(proposer.dictationCommitted(join: nil, enabled: true, excluding: { [] }))
         XCTAssertNil(proposer.dictationCommitted(
-            join: join(repo, agent: .opencode, origin: .remote(channel: "ssh")), enabled: true, excluding: []
+            join: join(repo, agent: .opencode, origin: .remote(channel: "ssh")), enabled: true, excluding: { [] }
         ))
         XCTAssertNil(proposer.dictationCommitted(
-            join: join(repo, origin: .remote(channel: "ssh")), enabled: true, excluding: []
+            join: join(repo, origin: .remote(channel: "ssh")), enabled: true, excluding: { [] }
         ))
         XCTAssertNil(proposer.dictationCommitted(
-            join: join(repo, agent: .vibe, origin: .remote(channel: "ssh")), enabled: true, excluding: []
+            join: join(repo, agent: .vibe, origin: .remote(channel: "ssh")), enabled: true, excluding: { [] }
         ))
-        XCTAssertNil(proposer.dictationCommitted(join: join(repo), enabled: false, excluding: []))
+        XCTAssertNil(proposer.dictationCommitted(join: join(repo), enabled: false, excluding: { [] }))
         XCTAssertEqual(runner.count, 0)
     }
 

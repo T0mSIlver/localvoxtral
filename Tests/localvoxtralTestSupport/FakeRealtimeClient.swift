@@ -8,7 +8,6 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     private struct State {
         var isConnected = false
         /// Nil: ready whenever connected, as a server that answers at once.
-        var sessionReady: Bool?
         var connectCount = 0
         var disconnectCount = 0
         var connectConfigurations: [RealtimeSessionConfiguration] = []
@@ -16,6 +15,7 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         var sentAudio = Data()
         var unsentAudio = Data()
         var refusesAudio = false
+        var finalizationInactivityThreshold: TimeInterval?
         var contextBudgets: [RealtimeContextBudget?] = []
         var connectionGeneration: RealtimeConnectionGeneration = .none
         var handler: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
@@ -28,8 +28,15 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     package init() {}
 
     package var supportsPeriodicCommit: Bool { true }
+    package var finalizationInactivityThreshold: TimeInterval? {
+        state.withLock { $0.finalizationInactivityThreshold }
+    }
+
+    package func setFinalizationInactivityThreshold(_ threshold: TimeInterval?) {
+        state.withLock { $0.finalizationInactivityThreshold = threshold }
+    }
     package var isConnected: Bool { state.withLock { $0.isConnected } }
-    package var isSessionReady: Bool { state.withLock { $0.sessionReady ?? $0.isConnected } }
+    package var isSessionReady: Bool { state.withLock { $0.isConnected } }
     package var connectionGeneration: RealtimeConnectionGeneration {
         state.withLock { $0.connectionGeneration }
     }
@@ -64,12 +71,6 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
 
     package func setConnected(_ connected: Bool) {
         state.withLock { $0.isConnected = connected }
-    }
-
-    /// Holds `isSessionReady` at `ready` whatever `isConnected` says; nil
-    /// goes back to following it.
-    package func setSessionReady(_ ready: Bool?) {
-        state.withLock { $0.sessionReady = ready }
     }
 
     /// Stamps a fresh generation the way a real `connect` would, without

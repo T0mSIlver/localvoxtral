@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 // Live Auto-Paste with "Copy on stop" on puts the dictation so far on the
@@ -9,10 +10,7 @@ import XCTest
 @MainActor
 final class LiveAutoCopyTests: XCTestCase {
     private func makeViewModel(autoCopy: Bool) -> (DictationViewModel, PasteboardWrites) {
-        let suiteName = "localvoxtral.LiveAutoCopyTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
 
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = .liveAutoPaste

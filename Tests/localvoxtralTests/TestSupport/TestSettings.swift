@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 extension XCTestCase {
@@ -21,13 +22,7 @@ extension XCTestCase {
     /// stores over one set of defaults (proving what survives a relaunch).
     @MainActor
     func makeSettingsDefaults() -> UserDefaults {
-        let suiteName = "localvoxtral.\(type(of: self)).\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        return defaults
+        makeTestDefaults()
     }
 
     /// A store over defaults from `makeSettingsDefaults()`.

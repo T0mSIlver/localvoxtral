@@ -260,7 +260,8 @@ final class AgentCLIDoctorTests: XCTestCase {
             2. [ok  ] Microphone: Allowed.
             3. [FAIL] Accessibility: Not allowed, so text cannot be inserted.
                fix: System Settings > Privacy & Security > Accessibility: turn localvoxtral off, then on. \
-            A copy with another signature loses the grant without saying so.
+            If it stays off, another build with the same bundle id but another signature (a try-pr or dev build) \
+            holds the grant: run `tccutil reset Accessibility com.localvoxtral.app`, relaunch localvoxtral and allow it again.
             4. [ok  ] Speech engine: On this Mac, ready.
             5. [--  ] Polish engine: Off.
             6. [--  ] Claude Code plugin: Not checked.

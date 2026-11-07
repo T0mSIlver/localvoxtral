@@ -8,8 +8,9 @@ import localvoxtralTestSupport
 
 #if DEBUG
 /// The realtime client's commits against each server's commit rules (#1135):
-/// vLLM answers a final commit only when a run is going, and speechd answers
-/// only the final one. The Mistral client has its own commit and is not here.
+/// vLLM answers a final commit only when a run is going, speechd answers
+/// only the final one, and llama-server answers every commit with an item of
+/// its own (#1943). The Mistral client has its own commit and is not here.
 final class RealtimeServerCommitTests: XCTestCase {
     /// What crossed the wire: the server's answers not yet handed back, the
     /// commits the client sent, and the events it raised. The client's
@@ -49,12 +50,16 @@ final class RealtimeServerCommitTests: XCTestCase {
     private final class Harness: @unchecked Sendable {
         let client = RealtimeAPIWebSocketClient()
         let server: RealtimeServerModel
+        let kind: RealtimeServerModel.Kind
         private let line: Line
         private let session: URLSession
         private let task: URLSessionWebSocketTask
         private var lock: NSLock { line.lock }
 
-        init(_ kind: RealtimeServerModel.Kind) {
+        /// `handshake: false` leaves the socket before its `session.created`:
+        /// frames queue until `handshake()`.
+        init(_ kind: RealtimeServerModel.Kind, handshake: Bool = true) {
+            self.kind = kind
             let model = RealtimeServerModel(kind)
             server = model
             let wire = Line(model)
@@ -65,7 +70,13 @@ final class RealtimeServerCommitTests: XCTestCase {
             client.setEventHandler { event, _ in wire.hear(event) }
             client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
             client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
-            client.debugHandleFrameForTesting(json: ["type": "session.created"])
+            if handshake { self.handshake() }
+        }
+
+        /// The server's `session.created`, and what it answers to the frames
+        /// that queued for it.
+        func handshake() {
+            client.debugHandleFrameForTesting(json: RealtimeServerModel.sessionCreated(kind))
             pump()
             lock.lock()
             line.heard.removeAll()
@@ -90,6 +101,14 @@ final class RealtimeServerCommitTests: XCTestCase {
                 lock.unlock()
                 client.debugHandleFrameForTesting(json: frame)
             }
+        }
+
+        /// The socket fails as llama-server closes it after its last item:
+        /// macOS reads the close as a receive error (POSIX 57).
+        func socketFails() {
+            client.debugHandleTerminalSocketErrorForTesting(
+                task: task,
+                errorMessage: "WebSocket receive failed: Socket is not connected [NSPOSIXErrorDomain:57]")
         }
 
         func deliver(_ frames: [[String: Any]]) {
@@ -131,7 +150,7 @@ final class RealtimeServerCommitTests: XCTestCase {
 
     // MARK: - vLLM
 
-    /// A voice memo: every chunk, then the final commit, with no run going.
+    /// A recorded file: every chunk, then the final commit, with no run going.
     func testAVLLMFinalCommitWithNoRunGoingIsAnswered() {
         let harness = Harness(.vllm)
         harness.sendAudio(chunks: 3)
@@ -175,6 +194,91 @@ final class RealtimeServerCommitTests: XCTestCase {
 
         XCTAssertEqual(harness.commits, [false, true])
         XCTAssertEqual(harness.finalTexts, ["9600 bytes"])
+        XCTAssertEqual(harness.finalizedCount, 1)
+    }
+
+    // MARK: - llama-server (#1943)
+
+    /// The periodic commit the session sends every `commitInterval` never
+    /// reaches llama-server: each would close an item and pad the stream
+    /// with ~1.4 s of silence. The stop's final commit alone is answered
+    /// with all the audio.
+    func testALlamaServerGetsOnlyTheFinalCommit() {
+        let harness = Harness(.llamaServer)
+        harness.sendAudio(chunks: 2)
+        harness.client.sendCommit(final: false)
+        harness.pump()
+        harness.sendAudio(chunks: 1)
+        harness.client.sendCommit(final: false)
+        harness.pump()
+
+        harness.client.sendCommit(final: true)
+        harness.pump()
+
+        XCTAssertEqual(harness.commits, [true], "no non-final commit, and no run-starting commit before the final")
+        XCTAssertEqual(harness.finalTexts, ["9600 bytes"])
+        XCTAssertEqual(harness.finalizedCount, 1)
+    }
+
+    /// A stop while a periodic commit's item is still decoding: the item's
+    /// `completed` arrives first, and must not pass for the final's answer,
+    /// or the dictation ends without the words spoken after it.
+    func testALlamaServerStopDuringADrainingCommitKeepsTheTail() {
+        let harness = Harness(.llamaServer)
+        harness.server.holdDrains()
+        harness.sendAudio(chunks: 2)
+        harness.client.sendCommit(final: false)
+        harness.pump()
+        harness.sendAudio(chunks: 1)
+
+        harness.client.sendCommit(final: true)
+        harness.pump()
+        harness.deliver(harness.server.drain())
+
+        guard case .transcriptionFinalized = harness.events.last else {
+            return XCTFail("the dictation finalized before its last item: \(harness.events)")
+        }
+        let bytes = harness.finalTexts.compactMap { Int($0.split(separator: " ").first ?? "") }.reduce(0, +)
+        XCTAssertEqual(bytes, 9_600, "finals: \(harness.finalTexts)")
+        XCTAssertEqual(harness.finalizedCount, 1)
+    }
+
+    /// llama-server closes the socket once the final item is out. The close
+    /// that follows the final's answer is the end of the dictation, not a
+    /// failure: an error there would tell the stop its end may be missing.
+    func testALlamaServerCloseAfterTheFinalAnswerIsNoError() {
+        let harness = Harness(.llamaServer)
+        harness.sendAudio(chunks: 2)
+        harness.client.sendCommit(final: true)
+        harness.pump()
+        XCTAssertEqual(harness.finalizedCount, 1)
+
+        harness.socketFails()
+
+        let errors = harness.events.filter { event in
+            guard case .error = event else { return false }
+            return true
+        }
+        XCTAssertTrue(errors.isEmpty, "\(errors)")
+        guard case .disconnected = harness.events.last else {
+            return XCTFail("the close is still reported: \(harness.events)")
+        }
+    }
+
+    /// A periodic commit that queued before the handshake, while the client
+    /// did not yet know the server, is dropped once `session.created` names
+    /// llama-server.
+    func testALlamaServerHandshakeDropsANonFinalCommitQueuedBeforeIt() {
+        let harness = Harness(.llamaServer, handshake: false)
+        harness.sendAudio(chunks: 2)
+        harness.client.sendCommit(final: false)
+
+        harness.handshake()
+        harness.client.sendCommit(final: true)
+        harness.pump()
+
+        XCTAssertEqual(harness.commits, [true])
+        XCTAssertEqual(harness.finalTexts, ["6400 bytes"])
         XCTAssertEqual(harness.finalizedCount, 1)
     }
 

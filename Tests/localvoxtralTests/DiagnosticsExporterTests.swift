@@ -1,18 +1,16 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
 final class DiagnosticsExporterTests: XCTestCase {
-    private var defaultsSuiteName = ""
     private var defaults: UserDefaults!
     private var tempDirectory: URL!
 
     override func setUp() async throws {
         try await super.setUp()
-        defaultsSuiteName = "localvoxtral.DiagnosticsExporterTests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: defaultsSuiteName)
-        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        defaults = makeTestDefaults()
         tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DiagnosticsExporterTests.\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -20,9 +18,7 @@ final class DiagnosticsExporterTests: XCTestCase {
 
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDirectory)
-        defaults?.removePersistentDomain(forName: defaultsSuiteName)
         defaults = nil
-        defaultsSuiteName = ""
         try await super.tearDown()
     }
 
@@ -39,7 +35,6 @@ final class DiagnosticsExporterTests: XCTestCase {
         let store = makeStore()
         store.dictationBackendMode = .externalURL
         store.polishingBackendMode = .externalURL
-        store.realtimeProvider = .realtimeAPI
         store.realtimeAPIEndpointURL = endpoint
         return store
     }
@@ -78,7 +73,7 @@ final class DiagnosticsExporterTests: XCTestCase {
 
         let snapshot = makeSnapshot(settings: store)
 
-        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases).subtracting([.jevAPIKey]))
+        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases))
         XCTAssertTrue(snapshot.hasRealtimeAPIKey)
         XCTAssertTrue(snapshot.hasPolishingAPIKey)
         let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())

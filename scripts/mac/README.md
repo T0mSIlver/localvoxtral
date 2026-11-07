@@ -538,6 +538,14 @@ gate sends TERM to any remaining group members, waits a bounded grace period,
 then sends KILL. `remote-build.sh` also requests an explicit scoped reap when
 the SSH payload fails. Both boundaries are one invocation/workdir: neither
 uses a global `pkill`, so parallel worktrees and unrelated tests survive.
+A payload also ends with its connection: sshd sends a session without a pty
+nothing when the client is killed or its connection closes, and a payload
+that writes only to its own log (a package build) never hits SIGPIPE, so the
+gate watches its ssh session process and ends the payload group once that
+process is gone. A drop the Mac never notices leaves the session alive; the
+gate records each payload's group per work dir (`~/.lv-gate-payloads/`), and
+the client's scoped reap after a failed payload ends a recorded group that is
+still running.
 Payloads also run with `NSUnbufferedIO=YES`, as CI's unit step does: without
 it xctest block-buffers its output into the ssh pipe, and a hung run's log
 stops up to 16 KiB before the test that hung (#1387).
@@ -599,6 +607,9 @@ fiddlier and breaks when the log file is rotated/recreated.)
 ./scripts/remote-build.sh disk        # df + per-work-dir du and last-used ages
 ./scripts/remote-build.sh gc          # reclaim stale work dirs now (also runs
                                       # automatically after every build/test)
+./scripts/remote-build.sh gc --idle 6 # reclaim work dirs idle 6 h or more
+./scripts/remote-build.sh remove      # delete this worktree's work dir now; a dir
+                                      # in use and its EvalRecordings are kept
 ssh <gate-destination> 'ensure speechd' # warm the on-demand STT server
 ssh <gate-destination> 'reap work/localvoxtral-<id>' # scoped stale-test cleanup
 ssh <gate-destination> 'echo pwned'   # must print "denied command"

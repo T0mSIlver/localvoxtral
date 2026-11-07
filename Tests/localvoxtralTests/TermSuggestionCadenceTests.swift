@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -64,10 +65,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
     private var finishedWaiters: [CheckedContinuation<Void, Never>] = []
 
     private func makeFixture(hosted: Bool = true) -> Fixture {
-        let suiteName = "localvoxtral.TermSuggestionCadenceTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
         )
@@ -126,9 +124,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
     }
 
     func testTheDefaultIsEveryFiftyDictations() {
-        let suiteName = "localvoxtral.TermSuggestionCadenceTests.default.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = makeTestDefaults()
         let settings = SettingsStore(
             defaults: defaults, environment: [:], secretStore: InMemorySecretStore()
         )
@@ -228,6 +224,21 @@ final class TermSuggestionCadenceTests: XCTestCase {
         XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
     }
 
+    /// LVX-93: the button's run did not read what was saved while the model
+    /// answered either.
+    func testDictationsSavedDuringAButtonRunStayCounted() async {
+        let fixture = makeFixture()
+        save(20, fixture)
+
+        fixture.model.start()
+        await fixture.service.requestArrived(count: 1)
+        save(5, fixture)
+        fixture.service.answer(.success("[]"))
+        await runFinished(count: 1)
+
+        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 5)
+    }
+
     /// A stopped run whose request fails late must not put the row of the
     /// run that replaced it back to idle: the next dictation would start a
     /// third request beside it.
@@ -246,12 +257,13 @@ final class TermSuggestionCadenceTests: XCTestCase {
         XCTAssertEqual(finished, [.stopped, .notRun])
         XCTAssertEqual(fixture.model.phase, .loading)
 
-        // The replacement read everything (it came from the button), and the
-        // late return of the stopped run took nothing from its bookkeeping.
+        // The replacement counts from its own start: the 3 saved while it
+        // ran stay counted (LVX-93), and the late return of the stopped run
+        // took nothing from its bookkeeping.
         save(3, fixture)
         fixture.service.answer(.success("[]"))
         await runFinished(count: 3)
-        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 0)
+        XCTAssertEqual(fixture.settings.termSuggestionDictationsSinceRun, 3)
     }
 
     /// Stop means stop: the next saved dictation must not restart the run
@@ -346,7 +358,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
 
     /// The free chips count: the app refreshes them after each dictation that
     /// taught it something, not only when the pane opens.
-    func testLearnedChipsBadgeTheRow() {
+    func testLearnedChipsBadgeTheRow() async {
         let settings = makeFixture().settings
         let model = SpeakerTermSuggestionModel(
             settings: settings,
@@ -355,7 +367,7 @@ final class TermSuggestionCadenceTests: XCTestCase {
             service: { Service() }
         )
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         XCTAssertEqual(model.badgeCount, 2)
     }

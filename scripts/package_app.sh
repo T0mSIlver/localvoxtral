@@ -27,7 +27,9 @@ CONFIGURATION="${1:-release}"
 # .git) make git exit 128, which pipefail+set -e turns into a silent death
 # before the first echo — the fallback below never got a chance (broke
 # `remote-build.sh package` when #67 introduced git-derived versions).
-GIT_VERSION="$(git describe --tags 2>/dev/null | sed 's/^v//' || true)"
+# Only release tags name a version: any other tag (an archive/ tag kept for a
+# removed feature) made this an invalid version and failed every package.
+GIT_VERSION="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//' || true)"
 GIT_BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || true)"
 APP_VERSION="${2:-${GIT_VERSION:-0.0.0-dev}}"
 BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
@@ -178,6 +180,25 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/localvoxtral"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral"
+
+# Sparkle (LVX-57). SwiftPM leaves the framework beside the binary; the app
+# finds it through the @executable_path/../Frameworks rpath (Package.swift).
+# ditto keeps the framework's Versions symlinks. The XPC services are only
+# for sandboxed apps (sparkle-project.org/documentation/sandboxing).
+SPARKLE_FRAMEWORK="$(dirname "$BINARY_PATH")/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "Unable to find Sparkle.framework next to $BINARY_PATH."
+  exit 1
+fi
+mkdir -p "$APP_DIR/Contents/Frameworks"
+ditto "$SPARKLE_FRAMEWORK" "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+rm -rf "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
+  "$APP_DIR/Contents/Frameworks/Sparkle.framework/XPCServices"
+# Sparkle's update window puts an em dash in "is now available, you have …";
+# the app's copy uses none. Rewritten here, on the embedded copy, before
+# signing.
+python3 "$ROOT_DIR/scripts/packaging/sparkle-strings-without-em-dash.py" \
+  "$APP_DIR/Contents/Frameworks/Sparkle.framework"
 
 HARNESS_EXPECT=absent
 [[ -n "$HARNESS_PLIST_ENTRY" ]] && HARNESS_EXPECT=present
@@ -363,6 +384,15 @@ done
 rm -rf "$APP_DIR/Contents/Resources/codex-marketplace"
 cp -R "$CODEX_MARKETPLACE_SOURCE" "$APP_DIR/Contents/Resources/codex-marketplace"
 
+# Updates (LVX-57): the feed is an asset of the newest stable release, which
+# release.yml writes (scripts/ci/build-update-feed.sh). The private half of
+# this key never leaves the Mini's release account
+# (~/.config/localvoxtral-release/sparkle-ed25519.key). Only a copy signed by
+# the release team turns the updater on (AppUpdatePolicy), so a dev or CI
+# build carries these keys without ever using them.
+SPARKLE_FEED_URL="https://github.com/T0mSIlver/localvoxtral/releases/latest/download/appcast.xml"
+SPARKLE_PUBLIC_ED_KEY="mpTKyfDFakPft4arN8meEdYRJxaTEsTj4VRgzUZBzic="
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -409,6 +439,16 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
   <key>NSRemovableVolumesUsageDescription</key>
   <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
+  <key>SUFeedURL</key>
+  <string>${SPARKLE_FEED_URL}</string>
+  <key>SUPublicEDKey</key>
+  <string>${SPARKLE_PUBLIC_ED_KEY}</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
+  <key>SUVerifyUpdateBeforeExtraction</key>
+  <true/>
 ${HARNESS_PLIST_ENTRY}
 </dict>
 </plist>
@@ -654,15 +694,32 @@ fi # speech helper fingerprint match
 cp "$SPEECH_HELPER_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-speechd"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-speechd"
 
-# Copy every package resource bundle (Metal kernels, tokenizer/model assets)
-# beside the app resources, matching the proven PolishHelper layout above.
+# Copy the package resource bundles (tokenizer/model assets) beside the app
+# resources, matching the PolishHelper layout above. A bundle the polishing
+# helper already put there is kept: `cp -R` into an existing directory nests
+# the copy one level down, where nothing looks.
 while IFS= read -r speech_helper_bundle; do
-  cp -R "$speech_helper_bundle" "$APP_DIR/Contents/Resources/$(basename "$speech_helper_bundle")"
+  dest="$APP_DIR/Contents/Resources/$(basename "$speech_helper_bundle")"
+  [[ -e "$dest" ]] && continue
+  cp -R "$speech_helper_bundle" "$dest"
 done < <(find "$SPEECH_HELPER_PRODUCTS_DIR" -maxdepth 1 -type d -name "*.bundle" -print)
 
-if [[ ! -d "$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle" ]]; then
-  echo "mlx-swift_Cmlx.bundle missing from speech helper build products; the"
-  echo "helper would abort at runtime loading Metal kernels."
+# MLX finds its kernels in mlx-swift_Cmlx.bundle, which holds the polishing
+# helper's. The speech helper may pin another mlx-swift, whose code on those
+# kernels decodes garbage (#1947), so its own ship under their own name and
+# localvoxtral-speechd points MLX at them (SpeechMetalLibrary).
+SPEECH_HELPER_METALLIB="$SPEECH_HELPER_PRODUCTS_DIR/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+SHARED_METALLIB="$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+if [[ ! -f "$SPEECH_HELPER_METALLIB" ]]; then
+  echo "default.metallib missing from the speech helper's mlx-swift_Cmlx.bundle at"
+  echo "  $SPEECH_HELPER_METALLIB"
+  echo "the helper would run on another version's Metal kernels."
+  exit 1
+fi
+cp "$SPEECH_HELPER_METALLIB" "$APP_DIR/Contents/Resources/localvoxtral-speechd.metallib"
+if [[ "${LOCALVOXTRAL_SKIP_POLISHD:-0}" != "1" ]] \
+  && ! cmp -s "$HELPER_PRODUCTS_DIR/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib" "$SHARED_METALLIB"; then
+  echo "The app's mlx-swift_Cmlx.bundle kernels are not the polishing helper's own."
   exit 1
 fi
 

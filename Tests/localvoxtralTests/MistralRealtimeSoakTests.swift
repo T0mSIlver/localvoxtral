@@ -8,21 +8,36 @@ import XCTest
 /// never answered `input_audio.end` with `transcription.done`.
 ///
 /// Enabled only by the gitignored marker `.mistral-soak-enable.json`
-/// (`{"apiKey": "...", "sessions"?: 50, "concurrency"?: 4, "seconds"?: 60}`)
-/// plus 16 kHz mono s16le speech at `local-notes/mistral-soak/soak.pcm`. It
-/// paces audio on the wall clock on purpose — the point is to hold real
-/// sockets open as long as a dictation does — and costs 0.006 USD per minute.
+/// (`{"apiKey": "...", "sessions"?: 50, "concurrency"?: 4, "seconds"?: 60,
+/// "model"?: "voxtral-mini-transcribe-realtime-3-0", "contextBias"?: [...],
+/// "startSeconds"?: 1410}`) plus 16 kHz mono s16le speech at
+/// `local-notes/mistral-soak/soak.pcm`. No `model` means the client's default;
+/// `startSeconds` sends every session the same window (symptom B's repro clip)
+/// instead of walking the file. It paces audio on the wall clock on purpose —
+/// the point is to hold real sockets open as long as a dictation does — and
+/// costs the model's per-minute price (0.006 USD for 2602, 0.008 for
+/// Realtime 3).
+///
+/// Each `SOAK` line carries the request id, the first delta's time after the
+/// first audio (symptom B is ~31 s), and every gap of 5 s or more between
+/// deltas while audio went out (symptom D is 5–8 s); a gap of 8 s fails the
+/// test. Symptom names: `docs/agent/mistral-realtime-stall.md`.
 final class MistralRealtimeSoakTests: XCTestCase {
     private struct Marker: Decodable {
         let apiKey: String
         let sessions: Int?
         let concurrency: Int?
         let seconds: Int?
+        let model: String?
+        let contextBias: [String]?
+        let startSeconds: Int?
     }
 
     /// Server silence while streaming that counts as a stall. The longest gap
     /// between deltas in healthy read speech is ~1.3 s.
     private static let stallThreshold: Double = 8.0
+    /// Gaps this long are listed per session: symptom D's 5–8 s holes.
+    private static let reportedGap: Double = 5.0
     private static let doneTimeout: Double = 10.0
     private static let chunkBytes = 3_200  // 100 ms, the app's send cadence
 
@@ -51,7 +66,8 @@ final class MistralRealtimeSoakTests: XCTestCase {
         let configuration = RealtimeSessionConfiguration(
             endpoint: MistralRealtimeWebSocketClient.defaultEndpoint,
             apiKey: marker.apiKey,
-            model: ""
+            model: marker.model ?? "",
+            contextBias: marker.contextBias ?? []
         )
 
         var results: [SoakRecord] = []
@@ -60,7 +76,7 @@ final class MistralRealtimeSoakTests: XCTestCase {
             func launch() {
                 let index = next
                 next += 1
-                let offset = (30 + (index % windows) * seconds) * 32_000
+                let offset = (marker.startSeconds ?? (30 + (index % windows) * seconds)) * 32_000
                 let audio = pcm.subdata(in: offset..<min(pcm.count, offset + windowBytes))
                 group.addTask {
                     await Self.runSession(
@@ -138,7 +154,9 @@ final class MistralRealtimeSoakTests: XCTestCase {
             return record
         }
 
+        let requestID = client.debugRequestIDForTesting()
         let sendStart = clock.now
+        let sendStartElapsed = elapsed()
         var chunkIndex = 0
         for position in stride(from: 0, to: audio.count, by: chunkBytes) {
             try? await clock.sleep(until: sendStart + .milliseconds(100 * chunkIndex))
@@ -167,6 +185,13 @@ final class MistralRealtimeSoakTests: XCTestCase {
         record.streamEnd = streamEnd
         record.deltaCount = deltas.count
         record.maxGapStreaming = (maxGap * 100).rounded() / 100
+        record.requestID = requestID
+        record.firstDeltaAfterAudio = deltas.first.map { (($0 - sendStartElapsed) * 100).rounded() / 100 }
+        record.gapsOver5s = zip(marks, marks.dropFirst() + [streamEnd])
+            .filter { $1 - $0 >= reportedGap }
+            .map { start, end in
+                [((start - sendStartElapsed) * 10).rounded() / 10, ((end - start) * 10).rounded() / 10]
+            }
         record.lastDeltaBeforeEnd = lastDeltaBeforeEnd
         record.doneLatency = finalizedAt.map { $0 - streamEnd }
         record.chars = log.finalChars()
@@ -192,6 +217,11 @@ private struct SoakRecord: Codable, Sendable {
     var streamEnd: Double?
     var deltaCount = 0
     var maxGapStreaming: Double?
+    var requestID: String?
+    /// Seconds from the first audio sent to the first delta.
+    var firstDeltaAfterAudio: Double?
+    /// `[start after first audio, length]` of each gap of 5 s or more.
+    var gapsOver5s: [[Double]] = []
     var lastDeltaBeforeEnd: Double?
     var doneLatency: Double?
     var chars = 0

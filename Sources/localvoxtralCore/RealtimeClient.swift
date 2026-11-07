@@ -10,8 +10,9 @@ package struct RealtimeSessionConfiguration: Sendable {
     /// its socket is always `.mistral`.
     package let usageBackend: UsageEntry.Backend?
     /// The terms the session's model takes at start, already cut by its
-    /// `DictationModelCapabilities`; empty for a model that takes none. Only
-    /// the Mistral client sends them today.
+    /// `DictationModelCapabilities`; empty for a model that takes none. The
+    /// Mistral client sends them in its `session.update`, and so does the
+    /// OpenAI-compatible client, as `context_bias`, when the list is not empty.
     package let contextBias: [String]
 
     package init(
@@ -136,9 +137,14 @@ package protocol RealtimeClient: AnyObject, Sendable {
     /// its handshake sent what was queued for it (#1672). Handed over once;
     /// the session replays it ahead of its buffer on the next socket.
     func takeUnsentAudio() -> Data
+    /// How long a stop waits with no event from this server before it closes
+    /// the socket without the final answer. Nil, the default, takes the
+    /// app's `TimingConstants.finalizationInactivityThreshold`.
+    var finalizationInactivityThreshold: TimeInterval? { get }
 }
 
 extension RealtimeClient {
     /// A client that holds no audio for its handshake has none to hand back.
     package func takeUnsentAudio() -> Data { Data() }
+    package var finalizationInactivityThreshold: TimeInterval? { nil }
 }

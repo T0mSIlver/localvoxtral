@@ -38,13 +38,21 @@ package struct ProjectRemote: Equatable, Hashable, Sendable {
     /// `owner/name` when the remote is on github.com, what `gh` takes.
     package var githubRepository: String? {
         guard value.lowercased().hasPrefix("github.com/") else { return nil }
-        return QuickCaptureInbox.isRepository(path) ? path : nil
+        return Self.isGitHubRepository(path) ? path : nil
     }
 
     /// A GitHub repository's remote.
     package init?(githubRepository repository: String) {
-        guard QuickCaptureInbox.isRepository(repository) else { return nil }
+        guard Self.isGitHubRepository(repository) else { return nil }
         self.init("github.com/" + repository)
+    }
+
+    /// `owner/name`, GitHub's charset. Neither part is `.` or `..`.
+    package static func isGitHubRepository(_ value: String?) -> Bool {
+        guard let value,
+              value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        else { return false }
+        return !value.split(separator: "/").contains { $0.allSatisfy { $0 == "." } }
     }
 
     /// What a host's shim sent as `X-Lvx-Env-Repository`: `owner/name` for
@@ -190,25 +198,6 @@ extension LearnedTerms {
     mutating func removeEmptyProjects() {
         let linked = Set(projects.compactMap { $0.isLinkedCheckout ? $0.repositoryRecordKey : nil })
         projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms && !linked.contains($0.key) }
-    }
-
-    /// The projects, most recent first: each repository once, as its own
-    /// record, and each checkout with no remote. What the learned-terms sheet
-    /// and quick capture list (#891, #971). A repository is listed while one
-    /// of its checkouts is (`listedCheckouts`).
-    package func listedProjects(now: Date) -> [LearnedTermProject] {
-        var seen = Set<String>()
-        return listedCheckouts(now: now).compactMap { checkout in
-            guard checkout.isLinkedCheckout, let remote = checkout.projectRemote else {
-                return checkout
-            }
-            guard seen.insert(remote.key).inserted else { return nil }
-            if let record = projects.first(where: { $0.key == remote.key }) { return record }
-            var record = LearnedTermProject(key: remote.key, name: remote.name, terms: [], lastSeen: checkout.lastSeen)
-            record.remote = remote.value
-            record.repository = remote.githubRepository
-            return record
-        }
     }
 
     /// Every checkout of `repositoryKey`, in `listedCheckouts` order.

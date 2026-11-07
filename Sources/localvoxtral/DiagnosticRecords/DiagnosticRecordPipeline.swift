@@ -171,6 +171,11 @@ enum DiagnosticRecordBuilder {
         var harvest: [String]
         var outcome: RepoVocabularyMatcher.GroundingOutcome
         var renderedExcerpt: String?
+        /// The text the matcher ran on, and that text as the record keeps it
+        /// (withheld and redacted). An entry whose term the second lost is
+        /// dropped (`DiagnosticRecordRedaction.droppingEntries`).
+        var capturedText: String? = nil
+        var keptText: String? = nil
     }
 
     /// `host` class only, never the URL: `loopback`, `lan`, or `remote`.
@@ -291,18 +296,22 @@ enum DiagnosticRecordBuilder {
                 ? Array(inputs.harvest.prefix(harvestTermCap)) : inputs.harvest,
             harvestCount: inputs.harvest.count,
             harvestTruncated: truncated,
-            entries: entries(inputs.outcome.entries),
-            phoneticEntries: entries(inputs.outcome.phoneticEntries),
-            verificationEntries: entries(inputs.outcome.verificationCandidates),
-            isFallbackOnly: inputs.outcome.isFallbackOnly,
+            entries: entries(inputs.outcome.entries, inputs),
+            // Nothing produces either since 2026-09-18 (#342); the record
+            // keeps both fields so older records still decode (LVX-81).
+            phoneticEntries: [],
+            verificationEntries: entries(inputs.outcome.verificationCandidates, inputs),
+            isFallbackOnly: false,
             renderedExcerpt: inputs.renderedExcerpt.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
     private static func entries(
-        _ entries: [ReplacementEntry]
+        _ entries: [ReplacementEntry], _ inputs: SourceInputs
     ) -> [DiagnosticRecord.Source.Entry] {
-        entries.map { .init(term: $0.replaceWith, heard: $0.matches) }
+        let mapped = entries.map { DiagnosticRecord.Source.Entry(term: $0.replaceWith, heard: $0.matches) }
+        guard let captured = inputs.capturedText, let kept = inputs.keptText else { return mapped }
+        return DiagnosticRecordRedaction.droppingEntries(mapped, capturedText: captured, keptText: kept)
     }
 
     static func allocations(
@@ -332,6 +341,30 @@ enum DiagnosticRecordBuilder {
     /// recorded dictation, and the cost lands in `Timings.captureMilliseconds`.
     static func textSourceHarvest(_ text: String) -> [String] {
         DiagnosticRecordRedaction.harvestTerms(in: text)
+    }
+
+    /// The inputs of a flat text source: the harvest and the text entries are
+    /// checked against are both taken from the text with the withheld parts
+    /// out and the secret shapes redacted, since a matched term has lost the
+    /// `NAME=` or the prompt around it.
+    static func textSourceInputs(
+        source: PolishContextSource,
+        text: String,
+        withheld: [DiagnosticRecordRedaction.Withheld],
+        softWrapped: Bool,
+        outcome: RepoVocabularyMatcher.GroundingOutcome,
+        renderedExcerpt: String?
+    ) -> SourceInputs {
+        let withheldText = DiagnosticRecordRedaction.withholding(withheld, in: text, softWrapped: softWrapped)
+        var count = 0
+        return SourceInputs(
+            source: source,
+            harvest: textSourceHarvest(withheldText),
+            outcome: outcome,
+            renderedExcerpt: renderedExcerpt,
+            capturedText: text,
+            keptText: DiagnosticRecordRedaction.redacting(withheldText, count: &count)
+        )
     }
 
     /// The joined-session repo's term pool — the exact list
@@ -430,28 +463,31 @@ extension DiagnosticRecordBuilder {
             sources.append(row)
         }
         if let screenText = inputs.screenDecision.vocabularyGroundingText {
-            sources.append(source(SourceInputs(
+            sources.append(source(textSourceInputs(
                 source: .terminal,
-                harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholding(inputs.withheld, in: screenText, softWrapped: true)),
+                text: screenText,
+                withheld: inputs.withheld,
+                softWrapped: true,
                 outcome: inputs.screenOutcome,
                 renderedExcerpt: inputs.screenRenderedExcerpt
             )))
         }
         if let claudeText = inputs.claudeSessionText, !claudeText.isEmpty {
-            sources.append(source(SourceInputs(
+            sources.append(source(textSourceInputs(
                 source: .claude,
-                harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholding(inputs.withheld, in: claudeText, softWrapped: false)),
+                text: claudeText,
+                withheld: inputs.withheld,
+                softWrapped: false,
                 outcome: inputs.claudeSessionOutcome,
                 renderedExcerpt: inputs.claudeSessionRenderedExcerpt
             )))
         }
         if let clipboardText = inputs.clipboardRetainedText {
-            sources.append(source(SourceInputs(
+            sources.append(source(textSourceInputs(
                 source: .clipboard,
-                harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholding(inputs.withheld, in: clipboardText, softWrapped: false)),
+                text: clipboardText,
+                withheld: inputs.withheld,
+                softWrapped: false,
                 outcome: inputs.clipboardOutcome,
                 renderedExcerpt: inputs.clipboardRenderedExcerpt
             )))

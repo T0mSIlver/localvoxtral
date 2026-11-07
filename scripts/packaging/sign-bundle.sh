@@ -49,11 +49,19 @@ APPEX="$APP_DIR/Contents/PlugIns/localvoxtralWidgets.appex"
 # MLX helpers load their Metal kernels from mlx-swift_Cmlx.bundle as data and
 # compile shaders through the out-of-process Metal compiler, so they need no
 # entitlement under the hardened runtime (measured in #1430).
+#
+# Sparkle (LVX-57) inside out, as its docs sign it for Developer ID: the
+# installer tool, the updater app, then the framework. package_app.sh drops
+# its XPC services, which only a sandboxed app needs.
+SPARKLE="Contents/Frameworks/Sparkle.framework"
 NESTED=(
   "Contents/MacOS/localvoxtral-polishd|"
   "Contents/MacOS/localvoxtral-speechd|"
   "Contents/MacOS/localvoxtral-claude-hook|"
   "Contents/MacOS/localvoxtral-cli|"
+  "$SPARKLE/Versions/B/Autoupdate|"
+  "$SPARKLE/Versions/B/Updater.app|"
+  "$SPARKLE|"
 )
 
 sign_one() {
@@ -65,7 +73,13 @@ sign_one() {
 
 # Every Mach-O must be one this script signs on purpose. Bundles without code
 # (resource bundles, the metallib) are sealed as resources of the app.
-known=("Contents/MacOS/localvoxtral" "Contents/PlugIns/localvoxtralWidgets.appex/Contents/MacOS/localvoxtralWidgets")
+known=(
+  "Contents/MacOS/localvoxtral"
+  "Contents/PlugIns/localvoxtralWidgets.appex/Contents/MacOS/localvoxtralWidgets"
+  # The Mach-O inside each Sparkle bundle signed below.
+  "$SPARKLE/Versions/B/Updater.app/Contents/MacOS/Updater"
+  "$SPARKLE/Versions/B/Sparkle"
+)
 for entry in "${NESTED[@]}"; do known+=("${entry%%|*}"); done
 unknown=()
 while IFS= read -r -d '' file; do
@@ -99,10 +113,23 @@ if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
   echo "Invalid code signature detected in packaged app bundle." >&2
   exit 1
 fi
-if [[ -d "$APPEX" ]] \
-  && ! codesign -d --entitlements - "$APPEX" 2>/dev/null | grep -q 'com.apple.security.app-sandbox'; then
-  echo "The widget extension lost its sandbox entitlement while signing." >&2
-  exit 1
+# The entitlements are read whole before they are searched. Piped into
+# `grep -q`, a codesign that wrote after grep's match died of SIGPIPE, or one
+# that printed them and then exited non-zero, failed the pipeline under
+# pipefail although the key was there (#1952).
+if [[ -d "$APPEX" ]]; then
+  codesign_err="$(mktemp "${TMPDIR:-/tmp}/lv-sign-bundle.XXXXXX")"
+  codesign_status=0
+  appex_entitlements="$(codesign -d --entitlements - "$APPEX" 2>"$codesign_err")" || codesign_status=$?
+  if ! grep -q 'com.apple.security.app-sandbox' <<<"$appex_entitlements"; then
+    echo "The widget extension lost its sandbox entitlement while signing." >&2
+    echo "codesign -d --entitlements - exited $codesign_status; it printed:" >&2
+    printf '%s\n' "$appex_entitlements" >&2
+    cat "$codesign_err" >&2
+    rm -f "$codesign_err"
+    exit 1
+  fi
+  rm -f "$codesign_err"
 fi
 
 # What notarization checks, per binary, so a CI log shows it before Apple does.

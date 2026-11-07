@@ -56,13 +56,24 @@ enum ClaudeSurfaceProbeCommand {
         // file means no candidates, which is the same as no enrollment.
         let hosts = try? ClaudeRemoteHostRegistry()
         let registry = savedRegistry(hosts: hosts)
-        let resolver = makeResolver(registry: registry, hosts: hosts, readsClaudeDesktop: options.desktop)
+        let resolver = makeResolver(
+            registry: registry, hosts: hosts, readsClaudeDesktop: options.desktop, readsT3Code: options.t3
+        )
+        let target: TerminalScreenTarget?
+        let unavailable: ClaudeSurfaceProbe.ProbeAbstention
+        if options.desktop {
+            (target, unavailable) = (runningTarget(bundleID: ClaudeDesktopAllowlist.bundleID), .claudeDesktopNotRunning)
+        } else if options.t3 {
+            (target, unavailable) = (runningTarget(bundleID: T3CodeAllowlist.bundleID), .t3CodeNotRunning)
+        } else {
+            (target, unavailable) = (frontmostTarget(), .noFrontmostApplication)
+        }
         return await ClaudeSurfaceProbe.summarize(
             // Never `AXIsProcessTrustedWithOptions`: a diagnostic must report
             // the permission state, not change it by raising the grant sheet.
             accessibilityTrusted: AXIsProcessTrusted(),
-            frontmostTarget: options.desktop ? claudeDesktopTarget() : frontmostTarget(),
-            targetUnavailable: options.desktop ? .claudeDesktopNotRunning : .noFrontmostApplication,
+            frontmostTarget: target,
+            targetUnavailable: unavailable,
             hasLiveSessions: { registry.hasLiveSessions() },
             resolve: { await resolver.resolve(target: $0) }
         )
@@ -88,11 +99,10 @@ enum ClaudeSurfaceProbeCommand {
     /// The running Claude Desktop, focused or not: the Desktop arm reads the
     /// web view that holds focus INSIDE that app, which it keeps while the
     /// terminal running this verb is frontmost.
-    private static func claudeDesktopTarget() -> TerminalScreenTarget? {
-        guard let app = NSRunningApplication.runningApplications(
-            withBundleIdentifier: ClaudeDesktopAllowlist.bundleID
-        ).first else { return nil }
-        return TerminalScreenTarget(pid: app.processIdentifier, bundleID: ClaudeDesktopAllowlist.bundleID)
+    private static func runningTarget(bundleID: String) -> TerminalScreenTarget? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
+        else { return nil }
+        return TerminalScreenTarget(pid: app.processIdentifier, bundleID: bundleID)
     }
 
     /// The frontmost app as a target. Not `TerminalScreenContextSource`'s
@@ -138,17 +148,23 @@ enum ClaudeSurfaceProbeCommand {
     private static func makeResolver(
         registry: ClaudeSessionRegistry,
         hosts: ClaudeRemoteHostRegistry?,
-        readsClaudeDesktop: Bool
+        readsClaudeDesktop: Bool,
+        readsT3Code: Bool
     ) -> ClaudeSessionJoinResolver {
         let ttyReader = AppleScriptTerminalTTYReader()
         let desktopReader = AXClaudeDesktopSessionURLReader()
+        let t3Reader = AXT3CodeThreadURLReader()
         let canonicalizer = SSHDestinationCanonicalizer.live()
         return ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
             focusedDesktopSessionURL: { pid in
-                guard readsClaudeDesktop else { return nil }
+                guard readsClaudeDesktop else { return .refused(.unavailable) }
                 return await desktopReader.focusedSessionURL(applicationPID: pid)
+            },
+            focusedT3ThreadURL: { pid in
+                guard readsT3Code else { return .refused(.unavailable) }
+                return await t3Reader.focusedThreadURL(applicationPID: pid)
             },
             focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
             herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },

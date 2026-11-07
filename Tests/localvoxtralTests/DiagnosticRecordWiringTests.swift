@@ -254,6 +254,52 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         XCTAssertFalse(quarantine.holdsFiles(of: "diagnostic-records"))
     }
 
+    /// A delete by another app copy that lands while the record is being
+    /// assembled must not be undone by the write that follows (LVX-66).
+    func testADeleteDuringAssemblyIsNotUndoneByTheWrite() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        let session = harness.viewModel.session
+        let store = try XCTUnwrap(session.diagnosticRecordStore)
+        session.debugDuringDiagnosticAssembly = { store.removeAll() }
+
+        session.finishStoppedSession(promotePendingSegment: false)
+        await session.polishAndCommitTask?.value
+
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0, "the record came back after the delete")
+    }
+
+    /// History failed to open: turning audio off, and the retention retry,
+    /// still delete the recordings, and "also delete the backups" still
+    /// empties their quarantine (LVX-67).
+    func testFailedHistoryOpenStillDeletesTheAudioAndItsBackups() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        let session = harness.viewModel.session
+        session.historyOpenFailed = true
+        let base = harness.captureDirectory.deletingLastPathComponent()
+        let audio = DictationAudioStore(directoryURL: base.appendingPathComponent("dictation-audio", isDirectory: true))
+        session.audioStoreWithoutHistory = audio
+        let quarantine = DictationHistoryQuarantine(
+            directoryURL: base.appendingPathComponent("quarantine"),
+            now: { Date(timeIntervalSince1970: 1_800_000_000) })
+        session.quarantineWithoutHistory = quarantine
+        try audio.write(pcm16: Data(count: 3200), for: UUID())
+        let folder = quarantine.folder(for: "dictation-audio")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("RIFF".utf8).write(to: folder.appendingPathComponent("x.wav"))
+
+        session.deleteAllAudio(removingBackups: false)
+        XCTAssertEqual(audio.storedIDs(), [], "the switch deleted nothing")
+        XCTAssertTrue(quarantine.holdsFiles(of: "dictation-audio"), "kept unless the user asked")
+
+        try audio.write(pcm16: Data(count: 3200), for: UUID())
+        harness.viewModel.settings.dictationAudioEnabled = false
+        session.applyDictationHistoryRetention(now: Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertEqual(audio.storedIDs(), [], "the launch retry deleted nothing")
+
+        session.deleteAllAudio(removingBackups: true)
+        XCTAssertFalse(quarantine.holdsFiles(of: "dictation-audio"))
+    }
+
     /// A session context over its grant renders selected lines with tabs as
     /// spaces. The prompt the user last sent the agent must still be out of
     /// every field that reaches disk (#1106), a tab in its first 24
@@ -378,8 +424,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         }
         harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])]
             )
         }
         DiagnosticCaptureTap.shared.beginSession()

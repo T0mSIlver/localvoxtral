@@ -15,12 +15,30 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case awaitingFinalCommitTranscriptionDone
     }
 
+    /// What a commit does on the server the socket reached, read from its
+    /// `session.created` (#1943).
+    private enum CommitProtocol {
+        /// vLLM and speechd: a non-final commit starts a run that lasts until
+        /// the final commit, which the one `done` answers.
+        case runUntilFinal
+        /// llama-server (`realtime.transcription_session`): every commit closes
+        /// an item, answered by its own `completed`; audio is transcribed with
+        /// no commit at all. A non-final commit pads the stream with ~1.4 s of
+        /// silence and its `completed` would pass for the final's answer, so
+        /// the client sends none: only the final commit, at a stop or a
+        /// rollover.
+        case itemPerCommit
+    }
+
     /// A frame held until the handshake, with the PCM it carries (nil for a
     /// control frame): audio is counted only once it is sent, and a socket
     /// that closes first hands it back to the session (#1672).
     private struct PendingFrame {
         let text: String
         var audio: Data?
+        /// A non-final commit, dropped at the handshake of an
+        /// `itemPerCommit` server.
+        var isNonFinalCommit = false
         var audioBytes: Int { audio?.count ?? 0 }
     }
 
@@ -46,9 +64,16 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var hasReceivedSessionCreated = false
         var hasBypassedSessionCreatedGate = false
         var hasSentSessionUpdate = false
+        /// Kept across a rollover, which dials the same server; a `connect()`
+        /// learns it again from the next `session.created`.
+        var commitProtocol: CommitProtocol = .runUntilFinal
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
+        /// This socket answered the final commit. llama-server closes it at
+        /// once, and macOS reads that close as a receive error (#1943): from
+        /// here a failure is the socket's end, not an error.
+        var hasAnsweredFinalCommit = false
         var pendingMessages: [PendingFrame] = []
         /// Audio a socket closed on before sending it: queued for its
         /// handshake, the carried audio of a rollover above all. No server
@@ -58,6 +83,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// frames queue behind it until it has emptied the queue (#1058).
         var isReplayingHandshakeQueue = false
         var pendingModelName = ""
+        /// The configuration's `contextBias`, sent with `pendingModelName` in
+        /// the socket's one `session.update`.
+        var pendingContextBias: [String] = []
         /// The open socket's ledger line: who serves it, the model it asked
         /// for, and the PCM bytes handed to it. Nil backend records nothing.
         var usageBackend: UsageEntry.Backend?
@@ -182,6 +210,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             // A new session or a reconnect: the one that could have replayed
             // it has taken it or moved on.
             s.unsentAudio.removeAll()
+            s.commitProtocol = .runUntilFinal
             let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
             // Stamped in the SAME locked block as the swap. A separate
@@ -225,12 +254,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.base.isUserInitiatedDisconnect = false
         s.pendingMessages.removeAll(keepingCapacity: true)
         s.pendingModelName = modelName
+        s.pendingContextBias = configuration.contextBias
         s.hasReceivedSessionCreated = false
         s.hasBypassedSessionCreatedGate = false
         s.hasSentSessionUpdate = false
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
         s.finalCommitCompletionGate = .idle
+        s.hasAnsweredFinalCommit = false
         s.usageBackend = configuration.usageBackend
         s.usageModel = modelName
     }
@@ -310,13 +341,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                     return []
                 }
 
-                let startsRun = !s.isGenerationInProgress
+                let startsRun = !s.isGenerationInProgress && s.commitProtocol == .runUntilFinal
                 s.hasUncommittedAudio = false
                 s.isGenerationInProgress = true
                 s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
                 return startsRun ? [false, true] : [true]
             }
 
+            guard s.commitProtocol == .runUntilFinal else { return [] }
             guard s.finalCommitCompletionGate == .idle else { return [] }
             guard s.hasUncommittedAudio else { return [] }
             guard !s.isGenerationInProgress else { return [] }
@@ -331,7 +363,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 payload["final"] = true
             }
             debugLog("send commit final=\(shouldMarkFinal)")
-            send(event: payload)
+            send(event: payload, isNonFinalCommit: !shouldMarkFinal)
         }
     }
 
@@ -375,7 +407,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             }
             let generation = s.base.connectionGeneration
             s.rollover = Rollover(retiring: generation)
-            let startsRun = !s.isGenerationInProgress
+            let startsRun = !s.isGenerationInProgress && s.commitProtocol == .runUntilFinal
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = true
             return (generation, startsRun ? [false, true] : [true], s.socketAudioBytes)
@@ -415,14 +447,19 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if !armed { watchdog.cancel() }
     }
 
+    /// The cause a rollover reports for a close that carried no error text.
+    private static let plainSocketCloseCause = "socket closed"
+
     private enum RolloverEnd {
         /// The session's stop came in and nothing was carried: the retiring
         /// socket's `done` answers it.
         case finalized
+        /// The same stop, but the retiring socket failed or timed out first.
+        case endedWithoutDone(usage: SocketUsage?)
         case switched(
             next: RealtimeConnectionGeneration, dial: RealtimeSessionConfiguration?, usage: SocketUsage?,
             carriedBytes: Int)
-        case noConfiguration(stopRequested: Bool)
+        case noConfiguration
     }
 
     /// The retiring socket answered (or will not): close it, open the next
@@ -445,7 +482,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             rollover.watchdog?.cancel()
             s.rollover = nil
             if rollover.stopRequested, rollover.carried.isEmpty {
-                return .finalized
+                if cause == nil { return .finalized }
+                // The retiring socket left without the `done` that answers
+                // the stop: the stop ends as a socket closed at stop does,
+                // and the controller keeps its missing-end warning.
+                let usage = takeUsageLocked(&s)
+                closeSocketLocked(&s, cancelTask: true)
+                return .endedWithoutDone(usage: usage)
             }
 
             #if DEBUG
@@ -456,7 +499,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             // Every socket the client opens latches one; nothing to dial
             // without it, and the carried audio has nowhere to go.
             guard let configuration = s.configuration else {
-                return .noConfiguration(stopRequested: rollover.stopRequested)
+                if rollover.stopRequested {
+                    // The stop's final commit had nowhere to go: no claim of
+                    // a final, the stop ends as a closed socket does.
+                    let usage = takeUsageLocked(&s)
+                    closeSocketLocked(&s, cancelTask: true)
+                    return .endedWithoutDone(usage: usage)
+                }
+                return .noConfiguration
             }
 
             let usage = takeUsageLocked(&s)
@@ -493,15 +543,20 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             s.lastTextAt = now
             s.startsAfterRollover = true
             // The run starts at once, not at the next periodic commit, so the
-            // text keeps coming across the seam.
-            var commits: [[String: Any]] = [["type": "input_audio_buffer.commit"]]
+            // text keeps coming across the seam. An `itemPerCommit` server
+            // transcribes without one.
+            var commits: [[String: Any]] = []
+            if s.commitProtocol == .runUntilFinal {
+                commits.append(["type": "input_audio_buffer.commit"])
+            }
             if rollover.stopRequested {
                 commits.append(["type": "input_audio_buffer.commit", "final": true])
                 s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
             }
             for commit in commits {
                 if let text = Self.frameText(commit) {
-                    s.pendingMessages.append(PendingFrame(text: text))
+                    s.pendingMessages.append(
+                        PendingFrame(text: text, isNonFinalCommit: commit["final"] == nil))
                 }
             }
             s.isGenerationInProgress = true
@@ -511,14 +566,20 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         switch end {
         case nil:
             return
-        case .noConfiguration(let stopRequested):
+        case .noConfiguration:
             Log.backends.error(
                 "realtime rollover has no configuration to dial; staying on connection \(retiring.description, privacy: .public), carried audio dropped"
             )
-            if stopRequested { emit(.transcriptionFinalized, from: retiring) }
         case .finalized:
             Log.backends.notice("realtime rollover ended by the stop, with no audio to carry")
             emit(.transcriptionFinalized, from: retiring)
+        case .endedWithoutDone(let usage):
+            recordUsage(usage)
+            Log.backends.error(
+                "realtime rollover ended by the stop, but connection \(retiring.description, privacy: .public) left without its done (\(cause ?? "", privacy: .public)); no final claimed"
+            )
+            if let cause, cause != Self.plainSocketCloseCause { emit(.error(cause), from: retiring) }
+            emit(.disconnected, from: retiring)
         case .switched(let next, let dial, let usage, let carriedBytes):
             if let resumedAfter {
                 logServerSilence(
@@ -576,6 +637,12 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         task.resume()
     }
 
+    /// llama-server's `session.created` carries an OpenAI transcription
+    /// session object; vLLM's carries none and speechd's names no object.
+    static func isItemPerCommitSession(_ json: [String: Any]) -> Bool {
+        (json["session"] as? [String: Any])?["object"] as? String == "realtime.transcription_session"
+    }
+
     private static func frameText(_ event: [String: Any]) -> String? {
         guard JSONSerialization.isValidJSONObject(event),
               let data = try? JSONSerialization.data(withJSONObject: event)
@@ -627,6 +694,18 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 guard !s.hasReceivedSessionCreated else { return false }
                 s.hasReceivedSessionCreated = true
                 stopSessionReadyTimerLocked(&s)
+                if Self.isItemPerCommitSession(json) {
+                    if s.commitProtocol != .itemPerCommit {
+                        Log.backends.notice(
+                            "realtime server opens a transcription session (llama-server): no periodic commits, final commits only"
+                        )
+                    }
+                    s.commitProtocol = .itemPerCommit
+                    // Queued before the server was known: each would close an
+                    // item and pad the audio with silence.
+                    s.pendingMessages.removeAll { $0.isNonFinalCommit }
+                    s.isGenerationInProgress = false
+                }
                 // The compatibility timer opened the gate already, and its
                 // replay may still be draining: a second one would race it.
                 guard !s.hasBypassedSessionCreatedGate else { return false }
@@ -670,6 +749,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                     return .none
                 case .awaitingFinalCommitTranscriptionDone:
                     s.finalCommitCompletionGate = .idle
+                    s.hasAnsweredFinalCommit = true
                     return .emitTranscriptionFinalized
                 }
             }
@@ -728,7 +808,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// been replaced, the frame is dropped.
     @discardableResult
     private func send(
-        event: [String: Any], audio: Data? = nil, onlyTo retiring: RealtimeConnectionGeneration? = nil
+        event: [String: Any], audio: Data? = nil, onlyTo retiring: RealtimeConnectionGeneration? = nil,
+        isNonFinalCommit: Bool = false
     ) -> Bool {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
@@ -745,7 +826,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            return sendText(text, audio: audio, onlyTo: retiring)
+            return sendText(text, audio: audio, onlyTo: retiring, isNonFinalCommit: isNonFinalCommit)
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
@@ -756,10 +837,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
     @discardableResult
     private func sendText(
-        _ text: String, audio: Data? = nil, onlyTo retiring: RealtimeConnectionGeneration? = nil
+        _ text: String, audio: Data? = nil, onlyTo retiring: RealtimeConnectionGeneration? = nil,
+        isNonFinalCommit: Bool = false
     ) -> Bool {
         let action: SendAction = state.withLock { s in
             if let retiring, s.rollover?.retiring != retiring { return .dropped }
+            // Chosen before a handshake that named llama-server took the
+            // lock: the queue filter ran without it (#1943).
+            if isNonFinalCommit, s.commitProtocol == .itemPerCommit { return .dropped }
             switch s.base.socketState {
             case .connected:
                 // Behind the handshake's replay too: sent now, this frame
@@ -767,7 +852,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate,
                       !s.isReplayingHandshakeQueue
                 else {
-                    s.pendingMessages.append(PendingFrame(text: text, audio: audio))
+                    s.pendingMessages.append(PendingFrame(text: text, audio: audio, isNonFinalCommit: isNonFinalCommit))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
@@ -778,7 +863,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 let stall = admitLocked(&s, audio: audio)
                 return .send(task: webSocketTask, text: text, audioBytes: audio?.count ?? 0, stall: stall)
             case .connecting:
-                s.pendingMessages.append(PendingFrame(text: text, audio: audio))
+                s.pendingMessages.append(PendingFrame(text: text, audio: audio, isNonFinalCommit: isNonFinalCommit))
                 return .queued
             case .disconnected:
                 return .dropped
@@ -802,13 +887,24 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     private func openSendGateLocked(_ s: inout State) {
         let modelName = s.pendingModelName
         if !s.hasSentSessionUpdate, !modelName.isEmpty,
-           let data = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "model": modelName]),
-           let text = String(data: data, encoding: .utf8) {
+           let text = Self.sessionUpdateFrame(model: modelName, contextBias: s.pendingContextBias) {
             s.hasSentSessionUpdate = true
             s.pendingMessages.insert(PendingFrame(text: text), at: 0)
             debugLog("queue event type=session.update")
         }
         s.isReplayingHandshakeQueue = true
+    }
+
+    /// The socket's one `session.update`. The term list rides it as
+    /// `context_bias`, the field Mistral's realtime API reads, only when the
+    /// model takes terms: every other server gets the frame it always did.
+    package static func sessionUpdateFrame(model: String, contextBias: [String]) -> String? {
+        var frame: [String: Any] = ["type": "session.update", "model": model]
+        if !contextBias.isEmpty { frame["context_bias"] = contextBias }
+        guard let data = try? JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Sends what queued before the gate opened, then whatever queued while
@@ -1017,7 +1113,12 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 return .rollover(retiring: rollover.retiring)
             }
 
-            let shouldEmitError = !s.base.isUserInitiatedDisconnect
+            let shouldEmitError = !s.base.isUserInitiatedDisconnect && !s.hasAnsweredFinalCommit
+            if s.hasAnsweredFinalCommit, let errorMessage {
+                Log.backends.notice(
+                    "realtime server closed the socket after the final commit's answer: \(errorMessage, privacy: .public)"
+                )
+            }
             let generation = s.base.connectionGeneration
             let usage = takeUsageLocked(&s)
             // Taken before the close erases the queue.
@@ -1032,7 +1133,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
         guard case .closed(let error, let usage, let generation, let unsentBytes) = decided else {
             if case .rollover(let retiring) = decided {
-                finishRollover(retiring: retiring, cause: errorMessage ?? "socket closed")
+                finishRollover(retiring: retiring, cause: errorMessage ?? Self.plainSocketCloseCause)
             }
             return
         }
@@ -1115,9 +1216,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
         s.finalCommitCompletionGate = .idle
+        s.hasAnsweredFinalCommit = false
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
         s.pendingModelName = ""
+        s.pendingContextBias = []
         s.rollover?.watchdog?.cancel()
         s.rollover = nil
         s.socketAudioBytes = 0
@@ -1228,16 +1331,19 @@ extension RealtimeAPIWebSocketClient {
         hasReceivedSessionCreated: Bool = false,
         usageBackend: UsageEntry.Backend? = nil,
         usageModel: String = "",
-        modelName: String = ""
+        modelName: String = "",
+        contextBias: [String] = []
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
             s.pendingModelName = modelName
+            s.pendingContextBias = contextBias
             s.configuration = RealtimeSessionConfiguration(
                 endpoint: task.originalRequest?.url ?? URL(string: "ws://127.0.0.1/v1/realtime")!,
                 apiKey: "",
                 model: modelName,
-                usageBackend: usageBackend
+                usageBackend: usageBackend,
+                contextBias: contextBias
             )
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
@@ -1253,6 +1359,11 @@ extension RealtimeAPIWebSocketClient {
             startPingTimerLocked(&s)
             startSessionReadyTimerLocked(&s)
         }
+    }
+
+    /// A client whose socket opened without latching a configuration.
+    package func debugClearConfigurationForTesting() {
+        state.withLock { $0.configuration = nil }
     }
 
     package func debugHandleTerminalSocketErrorForTesting(

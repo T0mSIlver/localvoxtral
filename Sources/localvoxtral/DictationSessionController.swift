@@ -243,11 +243,22 @@ final class DictationSessionController {
     /// backups" still reaches it; with History open, History owns it.
     @ObservationIgnored
     var quarantineWithoutHistory: DictationHistoryQuarantine?
-    /// Watches the seconds after a commit for an immediate erase, and patches
-    /// that dictation's record with what it saw. `var` for the same reason as
-    /// the store: tests inject the clock and the event source.
+    #if DEBUG
+    /// Runs where a second app copy's delete could land: after the record is
+    /// assembled, before it is written.
     @ObservationIgnored
-    var editSignalWatcher = EditSignalWatcher()
+    var debugDuringDiagnosticAssembly: (() -> Void)?
+    #endif
+    /// The recordings folder, held here so audio deletes still work when
+    /// History did not open (`sessionStore` is nil then).
+    @ObservationIgnored
+    var audioStoreWithoutHistory: DictationAudioStore?
+    /// Watches the seconds after a commit for an immediate erase, and patches
+    /// that dictation's record with what it saw. Its window sleeps on the
+    /// session clock. `var` for the same reason as the store: tests inject
+    /// the clock and the event source.
+    @ObservationIgnored
+    var editSignalWatcher: EditSignalWatcher
 
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
@@ -404,8 +415,7 @@ final class DictationSessionController {
     var spokenStopTask: Task<Void, Never>?
     @ObservationIgnored
     var spokenStopArmedWords: [Substring]?
-    /// This session was stopped by its send phrase: a quick capture then
-    /// saves without it.
+    /// This session was stopped by its send phrase.
     @ObservationIgnored
     var sessionStoppedBySpokenPhrase = false
     @ObservationIgnored
@@ -496,10 +506,6 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
-    /// Cancels a voice memo streaming through the bundled helper this
-    /// dictation also uses, so the dictation's text streams live (#1317).
-    @ObservationIgnored
-    var yieldVoiceMemoEngine: @MainActor () -> Void = {}
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.
@@ -511,42 +517,13 @@ final class DictationSessionController {
     var microphonePermissionAttemptID: UUID?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
-    /// Resolves "go to <name>" (#723). Nil until the app installs it, and
-    /// then an Overlay Buffer dictation is never a command.
+    /// Reads a joined session's pane back before keys carry a commit into
+    /// it. Nil until the app installs it, and then no pane is read back.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
     /// The needs-you queue (#717). Nil until the app installs it. Observed:
     /// the menu bar icon and the popover read its queue.
     var agentAttention: AgentAttentionModel?
-    @ObservationIgnored
-    var answerAgentTask: Task<Void, Never>?
-    /// Asked for by the start that is under way; latched into
-    /// `sessionIsQuickCapture` with the output mode, so a start that never
-    /// got that far leaves nothing for the next dictation.
-    @ObservationIgnored
-    var requestedQuickCapture = false
-    /// This session is a quick capture (#725): its words go to the Inbox,
-    /// never into the focused app.
-    @ObservationIgnored
-    var sessionIsQuickCapture = false
-    /// Asked for by the answer shortcut's start (#927); latched into
-    /// `sessionDraftReview` like `requestedQuickCapture`.
-    @ObservationIgnored
-    var requestedDraftReview: QuickCaptureDraftSnapshot?
-    /// This session reviews the one draft the overlay shows (#927): its
-    /// words file, drop or change it, and are never inserted.
-    @ObservationIgnored
-    var sessionDraftReview: QuickCaptureDraftSnapshot?
-    /// The filing or redraft the last review started, for tests to await.
-    @ObservationIgnored
-    var draftReviewTask: Task<Void, Never>?
-    /// The Inbox the review acts on. The view model installs it.
-    @ObservationIgnored
-    var quickCaptureInbox: QuickCaptureInboxModel?
-    /// Where a stopped quick capture's words go, with its History record's
-    /// id when History kept it. The view model points it at the Inbox.
-    @ObservationIgnored
-    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?, _ group: ProjectGroup?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// The start's lookup of the joined session's git root (#1155).
@@ -563,10 +540,6 @@ final class DictationSessionController {
     /// target app nor History (#526).
     @ObservationIgnored
     var saveInterruptedPolishCommit: (() -> Void)?
-    /// Addressed commits whose text a route or the mod holds while the
-    /// commit awaits the delivery: quit saves each one's record (#1667).
-    @ObservationIgnored
-    var handedOffAddressedCommits: [HandedOffAddressedCommit] = []
     @ObservationIgnored
     // Several finalization callbacks can converge here; keep stop cleanup
     // idempotent until commit/post-processing fully finishes.
@@ -575,28 +548,6 @@ final class DictationSessionController {
     var wasCancelled = false
     @ObservationIgnored
     let escapeCancelHandler = EscapeCancelHandler()
-    /// Tab and ⇧Tab while an Overlay Buffer dictation runs (#840).
-    @ObservationIgnored
-    let destinationKeyHandler = DestinationKeyHandler()
-    /// The running overlay's destinations; nil outside an Overlay Buffer
-    /// dictation. `sessionIsQuickCapture` follows its pick: the Inbox is a
-    /// quick capture.
-    @ObservationIgnored
-    var destinations: SessionDestinations?
-    /// Brings a picked pane forward, or the focused app back.
-    @ObservationIgnored
-    var destinationFocusTask: Task<Void, Never>?
-    /// Closes the overlay's destination list once the user stops moving.
-    @ObservationIgnored
-    var destinationListCloseTask: Task<Void, Never>?
-    /// What the commit checks when the stopped dictation's picks moved the
-    /// focus, kept from the stop to the commit.
-    @ObservationIgnored
-    var sessionCommitGuard: DestinationCommitGuard?
-    /// The picked pane that read back before the polish, read back again
-    /// right before the insertion (#1056).
-    @ObservationIgnored
-    var sessionPickedPane: (sessionID: String, bundleID: String)?
     @ObservationIgnored
     var sessionStartedAt: Date?
     /// When `stopDictation` ran, for History's stop-to-commit time (#1792).
@@ -627,9 +578,15 @@ final class DictationSessionController {
     /// or not.
     @ObservationIgnored
     var sessionHasStallBackfill = false
-    /// The stall backfills in flight, cancelled when the session resets.
+    /// The session's stall backfills, cancelled when the session resets.
     @ObservationIgnored
     var stallBackfillTasks: [Task<Void, Never>] = []
+    /// The ones still waiting on the batch model: a stop holds its commit
+    /// for them (LVX-75).
+    @ObservationIgnored
+    var stallBackfillsInFlight: Set<Int> = []
+    @ObservationIgnored
+    var nextStallBackfillID = 0
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored
@@ -666,15 +623,14 @@ final class DictationSessionController {
     /// Return: no Return for the rest of this dictation.
     @ObservationIgnored
     var liveSpokenSendPaneLeft = false
-    /// Where the last go-to of this dictation moved the words, if one did.
-    @ObservationIgnored
-    var liveGoToLanding: LiveGoToLanding?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// The opt-in raw-delta log (`SettingsStore.debugLogRealtimeDeltas`).
     @ObservationIgnored
     var realtimeDeltaLog = RealtimeDeltaLog()
+    #endif
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
@@ -703,6 +659,11 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        self.editSignalWatcher = EditSignalWatcher(
+            monitor: dependencies.editKeyMonitor(),
+            now: dependencies.clock.now,
+            sleepFor: dependencies.clock.sleep
+        )
         textInsertion.pasteRestoreSleep = dependencies.clock.sleep
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
         self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
@@ -872,44 +833,16 @@ final class DictationSessionController {
         }
     }
 
-    /// Stops the running session and starts the same kind again: a quick
-    /// capture restarts as a capture, never as a dictation into the app.
+    /// Stops the running session and starts a new one on the new input.
     private func restartOnNewInput(reason: String) {
-        let quickCapture = sessionIsQuickCapture
-        let draftReview = sessionDraftReview
         stopDictation(reason: reason, finalizeRemainingAudio: false)
-        startDictation(
-            outputMode: quickCapture || draftReview != nil ? .overlayBuffer : nil,
-            quickCapture: quickCapture,
-            draftReview: draftReview
-        )
+        startDictation()
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
-        startDictation(outputMode: outputMode, quickCapture: false)
-    }
-
-    /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
-    /// the one running. During an Overlay Buffer dictation it picks the
-    /// Inbox, as Tab would (#840); during Live Auto-Paste it does nothing,
-    /// since words already typed cannot go to the Inbox.
-    func toggleQuickCapture() {
-        if isDictating {
-            if pickInboxOrStop() { return }
-            Log.dictation.info("quick capture: pressed during a Live Auto-Paste dictation; ignored")
-            return
-        }
-        startDictation(outputMode: .overlayBuffer, quickCapture: true)
-    }
-
-    func startDictation(
-        outputMode: DictationOutputMode?, quickCapture: Bool, draftReview: QuickCaptureDraftSnapshot? = nil
-    ) {
         guard !isDictating else { return }
         // An answer whose pane is still coming forward would activate its
         // terminal under this dictation and take its words there.
-        answerAgentTask?.cancel()
-        answerAgentTask = nil
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
@@ -952,10 +885,6 @@ final class DictationSessionController {
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
-            // Set only where the start goes ahead: a start refused above must
-            // leave nothing for the next one (#732 review).
-            requestedQuickCapture = quickCapture
-            requestedDraftReview = draftReview
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -986,10 +915,6 @@ final class DictationSessionController {
                         self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
-                    // This start's kind, not whatever a press made of the
-                    // flag while the prompt was up.
-                    self.requestedQuickCapture = quickCapture
-                    self.requestedDraftReview = draftReview
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input
@@ -1086,7 +1011,6 @@ final class DictationSessionController {
         if !isOverlayBufferModeEnabled {
             escapeCancelHandler.stop()
         }
-        endDestinations()
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()
@@ -1226,8 +1150,10 @@ final class DictationSessionController {
     /// record holds words already typed, so only the words its stop had
     /// not typed yet are copied (#1882).
     ///
+    /// `atQuit` copies now, not after a pending paste's restore (LVX-54).
+    ///
     /// - Returns: whether the text went on the clipboard.
-    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+    func keepUntypedDictation(atQuit: Bool = false, savedBy save: () -> Void) -> Bool {
         let generation = lastDictationGeneration
         save()
         guard lastDictationGeneration != generation, !lastDictationIsInHistory else { return false }
@@ -1236,7 +1162,7 @@ final class DictationSessionController {
             : lastDictation?.textToCopy ?? ""
         guard !text.isEmpty else { return false }
         Log.dictation.notice("text not inserted and History is off; text copied")
-        _ = copyUntypedText(text)
+        _ = copyUntypedText(text, atQuit: atQuit)
         return true
     }
 
@@ -1251,7 +1177,9 @@ final class DictationSessionController {
     /// enabled per session by the presence of the `insertion_scalar_trace`
     /// marker file in the shared config folder (same gate pattern as the
     /// eval-llm marker). Called at each dictation session start.
+    /// Debug and harness builds only: the trace is dictated text (LVX-80).
     func refreshInsertionScalarTracingForSession() {
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         let markerURL = appConfigStore.configDirectoryURL()
             .appendingPathComponent("insertion_scalar_trace", isDirectory: false)
         let enabled = FileManager.default.fileExists(atPath: markerURL.path)
@@ -1259,6 +1187,7 @@ final class DictationSessionController {
             Log.insertion.notice("scalar-trace enabled for this session (marker file present)")
         }
         textInsertion.isScalarTracingEnabled = enabled
+        #endif
     }
 
     func captureSessionTargetVerdict() {

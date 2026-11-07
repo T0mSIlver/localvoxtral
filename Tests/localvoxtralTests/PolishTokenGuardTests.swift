@@ -212,137 +212,6 @@ final class PolishTokenGuardTests: XCTestCase {
         )
     }
 
-    // MARK: - verifyAndRepair
-
-    func testVerifyAndRepairCleanPassThrough() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Use --force.",
-            original: "use --force"
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "Use --force.")
-    }
-
-    func testVerifyAndRepairWithNoTokensIsClean() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Hello world.",
-            original: "hello world"
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "Hello world.")
-    }
-
-    func testVerifyAndRepairRepairsCaseMangledPath() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Open src/auth/useauth.ts.",
-            original: "open src/Auth/useAuth.ts"
-        )
-        XCTAssertEqual(result.outcome, .repaired(count: 1))
-        XCTAssertEqual(result.text, "Open src/Auth/useAuth.ts.")
-    }
-
-    func testVerifyAndRepairRepairsEnDashMangledFlag() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "run \u{2013} force",
-            original: "run --force"
-        )
-        XCTAssertEqual(result.outcome, .repaired(count: 1))
-        XCTAssertEqual(result.text, "run --force")
-    }
-
-    func testVerifyAndRepairFallsBackWhenTokenDeleted() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "run now",
-            original: "run --force now"
-        )
-        XCTAssertEqual(result.outcome, .fallback(missing: ["--force"]))
-        XCTAssertEqual(result.text, "run --force now")
-    }
-
-    func testVerifyAndRepairRepairsMultipleTokens() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "run \u{2013} force on src/app.ts",
-            original: "run --force on src/App.ts"
-        )
-        XCTAssertEqual(result.outcome, .repaired(count: 2))
-        XCTAssertEqual(result.text, "run --force on src/App.ts")
-    }
-
-    func testVerifyAndRepairDiscardsPartialRepairsWhenAnyTokenMissing() {
-        // The flag is repairable (en dash), but the path is gone entirely: the
-        // whole polish is discarded, partial repairs and all.
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "run \u{2013} force on the file",
-            original: "run --force on src/App.ts"
-        )
-        XCTAssertEqual(result.outcome, .fallback(missing: ["src/App.ts"]))
-        XCTAssertEqual(result.text, "run --force on src/App.ts")
-    }
-
-    func testVerifyAndRepairAppendedBodyCharsAreNotPreserved() {
-        // A body char appended to a protected token ("--force" inside
-        // "--forceful", "src/App.ts" inside "src/App.tsx") is corruption, not
-        // survival, and it is not a repairable near-miss either — the polish
-        // must be discarded.
-        let cases: [(polished: String, original: String, missing: String)] = [
-            ("run --forceful now", "run --force now", "--force"),
-            ("open src/App.tsx", "open src/App.ts", "src/App.ts"),
-        ]
-
-        for testCase in cases {
-            let result = PolishTokenGuard.verifyAndRepair(
-                polished: testCase.polished,
-                original: testCase.original
-            )
-            XCTAssertEqual(
-                result.outcome,
-                .fallback(missing: [testCase.missing]),
-                "appended body char must discard the polish: \(testCase.polished)"
-            )
-            XCTAssertEqual(
-                result.text,
-                testCase.original,
-                "the fallback keeps the original: \(testCase.polished)"
-            )
-        }
-    }
-
-    func testVerifyAndRepairTokenFollowedBySentencePeriodStaysClean() {
-        // '.' is not a body char: a sentence period straight after the token
-        // is a standalone occurrence, not appended-char corruption.
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "open src/App.ts. Done",
-            original: "open src/App.ts"
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "open src/App.ts. Done")
-    }
-
-    func testVerifyAndRepairAbsolutePathDroppedSlashFallsBack() {
-        // The model dropped the leading slash, silently turning an absolute
-        // path relative. Canonicalization never re-adds a slash, so this is
-        // unrepairable: the polish is discarded.
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Tail tmp/app.log now.",
-            original: "tail /tmp/app.log now"
-        )
-        XCTAssertEqual(result.outcome, .fallback(missing: ["/tmp/app.log"]))
-        XCTAssertEqual(result.text, "tail /tmp/app.log now")
-    }
-
-    func testVerifyAndRepairDoesNotRevertSentenceSpacingFix() {
-        // "works.Then" is STT output missing a space, not a filename: the
-        // polish inserts the space and the guard must leave that fix alone
-        // (a protected "works.Then" would make the space-stripping repair
-        // put the broken form back).
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "It works. Then we ship.",
-            original: "It works.Then we ship"
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "It works. Then we ship.")
-    }
-
     // MARK: - Filename extension allowlist (PR #101 review, finding 1)
 
     func testProtectedTokensRejectsLowercaseProseGlue() {
@@ -365,17 +234,6 @@ final class PolishTokenGuardTests: XCTestCase {
         }
     }
 
-    func testVerifyAndRepairAcceptsSentenceSplitOfLowercaseGlue() {
-        // The polish correctly splits "works.then" into "works. Then"; with
-        // no protected token the polish must pass through untouched.
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "It works. Then we ship.",
-            original: "it works.then we ship"
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "It works. Then we ship.")
-    }
-
     func testProtectedTokensStillRecognizesKnownExtensionFilenames() {
         let cases: [(input: String, expected: [String])] = [
             ("open main.swift now", ["main.swift"]),
@@ -390,168 +248,6 @@ final class PolishTokenGuardTests: XCTestCase {
                 "input: \(testCase.input)"
             )
         }
-    }
-
-    // MARK: - Per-occurrence verification (PR #101 review, finding 2)
-
-    /// Two dictated occurrences of one token are verified independently: a
-    /// surviving second occurrence cannot vouch for a mangled first, an intact
-    /// first does not stop the repair scan reaching the mangled second, a
-    /// deleted occurrence is unrepairable (never accepted with one missing),
-    /// and both surviving with case/punctuation changes is clean.
-    func testVerifyAndRepairTreatsEachDuplicateOccurrenceIndependently() {
-        let original = "run --force first, then --force again"
-        let cases: [
-            (label: String, polished: String,
-             outcome: PolishTokenGuard.Repair.Outcome, text: String)
-        ] = [
-            (
-                "the mangled first of two occurrences is repaired; the "
-                    + "surviving second cannot satisfy verification for both",
-                "run \u{2013} force first, then --force again",
-                .repaired(count: 1), original
-            ),
-            (
-                "the intact first does not stop the repair scan reaching "
-                    + "the mangled second",
-                "run --force first, then \u{2013} force again",
-                .repaired(count: 1), original
-            ),
-            (
-                "one of two occurrences deleted outright is unrepairable: "
-                    + "the whole polish is discarded",
-                "run --force first, then again",
-                .fallback(missing: ["--force"]), original
-            ),
-            (
-                "both occurrences surviving with case/punctuation changes "
-                    + "is clean",
-                "Run --force first, then --force again.",
-                .clean, "Run --force first, then --force again."
-            ),
-        ]
-
-        for testCase in cases {
-            let result = PolishTokenGuard.verifyAndRepair(
-                polished: testCase.polished,
-                original: original
-            )
-            XCTAssertEqual(result.outcome, testCase.outcome, testCase.label)
-            XCTAssertEqual(result.text, testCase.text, testCase.label)
-        }
-    }
-
-    func testVerifyAndRepairIsIdempotentOnRepairedOutput() {
-        let original = "run --force on src/App.ts"
-        let first = PolishTokenGuard.verifyAndRepair(
-            polished: "run \u{2013} force on src/app.ts",
-            original: original
-        )
-        XCTAssertEqual(first.outcome, .repaired(count: 2))
-
-        // Running the guard again on its own repaired output is a no-op.
-        let second = PolishTokenGuard.verifyAndRepair(polished: first.text, original: original)
-        XCTAssertEqual(second.outcome, .clean)
-        XCTAssertEqual(second.text, first.text)
-    }
-
-    // MARK: - Sanctioned rewrites (repo vocabulary)
-
-    /// The flagship repo-vocabulary case: the STT misheard `useAuth.ts` as
-    /// `useauth.ts` (a protected filename token), the prompt asked the model to
-    /// fix it, and the model did. The sanctioned pair must stop the near-miss
-    /// repair from case-reverting the correction.
-    func testSanctionedRewriteIsNotRevertedByCaseRepair() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Open useAuth.ts now.",
-            original: "open useauth.ts now",
-            sanctionedReplacements: [(from: "useauth.ts", to: "useAuth.ts")]
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "Open useAuth.ts now.")
-        XCTAssertEqual(result.sanctionedCount, 1)
-    }
-
-    /// The fuzzy (edit-distance-1) vocabulary fix: `usenauth.ts` -> `useAuth.ts`
-    /// is beyond the guard's canonical form, so without sanctioning the whole
-    /// polish would be discarded as `.fallback`.
-    func testSanctionedFuzzyRewriteDoesNotFallBack() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Open useAuth.ts now.",
-            original: "open usenauth.ts now",
-            sanctionedReplacements: [(from: "usenauth.ts", to: "useAuth.ts")]
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "Open useAuth.ts now.")
-        XCTAssertEqual(result.sanctionedCount, 1)
-    }
-
-    /// Without sanctioned pairs the pre-existing behavior holds byte-identically:
-    /// the case-only change is reverted as a repair, and the fuzzy change
-    /// triggers the fallback.
-    func testWithoutSanctionedPairsOldGuardBehaviorHolds() {
-        let reverted = PolishTokenGuard.verifyAndRepair(
-            polished: "Open useAuth.ts now.",
-            original: "open useauth.ts now"
-        )
-        XCTAssertEqual(reverted.outcome, .repaired(count: 1))
-        XCTAssertEqual(reverted.text, "Open useauth.ts now.")
-        XCTAssertEqual(reverted.sanctionedCount, 0)
-
-        let fallback = PolishTokenGuard.verifyAndRepair(
-            polished: "Open useAuth.ts now.",
-            original: "open usenauth.ts now"
-        )
-        XCTAssertEqual(fallback.outcome, .fallback(missing: ["usenauth.ts"]))
-        XCTAssertEqual(fallback.text, "open usenauth.ts now")
-    }
-
-    /// A sanctioned pair whose `to` is absent from the polished text is no
-    /// license at all: the token really is gone, and the normal fallback fires.
-    func testSanctionedToAbsentFallsBackNormally() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Open the file now.",
-            original: "open useauth.ts now",
-            sanctionedReplacements: [(from: "useauth.ts", to: "useAuth.ts")]
-        )
-        XCTAssertEqual(result.outcome, .fallback(missing: ["useauth.ts"]))
-        XCTAssertEqual(result.text, "open useauth.ts now")
-        XCTAssertEqual(result.sanctionedCount, 0)
-    }
-
-    /// Substring-canonical sanctioning (field regression, 2026-07-11): the
-    /// sanctioned alias is a multi-word gram whose TAIL is the protected token
-    /// — the STT glued "user session manager dot swift" into `manager.swift`,
-    /// the caller asked for `UserSessionManager.swift`, the model complied.
-    /// The protected `manager.swift` canonically equals no alias, but it IS
-    /// canonically contained in one whose `to` the model produced: sanctioned,
-    /// never a fallback.
-    func testSanctionedAliasContainingProtectedTokenDoesNotFallBack() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Look at UserSessionManager.swift.",
-            original: "look at user session manager.swift",
-            sanctionedReplacements: [
-                (from: "user session manager.swift", to: "UserSessionManager.swift")
-            ]
-        )
-        XCTAssertEqual(result.outcome, .clean)
-        XCTAssertEqual(result.text, "Look at UserSessionManager.swift.")
-        XCTAssertEqual(result.sanctionedCount, 1)
-    }
-
-    /// Containment is no blanket license: a protected token that is NOT part
-    /// of any sanctioned alias still falls back when the model deletes it,
-    /// even while an unrelated sanctioned rewrite happened in the same text.
-    func testUnrelatedProtectedTokenStillGuardedUnderContainment() {
-        let result = PolishTokenGuard.verifyAndRepair(
-            polished: "Look at UserSessionManager.swift now.",
-            original: "look at user session manager.swift and run --force",
-            sanctionedReplacements: [
-                (from: "user session manager.swift", to: "UserSessionManager.swift")
-            ]
-        )
-        XCTAssertEqual(result.outcome, .fallback(missing: ["--force"]))
-        XCTAssertEqual(result.text, "look at user session manager.swift and run --force")
     }
 }
 
@@ -1624,8 +1320,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
             )
         }
         retainForTestProcessLifetime(viewModel)
@@ -1947,7 +1642,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             overrideCounter.count += 1
             return vocabularyEntries.map {
-                RepoVocabularyMatcher.GroundingOutcome(entries: $0, isFallbackOnly: false)
+                RepoVocabularyMatcher.GroundingOutcome(entries: $0)
             }
         }
         var savedRecord: DictationSessionRecord?
@@ -2026,8 +1721,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     func testSessionAbstainsWhenSourcesConflictOnTheSameSpan() async {
         let result = await runCrossSourceSession(
             repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
             ),
             clipboard: "see use_auth.ts for the hook",
             transcript: "open use auth dot ts and fix the import"
@@ -2055,8 +1749,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     func testSessionAbstainsOnConflictEvenWithoutTheDictionarySlot() async {
         let result = await runCrossSourceSession(
             repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
             ),
             clipboard: "see use_auth.ts for the hook",
             transcript: "open use auth dot ts and fix the import",
@@ -2091,37 +1784,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
     }
 
-    /// A repo FALLBACK guess must yield to a clipboard exact hit on the same
-    /// span. This only works if provenance survives the real seam — the whole
-    /// point of widening it beyond `[ReplacementEntry]?`.
-    func testSessionRepoFallbackGuessYieldsToClipboardSolidHit() async {
-        let result = await runCrossSourceSession(
-            repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [
-                    ReplacementEntry(replaceWith: "useAuthHook.tsx", matches: ["use auth dot ts"]),
-                ],
-                isFallbackOnly: true
-            ),
-            clipboard: "see useAuth.ts for the hook",
-            transcript: "open use auth dot ts and fix the import"
-        )
-        XCTAssertTrue(
-            result.request?.inputText.contains("useAuth.ts") ?? false,
-            "the solid clipboard hit must win; got: \(result.request?.inputText ?? "")"
-        )
-        XCTAssertFalse(
-            result.request?.inputText.contains("useAuthHook.tsx") ?? true,
-            "the repo guess must yield rather than contest into abstention"
-        )
-    }
-
     /// Both sources agreeing on the same term is corroboration: it grounds, and
     /// the term is not duplicated across two prompt sections.
     func testSessionAgreementGroundsWithoutDuplicatingTheHint() async {
         let result = await runCrossSourceSession(
             repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
             ),
             clipboard: "see useAuth.ts for the hook",
             transcript: "open use auth dot ts and fix the import"

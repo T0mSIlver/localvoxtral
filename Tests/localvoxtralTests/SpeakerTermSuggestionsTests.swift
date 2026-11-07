@@ -1,4 +1,5 @@
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 final class SpeakerTermSuggestionsTests: XCTestCase {
@@ -80,7 +81,7 @@ final class SpeakerTermSuggestionsTests: XCTestCase {
     @MainActor
     func testTheRequestGoesOutAsOneUserMessageWithNoSystemMessage() throws {
         let settings = SettingsStore(
-            defaults: UserDefaults(suiteName: "localvoxtral.SuggestBody.\(UUID().uuidString)")!,
+            defaults: makeTestDefaults(),
             environment: [:], secretStore: InMemorySecretStore()
         )
         settings.llmPolishingEnabled = true
@@ -199,19 +200,42 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
 
     /// The free half of the row: what the app has watched polishing fix is
     /// offered without a model call, and still only added by a click.
-    func testLearnedTermsAreOfferedWithoutAskingAModel() {
+    func testLearnedTermsAreOfferedWithoutAskingAModel() async {
         let settings = makePolishingSettings()
         let service = Service()
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral", "polishd"])
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         XCTAssertEqual(model.suggestions, ["Voxtral", "polishd"])
         XCTAssertEqual(settings.polishSpeakerTerms, [])
         XCTAssertTrue(service.requests.isEmpty, "no request, no API credits")
     }
 
-    func testLearnedTermAlreadyKnownOrRefusedIsNotOffered() {
+    /// LVX-11: what became of each chip is counted by where it came from,
+    /// in the app's defaults, and no term is saved there.
+    func testChipOutcomesAreCountedBySource() async throws {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral", "polishd"])
+
+        await model.refreshLearnedSuggestions()
+        await model.suggest()
+        model.accept("Voxtral")
+        model.dismiss("polishd")
+        model.accept("Qwen")
+
+        let data = try XCTUnwrap(settings.defaults.data(forKey: SpeakerTermSuggestionModel.outcomesDefaultsKey))
+        let outcomes = try JSONDecoder().decode(TermSuggestionOutcomes.self, from: data)
+        XCTAssertEqual(outcomes.weeks.count, 1)
+        XCTAssertEqual(outcomes.weeks[0].learned, .init(shown: 2, accepted: 1, refused: 1))
+        XCTAssertEqual(outcomes.weeks[0].model, .init(shown: 1, accepted: 1, refused: 0))
+        let saved = String(decoding: data, as: UTF8.self)
+        for term in ["Voxtral", "polishd", "Qwen"] { XCTAssertFalse(saved.contains(term), term) }
+    }
+
+    func testLearnedTermAlreadyKnownOrRefusedIsNotOffered() async {
         let settings = makePolishingSettings()
         settings.polishSpeakerTerms = ["Voxtral"]
         settings.dismissTermSuggestion("polishd")
@@ -219,20 +243,41 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
             settings: settings, service: Service(), learned: ["Voxtral", "polishd", "Ghostty"]
         )
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         XCTAssertEqual(model.suggestions, ["Ghostty"])
     }
 
+    /// A learned term is confirmed by being matched in three dictations,
+    /// which a word the recognizer already spells right is too. The owner
+    /// refused two such chips ("dashboard", "DeepSeek", 2026-11-04); the
+    /// screen the model's answer passes keeps them out, and keeps the term
+    /// polishing fixed.
+    func testLearnedTermTheRecognizerSpellsRightIsNotOffered() async {
+        let settings = makePolishingSettings()
+        let model = makeModel(
+            settings: settings, service: Service(),
+            dictations: [
+                .init(raw: "open the dashboard", final: "Open the dashboard."),
+                .init(raw: "ask coin about it", final: "Ask Qwen about it."),
+            ],
+            learned: ["dashboard", "Qwen"]
+        )
+
+        await model.refreshLearnedSuggestions()
+
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+    }
+
     /// Re-opening the pane must not resurrect a chip the user just refused,
     /// and must not duplicate one already on screen.
-    func testRefreshingIsAdditiveAndSkipsWhatIsShown() {
+    func testRefreshingIsAdditiveAndSkipsWhatIsShown() async {
         let settings = makePolishingSettings()
         let model = makeModel(settings: settings, service: Service(), learned: ["Voxtral", "polishd"])
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
         model.dismiss("polishd")
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         XCTAssertEqual(model.suggestions, ["Voxtral"])
     }
@@ -258,7 +303,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         let service = Service()
         service.reply = .success(#"["Qwen"]"#)
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
 
         settings.polishSpeakerTerms = ["Voxtral"]
         await model.suggest()
@@ -274,7 +319,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         service.reply = .success(#"["Qwen"]"#)
         let model = makeModel(settings: settings, service: service, learned: ["Voxtral"])
 
-        model.refreshLearnedSuggestions()
+        await model.refreshLearnedSuggestions()
         await model.suggest()
 
         XCTAssertEqual(model.suggestions, ["Qwen", "Voxtral"])
@@ -407,6 +452,26 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(model.suggestions, ["Qwen"])
         XCTAssertEqual(model.phase, .failed("Terms list is full."))
         XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
+    }
+
+    /// LVX-93: another copy of the app filled the list since this one read
+    /// it. The merge on save drops this copy's addition, so the chip stays
+    /// and the row says why.
+    func testAListAnotherCopyFilledKeepsTheChipAndSaysWhy() async {
+        let settings = makePolishingSettings()
+        settings.polishSpeakerTerms = (0..<(SpeakerTerms.maxTerms - 1)).map { "Known\($0)x" }
+        settings.defaults.set(
+            settings.polishSpeakerTerms + ["Elsewhere"], forKey: "settings.polish_speaker_terms")
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service)
+
+        await model.suggest()
+        model.accept("Qwen")
+
+        XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+        XCTAssertEqual(model.phase, .failed("Terms list is full."))
     }
 
     func testTheOldestRefusalIsTheOneTheCapDrops() {
