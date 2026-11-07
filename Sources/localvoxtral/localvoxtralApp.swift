@@ -212,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "Open localvoxtral at login". Built here so the pane reads the login
     /// item once per launch rather than on every view update.
     let loginItemController = LoginItemController()
+    /// Installs each release while nobody is dictating (LVX-57).
+    private var appUpdater: SparkleAppUpdater?
     /// SwiftUI's own `openSettings`, handed over by the menu bar label
     /// (`SettingsOpenerHandoff`). Nil until the label has appeared.
     var settingsOpener: (@MainActor () -> Void)?
@@ -370,6 +372,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startDogfoodControlSocket()
         #endif
         reconcileBundledConfigDefaults()
+        let updater = SparkleAppUpdater(model: viewModel.updates) { [weak viewModel] in
+            viewModel?.engines.isDictationIdle() ?? true
+        }
+        updater.start()
+        appUpdater = updater
         widgetSnapshotWriter = WidgetSnapshotWriter(viewModel: viewModel)
         widgetSnapshotWriter?.start()
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
@@ -617,6 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sshConnection: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
             federation: { HerdrMachineFederationReader.live().federation() },
             liveLocalHerdrSockets: { [claudeSessionRegistry] in claudeSessionRegistry.liveLocalHerdrSocketPaths() },
+            wholeViewClientSession: { HerdrClientTTYProbe.wholeViewSessionName(onTTYDevicePath: $0) },
             enrolledHosts: { [weak self] destination in
                 self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
             },
@@ -626,7 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         return HerdrSessionPaneFocuser(
-            windowTTY: { await locator.windowTTY(for: $0) },
+            windowShows: { await locator.windowShows($0, tty: $1) },
             openSocket: { [weak self] target in
                 switch target {
                 case .local(_, let socketPath):
@@ -776,6 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
             let desktopSessionReader = AXClaudeDesktopSessionURLReader()
+            let t3ThreadReader = AXT3CodeThreadURLReader()
             let herdrClient = HerdrSocketClient()
             // The cmux password is read from the Keychain lazily, per query, so
             // a user who never enables the arm is never prompted for keychain
@@ -789,6 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 focusedDesktopSessionURL: {
                     await desktopSessionReader.focusedSessionURL(applicationPID: $0)
                 },
+                focusedT3ThreadURL: { await t3ThreadReader.focusedThreadURL(applicationPID: $0) },
                 focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
@@ -1259,6 +1269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch maintenance that creates the mirror.
             desiredMarketplacePath: { ClaudeMarketplaceMirror.usableURL()?.path },
             bundledPluginVersion: ClaudePluginAssets.localPluginVersion(),
+            bundledModVersion: ClaudePluginAssets.localPluginVersion(
+                pluginName: ClaudePluginAssets.modPluginName
+            ),
             statuslineService: {
                 ClaudeStatuslineInstallService(
                     fileSystem: LiveClaudeStatuslineFileSystem(),

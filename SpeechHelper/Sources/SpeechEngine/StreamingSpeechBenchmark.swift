@@ -12,17 +12,30 @@ public enum StreamingSpeechBenchmark {
         guard let benchmark = options.benchmark else { return }
 
         Memory.cacheLimit = options.cacheLimitMB * 1024 * 1024
+        let clock = ContinuousClock()
+        let loadStart = clock.now
         let engine = try await SpeechModelLoader.load(
             modelID: options.modelID,
             modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
             engine: options.engine
         )
+        let loaded = clock.now
         let audio = try BenchmarkAudio.make(
             seconds: benchmark.seconds,
             wavPath: benchmark.wavPath
         )
+        let warmUpStart = clock.now
         warmUp(engine: engine, audio: audio, options: options, benchmark: benchmark)
+        // What a helper start costs before its first dictation runs at full speed: the
+        // load (weights are read lazily, so most of it lands in the first steps) and the
+        // throwaway first dictation, which the server does not run.
+        print(
+            String(
+                format: "BENCH load load_ms=%.1f warmup_ms=%.1f",
+                milliseconds(loaded - loadStart), milliseconds(clock.now - warmUpStart)
+            )
+        )
         // The warm-up session is gone by now; clear after the drop, as the server
         // does between dictations, so its buffers do not start the measured one.
         Memory.clearCache()
@@ -101,8 +114,25 @@ public enum StreamingSpeechBenchmark {
                 + "stopped=\(session.utteranceStop.map(String.init(describing:)) ?? "none")"
         )
         // Flush the held-back tail as a dictation's stop does, so the digest covers
-        // the whole transcript. After `BENCH done`, so the timings above exclude it.
-        _ = session.finish()
+        // the whole transcript. After `BENCH done`, so the timings above exclude it;
+        // its own line times the stop: what the helper spends between the final
+        // commit and the last words.
+        // `finish_tokens` counts the tokens the flush decoded, one decoder forward each
+        // (reading an EOS runs none), and `eos` whether the model ended the stream
+        // inside the flush: with no EOS, the flush decodes every row of its zero pad.
+        let wordsBeforeStop = wordCount(session.text)
+        let tokensBeforeStop = session.decodedTokenCount
+        let stoppedBeforeFlush = session.utteranceStop != nil
+        let stop = ContinuousClock().measure { _ = session.finish() }
+        let endedInFlush = !stoppedBeforeFlush && session.utteranceStop == .endOfStream
+        print(
+            String(
+                format: "BENCH stop finish_ms=%.1f tail_words=%d finish_tokens=%d eos=%d",
+                milliseconds(stop), wordCount(session.text) - wordsBeforeStop,
+                session.decodedTokenCount - tokensBeforeStop,
+                endedInFlush ? 1 : 0
+            )
+        )
         print(BenchTranscriptDigest.line(for: session.text))
     }
 
@@ -172,14 +202,21 @@ public enum StreamingSpeechBenchmark {
         let duration = ContinuousClock().measure {
             session.step(samples)
         }
-        let components = duration.components
-        let milliseconds = Double(components.seconds) * 1_000
-            + Double(components.attoseconds) / 1_000_000_000_000_000
         return StepRecord(
             audioSamples: audioSamples,
-            latencyMilliseconds: milliseconds,
+            latencyMilliseconds: milliseconds(duration),
             memory: Memory.snapshot()
         )
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) * 1_000
+            + Double(components.attoseconds) / 1_000_000_000_000_000
+    }
+
+    private static func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
     }
 
     /// What the Engines pane's two settings promise: the memory limit bounds what the

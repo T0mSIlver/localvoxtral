@@ -7,7 +7,11 @@ also covers the hosted Mistral API and running the models on your own server.
 
 With the managed local engines, nothing you say or write leaves your Mac.
 Audio capture, transcription and LLM polishing run as local processes. The
-only network traffic is the one-time download of the engines and models.
+only network traffic is the one-time download of the engines and models, and
+a daily update check: the app reads the newest release's feed from GitHub
+and downloads the update it names
+([Update localvoxtral](install.md#update-localvoxtral)). GitHub sees your IP
+address and the app's version in the request; no system profile is sent.
 
 There is no telemetry, no account and no cloud fallback.
 
@@ -301,11 +305,32 @@ These are the settings the
 [model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602)
 recommends, tested on an NVIDIA RTX 3090.
 
-Voxtral Realtime spends one token of context per 80 ms of audio, so one vLLM
-session holds about 164 s at the default `--max-model-len 2048`. Past that the
-transcript turns to garbage, and vLLM's engine can crash. The app reads the
+llama.cpp's `llama-server` serves the same model on NVIDIA, Apple Metal and
+the CPU, from a GGUF quantization:
+
+```bash
+llama-server -hf ggml-org/Voxtral-Mini-4B-Realtime-2602-GGUF:Q8_0 \
+  --host 127.0.0.1 --port 8093 -ngl 99 -np 1 -c 2048 --temp 0
+```
+
+Then set the Dictation server URL to `ws://127.0.0.1:8093/v1/realtime`; the
+model name can be anything. It needs a llama.cpp build from 23 October 2026 or
+later, with [#30994](https://github.com/ggml-org/llama.cpp/pull/30994). Keep `--temp 0`: llama-server transcribes at its
+sampling temperature, 0.8 by default, and the same audio then gives different
+text from one run to the next. The app sends 16 kHz audio, which is the rate
+llama-server expects.
+
+On an NVIDIA RTX 3090 with the Q8_0 GGUF, llama-server matched vLLM's BF16
+model on the 146 recorded utterances of the dictation eval (22.15% and 22.20%
+word error rate) and used about 6 GB of GPU memory against vLLM's 12 GB. The
+final text arrived 0.15 s after the stop, against 0.41 s with vLLM.
+
+Voxtral Realtime spends one token of context per 80 ms of audio, so one
+session holds about 164 s at vLLM's default `--max-model-len 2048`, or with
+2048 positions per llama-server slot (`-c` divided by `-np`). Past that
+the transcript turns to garbage, and vLLM's engine can crash. The app reads the
 limit from the server's `/v1/models` at the start of each dictation (2048 when
 the model is listed without one) and, before the limit, finishes the session
 and carries the dictation on in a fresh one. It picks a pause once the
 session is 60% full and does it regardless at 85%. Nothing changes on
-screen; a raised `--max-model-len` just moves the switch later.
+screen; a raised limit just moves the switch later.

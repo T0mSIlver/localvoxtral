@@ -211,6 +211,22 @@ final class SQLiteFile {
 
     deinit { sqlite3_close(db) }
 
+    /// Closes the database now; later calls fail.
+    func close() {
+        sqlite3_close(db)
+        db = nil
+    }
+
+    /// Leaves WAL mode: the WAL goes into the database file, and its
+    /// `-wal` and `-shm` files are deleted, which macOS's SQLite otherwise
+    /// keeps after a close. The file alone then holds every write.
+    func leaveWAL() throws {
+        let mode = try strings("PRAGMA journal_mode = DELETE", column: 0)
+        guard mode.first?.lowercased() == "delete" else {
+            throw SQLiteFileError(description: "journal_mode stayed \(mode.first ?? "unknown")")
+        }
+    }
+
     func rowCount(of table: String) throws -> Int {
         try strings("SELECT count(*) FROM \(table)", column: 0).first.flatMap { Int($0) } ?? 0
     }
@@ -222,6 +238,41 @@ final class SQLiteFile {
     /// Empty when the table does not exist.
     func columnNames(of table: String) throws -> [String] {
         try strings("PRAGMA table_info(\(table))", column: 1)
+    }
+
+    /// Deletes the rows of `table` whose `column` is below `value`, with
+    /// `secure_delete` on so their text is overwritten, not left in free
+    /// pages. Returns how many rows it deleted.
+    @discardableResult
+    func deleteRows(of table: String, where column: String, isBelow value: Double) throws -> Int {
+        guard sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK else {
+            throw error(db, "secure_delete")
+        }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = "DELETE FROM \(table) WHERE \(column) < ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw error(db, sql) }
+        sqlite3_bind_double(statement, 1, value)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw error(db, sql) }
+        return Int(sqlite3_changes(db))
+    }
+
+    /// Rewrites the database with `secure_delete` on and folds the WAL into
+    /// it, so the text of deleted rows is gone from both files. Core Data
+    /// deletes with SQLite's default, which leaves a deleted row's bytes in
+    /// free space, and SwiftData offers no way to set the pragma on its own
+    /// connection (LVX-101). VACUUM runs in one transaction: one that fails
+    /// leaves the file as it was.
+    func scrubFreedSpace() throws {
+        for sql in ["PRAGMA secure_delete = ON", "VACUUM"] {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw error(db, sql) }
+        }
+        // Columns: busy, WAL frames, frames checkpointed. Busy means a reader
+        // kept the WAL, and the old pages with it.
+        let busy = try strings("PRAGMA wal_checkpoint(TRUNCATE)", column: 0)
+        guard busy.first == "0" else {
+            throw SQLiteFileError(description: "the WAL checkpoint was blocked by a reader")
+        }
     }
 
     func backup(to url: URL) throws {

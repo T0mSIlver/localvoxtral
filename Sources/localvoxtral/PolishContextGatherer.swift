@@ -463,8 +463,6 @@ enum PolishContextGatherer {
                 PolishContextGrounding.Candidate(
                     source: source,
                     entries: outcome.entries,
-                    isFallbackOnly: outcome.isFallbackOnly,
-                    phoneticEntries: outcome.phoneticEntries,
                     verificationEntries: outcome.verificationCandidates
                 )
             },
@@ -566,8 +564,6 @@ extension PolishContextMaterial {
             let learned = learnedVocabularyOutcome
             material.learnedVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
                 entries: learned.entries.filter(keep),
-                isFallbackOnly: learned.isFallbackOnly,
-                phoneticEntries: learned.phoneticEntries.filter(keep),
                 verificationCandidates: learned.verificationCandidates.filter(keep)
             )
             material.learnedProposals = []

@@ -15,6 +15,7 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         var sentAudio = Data()
         var unsentAudio = Data()
         var refusesAudio = false
+        var finalizationInactivityThreshold: TimeInterval?
         var contextBudgets: [RealtimeContextBudget?] = []
         var connectionGeneration: RealtimeConnectionGeneration = .none
         var handler: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
@@ -27,6 +28,13 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     package init() {}
 
     package var supportsPeriodicCommit: Bool { true }
+    package var finalizationInactivityThreshold: TimeInterval? {
+        state.withLock { $0.finalizationInactivityThreshold }
+    }
+
+    package func setFinalizationInactivityThreshold(_ threshold: TimeInterval?) {
+        state.withLock { $0.finalizationInactivityThreshold = threshold }
+    }
     package var isConnected: Bool { state.withLock { $0.isConnected } }
     package var isSessionReady: Bool { state.withLock { $0.isConnected } }
     package var connectionGeneration: RealtimeConnectionGeneration {

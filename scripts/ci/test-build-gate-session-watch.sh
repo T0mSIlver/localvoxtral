@@ -92,21 +92,35 @@ rm -f "$TMP_DIR/payload.pid"
 
 # --- sessions that never ended: reap ends every recorded group ---------------
 
+# A slow `ps -o lstart=` holds the gate between creating a record and writing
+# its start time: a reap that read the record then found it empty, ended
+# nothing for that group and deleted the record (LVX-103, hosted run
+# 41831148701). The `ps` wrapper widens that window on every run.
+cat >"$TMP_DIR/bin/ps" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in *" lstart= "*) [[ -z "${LV_TEST_SLOW_LSTART:-}" ]] || /bin/sleep "$LV_TEST_SLOW_LSTART" ;; esac
+exec /bin/ps "$@"
+STUB
+chmod +x "$TMP_DIR/bin/ps"
+
 # Two payloads in one work dir at once, as the unit-test shards run.
 payloads=()
 for shard in 1 2; do
   rm -f "$TMP_DIR/payload.pid"
-  env "${gate_env[@]}" LOCALVOXTRAL_GATE_SESSION_PID="$$" \
+  env "${gate_env[@]}" LV_TEST_SLOW_LSTART=1 LOCALVOXTRAL_GATE_SESSION_PID="$$" \
     SSH_ORIGINAL_COMMAND='cd work/localvoxtral-session-1 && swift build --build-system native' \
     bash "$GATE" >/dev/null 2>&1 &
   spawned+=("$!")
   wait_for_file "$TMP_DIR/payload.pid" "shard $shard never started"
   payloads+=("$(cat "$TMP_DIR/payload.pid")")
 done
+recorded=0
 for _ in $(seq 1 100); do
-  [[ "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null | wc -l | tr -d ' ')" == 2 ]] && break
+  [[ "$(ls "$FAKE_HOME/.lv-gate-payloads/localvoxtral-session-1" 2>/dev/null | wc -l | tr -d ' ')" == 2 ]] \
+    && { recorded=1; break; }
   /bin/sleep 0.1
 done
+(( recorded )) || fail "both payload groups were never recorded"
 reap_out="$(env "${gate_env[@]}" SSH_ORIGINAL_COMMAND='reap work/localvoxtral-session-1' bash "$GATE" 2>&1 || true)"
 [[ "$(grep -c 'reap: ending the abandoned payload group' <<<"$reap_out")" == 2 ]] \
   || fail "reap did not end both recorded groups: $reap_out"

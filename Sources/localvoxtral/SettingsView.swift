@@ -96,17 +96,6 @@ struct SettingsView: View {
         )
     }
 
-    private var dictationShortcutBinding: Binding<DictationShortcut?> {
-        Binding(
-            get: {
-                settings.dictationShortcut
-            },
-            set: { newValue in
-                viewModel.shortcuts.updateDictationShortcut(newValue)
-            }
-        )
-    }
-
     var body: some View {
         HStack(spacing: 0) {
             SettingsSidebarView(
@@ -281,7 +270,6 @@ struct SettingsView: View {
                 DictationSettingsPane(
                     settings: settings,
                     viewModel: viewModel,
-                    dictationShortcutBinding: dictationShortcutBinding,
                     shortcutValidationError: $shortcutValidationError
                 )
             case .textProcessing:

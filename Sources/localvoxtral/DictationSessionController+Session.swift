@@ -62,6 +62,7 @@ extension DictationSessionController {
         sessionHasStallBackfill = false
         stallBackfillTasks.forEach { $0.cancel() }
         stallBackfillTasks = []
+        stallBackfillsInFlight = []
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
     }
@@ -935,7 +936,8 @@ extension DictationSessionController {
 
                 if !self.stopReplaysReconnectGap,
                    let sentAt, now.timeIntervalSince(sentAt) >= TimingConstants.finalizationMinimumOpen,
-                   inactivity >= TimingConstants.finalizationInactivityThreshold
+                   inactivity >= self.activeRealtimeClient.finalizationInactivityThreshold
+                       ?? TimingConstants.finalizationInactivityThreshold
                 {
                     Log.backends.notice(
                         "stop finalization idle for \(inactivity, format: .fixed(precision: 2), privacy: .public) s; disconnecting"

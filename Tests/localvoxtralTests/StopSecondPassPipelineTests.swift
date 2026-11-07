@@ -317,7 +317,28 @@ final class StopSecondPassPipelineTests: XCTestCase {
         }
     }
 
-    /// A joined session in a subdirectory of a linked worktree (#705): the
+    /// LVX-94: a local engine that takes terms gets the joined project's
+    /// confirmed terms at start with the trusted-endpoint opt-in off: the
+    /// bundled helper is on this Mac, so the list never leaves it. The same
+    /// start to Mistral sends the user's own terms only.
+    func testALocalEngineThatTakesTermsGetsTheProjectsTermsWithoutTheOptIn() async throws {
+        let harness = makeHarness(transcriber: FakeBatchTranscriber(.text(Self.batchText)))
+        let session = harness.viewModel.session
+        harness.viewModel.settings.polishContextTrustedEndpointEnabled = false
+        harness.viewModel.learnedTermStore = groupedStore()
+        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
+        join(harness, cwd: Self.workProject)
+        let takesTerms = DictationModelCapabilities(termBias: .sessionList(maxTerms: 100))
+        let helper = try XCTUnwrap(URL(string: ManagedBackendEndpoints.realtimeURLString))
+
+        let local = await session.realtimeStartContextBias(endpoint: helper, capabilities: takesTerms)
+        XCTAssertEqual(local, ["localvoxtral", "Claude Code", "Kubrix"])
+        let hosted = await session.realtimeStartContextBias(
+            endpoint: MistralRealtimeWebSocketClient.defaultEndpoint, capabilities: takesTerms)
+        XCTAssertEqual(hosted, ["localvoxtral", "Claude Code"])
+    }
+
+
     /// proposals are filed under the main checkout (#652), which only the git
     /// root names. The lookup starts from the session's own directory.
     func testASessionInAWorktreeGetsTheMainCheckoutsProposals() async {
@@ -467,7 +488,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let pipeline = viewModel.session.repoVocabularyPipeline
         pipeline.rootLookup = lookup
         pipeline.pipeline = { _ in
-            RepoVocabularyMatcher.GroundingOutcome(entries: [Self.repositoryEntry], isFallbackOnly: false)
+            RepoVocabularyMatcher.GroundingOutcome(entries: [Self.repositoryEntry])
         }
         return (harness, transcriber, polisher)
     }

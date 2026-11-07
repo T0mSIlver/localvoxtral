@@ -91,7 +91,9 @@ package final class FakeHerdrSocket: @unchecked Sendable {
         // Short and unique: `sun_path` is 104 bytes on macOS, and test
         // classes run in several processes at once.
         directory = URL(fileURLWithPath: "/tmp/lvx-fh-\(UUID().uuidString.prefix(8))")
-        socketPath = directory.appendingPathComponent("s").path
+        // herdr's own file name, so the default session's socket shape
+        // (`HerdrSessionSocket`) holds for it.
+        socketPath = directory.appendingPathComponent("herdr.sock").path
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true,

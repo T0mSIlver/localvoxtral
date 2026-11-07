@@ -62,8 +62,9 @@ open_pid_fifo() {
   exec 3<>"$pid_fifo"
 }
 
-# Every process of the payload tree inherits fd 5, the write end of a FIFO
-# the test reads on fd 6, and closes it when it exits. End-of-file on fd 6
+# Every process of the payload tree, and the gate's session watcher, inherits
+# fd 5, the write end of a FIFO the test reads on fd 6, and closes it when it
+# exits. End-of-file on fd 6
 # therefore means the whole tree is gone, however long a loaded runner takes
 # to finish the KILL; the wrapper waits only for the leader, so one `ps` right
 # after it returned could race the descendant (#713). A tree that outlives the
@@ -101,8 +102,8 @@ expect_tree_exit() {
     "$TREE_EXIT_DEADLINE_SECONDS" <&6 || status=$?
   exec 6<&-
   [[ "$status" == "0" ]] && return 0
-  fail "$1: payload process $fixture_pid or descendant $stubborn_pid" \
-    "survived gate teardown for ${TREE_EXIT_DEADLINE_SECONDS}s (reader status $status)"
+  fail "$1: payload process $fixture_pid, descendant $stubborn_pid or the session watcher" \
+    "held fd 5 past gate teardown for ${TREE_EXIT_DEADLINE_SECONDS}s (reader status $status)"
 }
 
 start_wrapper signalled
@@ -127,4 +128,31 @@ expect_tree_exit "leader-exit wrapper"
 fixture_pid=""
 stubborn_pid=""
 
-printf 'PASS: gate preserves status and drains signalled or leader-exited groups\n'
+# A signal handled between the session watcher's fork and `$!` exited before
+# the gate knew the watcher's pid, so its cleanup left the watcher running,
+# holding fd 5 (LVX-107). The hook pauses the gate right there until the
+# test has sent TERM: the old order fails, with the watcher as the holder.
+mkfifo "$TMP_DIR/fork-reached" "$TMP_DIR/fork-release"
+exec 7<>"$TMP_DIR/fork-reached" 8<>"$TMP_DIR/fork-release"
+gate_after_watcher_fork() {
+  printf 'forked\n' >&7
+  read -r _ <&8 || true
+}
+LOCALVOXTRAL_GATE_SESSION_PID=$$ start_wrapper signal-at-watcher-fork
+read -r _ <&7
+kill -TERM "$wrapper_pid"
+printf 'go\n' >&8
+if wait "$wrapper_pid"; then
+  fail "payload signalled at the watcher's fork unexpectedly succeeded"
+else
+  status=$?
+fi
+[[ "$status" == "143" ]] || fail "TERM at the watcher's fork: exit status $status, not 143"
+wrapper_pid=""
+expect_tree_exit "TERM between the watcher's fork and its pid"
+fixture_pid=""
+stubborn_pid=""
+exec 7<&- 8<&-
+gate_after_watcher_fork() { :; }
+
+printf 'PASS: gate preserves status and drains signalled or leader-exited groups, and stops its watcher\n'

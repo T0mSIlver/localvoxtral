@@ -2,7 +2,7 @@
 
 The opencode plugin lets localvoxtral use what your
 [opencode](https://github.com/sst/opencode) session is doing to transcribe
-your dictation, and write the words straight into the session's prompt. The
+your dictation. The
 [Claude Code plugin](https://t0msilver.github.io/localvoxtral/integrations/claude-code/) does the same for Claude Code.
 
 ## What you get
@@ -12,11 +12,6 @@ localvoxtral grounds the transcription on the session's prior prompt, its
 working directory and the files it touched recently. It does this without
 reading your screen.
 
-**Words that land in the prompt.** localvoxtral writes your dictation into the
-pane's prompt, and submits it when you say "send it", without typing keys. A
-window switch mid-dictation, Secure Keyboard Entry or the clipboard cannot
-send the text elsewhere.
-
 **No tokens spent.** The plugin itself spends none. One feature outside it
 does, through a read-only opencode run the app starts on its own, never in
 your session, with your default model: with **Ask the coding agent for each
@@ -25,7 +20,7 @@ new project's terms** on, the app runs it once per project. See
 
 ## Install
 
-1. In localvoxtral, open **Settings → opencode → Plugin → Set Up…**. One
+1. In localvoxtral, open **Settings → opencode → Plugin → Set up…**. One
    consent sentence names both files the app writes, and **Details** opens
    this page.
 2. Confirm. The app copies its bundled plugin into opencode's global plugin

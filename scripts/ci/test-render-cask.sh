@@ -39,6 +39,9 @@ grep -qx '  version "0.9.0"' "$CASK" || fail "stable tag: version is not pinned 
 grep -qx "  sha256 \"$SHA\"" "$CASK" || fail "stable tag: sha256 is not the one passed in"
 pass "stable tag pins version and sha256"
 
+grep -qx '  auto_updates true' "$CASK" || fail "stable tag: the cask must say the app updates itself"
+pass "cask declares auto_updates"
+
 # The url must stay interpolated: `brew bump-cask-pr`-style tooling and
 # livecheck both rewrite `version` alone and expect the url to follow.
 # shellcheck disable=SC2016

@@ -1,6 +1,7 @@
 import XCTest
 
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// The sidebar is data-driven: a pane that is in no sidebar array is
 /// unreachable in the UI, and one in two would render twice. The AX

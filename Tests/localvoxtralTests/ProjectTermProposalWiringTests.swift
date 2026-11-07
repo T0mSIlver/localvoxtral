@@ -20,13 +20,25 @@ final class ProjectTermProposalWiringTests: XCTestCase {
 
         let runs = Mutex<[Run]>([])
         let commits: @MainActor () -> Int
+        let answer: [String]
+        /// Runs on the main actor while the agent runs, before its answer
+        /// is stored.
+        let whileRunning: @MainActor () -> Void
 
-        init(commits: @escaping @MainActor () -> Int) { self.commits = commits }
+        init(
+            commits: @escaping @MainActor () -> Int, answer: [String] = ["inkwell"],
+            whileRunning: @escaping @MainActor () -> Void = {}
+        ) {
+            self.commits = commits
+            self.answer = answer
+            self.whileRunning = whileRunning
+        }
 
         func run(_ invocation: ProjectTermProposal.Invocation) async -> ProjectTermProposal.Outcome {
             let commits = await MainActor.run { self.commits() }
             runs.withLock { $0.append(Run(invocation: invocation, commitsBeforeRun: commits)) }
-            return .terms(["inkwell"])
+            await MainActor.run { self.whileRunning() }
+            return .terms(answer)
         }
 
         var all: [Run] { runs.withLock { $0 } }
@@ -42,7 +54,10 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         let service: FakePolishingService
     }
 
-    private func makeHarness(polish: Bool = true, enabled: Bool = true, repoVocabulary: Bool = false) -> Harness {
+    private func makeHarness(
+        polish: Bool = true, enabled: Bool = true, repoVocabulary: Bool = false,
+        answer: [String] = ["inkwell"], whileRunning: @escaping @MainActor (SettingsStore) -> Void = { _ in }
+    ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = polish
         settings.agentPolishProfileEnabled = false
@@ -70,7 +85,8 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
         let store = LearnedTermStore(fileURL: nil, now: clock.clock.now)
         viewModel.learnedTermStore = store
-        let runner = FakeRunner(commits: { overlay.commitCallCount })
+        let runner = FakeRunner(
+            commits: { overlay.commitCallCount }, answer: answer, whileRunning: { whileRunning(settings) })
         viewModel.session.projectTermProposer = ProjectTermProposer(
             store: store,
             runner: runner,
@@ -137,6 +153,18 @@ final class ProjectTermProposalWiringTests: XCTestCase {
 
         await dictate(harness, join: join())
         XCTAssertEqual(harness.runner.all.count, 1, "a second dictation in the project asks nothing")
+    }
+
+    /// LVX-90: the user refuses a suggestion in Settings while the agent
+    /// runs. The answer, stored after, keeps that term out.
+    func testATermRefusedWhileTheAgentRunsIsNotStored() async {
+        let harness = makeHarness(answer: ["inkwell", "Bindery"]) { settings in
+            settings.polishDismissedTermSuggestions.append("bindery")
+        }
+        await dictate(harness, join: join())
+
+        XCTAssertEqual(
+            harness.store.snapshot().unconfirmedProposals(projectKey: Self.projectDirectory), ["inkwell"])
     }
 
     func testAJoinedVibeOrOpencodeDictationAsksThatAgent() async {
