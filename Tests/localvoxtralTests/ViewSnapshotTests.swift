@@ -47,6 +47,15 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// About on a release copy, where the update rows show (LVX-57). A test
+    /// process is never one, so the model is connected by hand.
+    func testAboutWithUpdates() async throws {
+        try await recordSettings(pane: .about, name: "settings-about-updates", setUp: false) { viewModel in
+            viewModel.updates.connect(
+                installsAutomatically: true, setInstallsAutomatically: { _ in }, checkForUpdates: {})
+        }
+    }
+
     /// Insights with the usage ledger holding a call of every feature, on
     /// every kind of backend: the Usage by feature group at the end (#837).
     func testInsightsUsageByFeature() async throws {

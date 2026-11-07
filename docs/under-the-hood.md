@@ -7,7 +7,11 @@ also covers the hosted Mistral API and running the models on your own server.
 
 With the managed local engines, nothing you say or write leaves your Mac.
 Audio capture, transcription and LLM polishing run as local processes. The
-only network traffic is the one-time download of the engines and models.
+only network traffic is the one-time download of the engines and models, and
+a daily update check: the app reads the newest release's feed from GitHub
+and downloads the update it names
+([Update localvoxtral](install.md#update-localvoxtral)). GitHub sees your IP
+address and the app's version in the request; no system profile is sent.
 
 There is no telemetry, no account and no cloud fallback.
 

@@ -39,7 +39,21 @@ it from Settings.
 
 ## Update localvoxtral
 
-Update the same way you installed:
+localvoxtral updates itself. It checks for a new stable release once a day,
+downloads it in the background, and installs it when no dictation is running
+and you have been away from the keyboard for five minutes. The menu bar icon
+goes away for a few seconds and comes back on the new version. Most updates
+download only what changed, a few MB.
+
+To choose when to install, turn off **Install updates automatically** in
+**Settings → About**: localvoxtral then shows each update in a window and
+installs when you click Install. **Check for Updates…** on the same pane
+checks now.
+
+A nightly build moves to the first stable release built after it. Copies
+built from source never update themselves, and releases from before November
+2026 have no updater: update one of those once, the same way you installed
+it:
 
 - Run the installer script again.
 - With Homebrew, run the upgrade:
@@ -47,6 +61,8 @@ Update the same way you installed:
   ```bash
   brew upgrade --cask localvoxtral
   ```
+
+  Homebrew leaves later updates to the app, unless you pass `--greedy`.
 
 - Or download the newest DMG and replace the app in your Applications folder.
 

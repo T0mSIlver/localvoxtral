@@ -118,7 +118,8 @@ esac
 STUB
 chmod +x "$TMP_DIR/bin/gh"
 
-# build_assets <dir> <tag>: the seven files release.yml builds.
+# build_assets <dir> <tag>: the files release.yml builds: seven, plus the
+# update feed and one delta for a stable tag.
 build_assets() {
   local dir="$1" tag="$2" name
   mkdir -p "$dir"
@@ -129,6 +130,10 @@ build_assets() {
   (cd "$dir" && sha256sum "localvoxtral-$tag.zip" >"localvoxtral-$tag.zip.sha256" \
     && sha256sum "localvoxtral-$tag.dmg" >"localvoxtral-$tag.dmg.sha256")
   printf 'Signed with Developer ID and notarized by Apple.\n' >"$dir/localvoxtral-$tag.release-notes.md"
+  if [[ "$tag" != *-* ]]; then
+    printf '<rss/>\n' >"$dir/appcast.xml"
+    printf 'delta\n' >"$dir/localvoxtral-$tag-from-2050.delta"
+  fi
 }
 
 # scenario <tag>: a fresh $SCEN where <tag> is pushed and has no release.
@@ -164,7 +169,7 @@ publish 0 "an upload that fails twice on DNS then succeeds publishes the release
 contains "Uploading localvoxtral-$TAG.zip failed (attempt 1 of 5)"
 contains "Uploading localvoxtral-$TAG.zip failed (attempt 2 of 5)"
 expect_eq "zip upload calls" "$(calls_matching "release upload $TAG $DIST/localvoxtral-$TAG.zip ")" 3
-expect_eq "assets" "$(release_jq '.[0].assets | length')" 7
+expect_eq "assets" "$(release_jq '.[0].assets | length')" 9
 expect_eq "draft" "$(release_jq '.[0].draft')" false
 expect_eq "make_latest" "$(release_jq '.[0].make_latest')" true
 expect_eq "prerelease" "$(release_jq '.[0].prerelease')" false
@@ -179,7 +184,7 @@ echo always >"$SCEN/fail-upload-localvoxtral-$TAG.zip"
 publish 1 "an upload that never succeeds leaves a draft and names the resume command" "$TAG"
 contains "Uploading localvoxtral-$TAG.zip failed 5 times; giving up"
 contains "lacks, or holds at another size: localvoxtral-$TAG.zip. It stays a draft; rerun ./scripts/release.sh publish $TAG"
-expect_eq "assets" "$(release_jq '.[0].assets | length')" 6
+expect_eq "assets" "$(release_jq '.[0].assets | length')" 8
 expect_eq "draft" "$(release_jq '.[0].draft')" true
 expect_eq "publish calls" "$(calls_matching "-X PATCH")" 0
 pass
@@ -193,7 +198,7 @@ expect_eq "zip uploads" "$(calls_matching "release upload $TAG $DIST/localvoxtra
 expect_eq "creates" "$(calls_matching "-X POST")" 0
 expect_eq "releases" "$(release_jq 'length')" 1
 expect_eq "draft" "$(release_jq '.[0].draft')" false
-expect_eq "assets" "$(release_jq '.[0].assets | length')" 7
+expect_eq "assets" "$(release_jq '.[0].assets | length')" 9
 pass
 
 : >"$SCEN/calls"
@@ -220,6 +225,13 @@ echo 1 >"$SCEN/fail-publish"
 publish 0 "failed lookups, a failed create and a failed publish are each retried" "$TAG"
 expect_eq "releases" "$(release_jq 'length')" 1
 expect_eq "draft" "$(release_jq '.[0].draft')" false
+pass
+
+scenario "$TAG"
+rm "$DIST/appcast.xml"
+publish 1 "a stable release without the update feed is refused before any upload" "$TAG"
+contains "missing or empty asset $DIST/appcast.xml"
+expect_eq "releases" "$(release_jq 'length')" 0
 pass
 
 NIGHTLY=v0.13.1-nightly.20261004
@@ -274,7 +286,7 @@ OUTPUT="$(SCEN="$SCEN" PUBLISH_RETRY_DELAY=0 LV_RELEASE_PUBLISH_DIR="$SCEN/downl
 grep -qxF "run download 222 -n localvoxtral-release-$TAG -D $SCEN/download" "$SCEN/calls" \
   || fail "$DESCRIPTION: did not download the unexpired artifact. Calls: $(cat "$SCEN/calls")"
 expect_eq "draft" "$(release_jq '.[0].draft')" false
-expect_eq "assets" "$(release_jq '.[0].assets | length')" 7
+expect_eq "assets" "$(release_jq '.[0].assets | length')" 9
 grep -qxF "workflow run cask.yml -f tag=$TAG" "$SCEN/calls" \
   || fail "$DESCRIPTION: the tap was not pinned. Calls: $(cat "$SCEN/calls")"
 [[ ! -e "$SCEN/download" ]] || fail "$DESCRIPTION: the download was left behind"

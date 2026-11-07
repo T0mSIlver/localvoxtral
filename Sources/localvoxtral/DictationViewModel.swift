@@ -364,6 +364,9 @@ final class DictationViewModel {
     /// through it.
     @ObservationIgnored
     let engines: EnginesModel
+    /// Settings → About's update rows; `SparkleAppUpdater` connects it.
+    @ObservationIgnored
+    let updates = AppUpdateModel()
     /// Bumped after every history write that landed, so the History pane
     /// reads the store again.
     private(set) var dictationHistoryRevision = 0
