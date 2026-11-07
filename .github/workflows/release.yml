@@ -764,8 +764,10 @@ jobs:
 
       - name: Prune old rc releases
         # Without this, on-demand rcs would pile up on the releases page.
-        # Keep the newest 7 and delete the rest, releases and tags both. It
-        # also deletes every leftover -nightly release, so those age out.
+        # Keep the newest 7 by publication time and delete the rest, releases
+        # and tags both. Leftover -nightly releases share that pool, so they
+        # age out one per new rc. The tag this run just published is never
+        # selected.
         #
         # The selection lives in scripts/ci/prune-rc-releases.sh, which takes
         # tags on stdin, prints only tags matching the rc or old nightly
@@ -777,17 +779,20 @@ jobs:
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true' && steps.plan.outputs.channel == 'rc'
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISHED_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          # 1000, not 100: the prune only sees what this list returns, so a
-          # window smaller than the release history would let rcs and
-          # nightlies older than the window outlive the prune forever.
-          gh release list --limit 1000 --json tagName --jq '.[].tagName' \
+          # Every page, so no rc or nightly older than a window outlives the
+          # prune. Tag and published_at, tab-separated: "newest" is the most
+          # recently published, not the highest version. A draft has no
+          # published_at and sorts oldest.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq '.[] | [.tag_name, (.published_at // "")] | @tsv' \
             > "$RUNNER_TEMP/release-tags.txt"
-          ./scripts/ci/prune-rc-releases.sh --keep 7 "$RUNNER_TEMP/release-tags.txt" \
+          ./scripts/ci/prune-rc-releases.sh --keep 7 --protect "$PUBLISHED_TAG" "$RUNNER_TEMP/release-tags.txt" \
             > "$RUNNER_TEMP/rcs-to-delete.txt"
           if [[ ! -s "$RUNNER_TEMP/rcs-to-delete.txt" ]]; then
-            echo "RC pruning: nothing to delete (7 or fewer rc releases, no old nightlies)" \
+            echo "RC pruning: nothing to delete (7 or fewer rc and nightly releases)" \
               | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -800,7 +805,7 @@ jobs:
             gh release delete "$TAG" --cleanup-tag --yes
           done < "$RUNNER_TEMP/rcs-to-delete.txt"
           {
-            echo "RC pruning: deleted $(wc -l < "$RUNNER_TEMP/rcs-to-delete.txt" | tr -d ' ') old rc or nightly release(s), newest 7 rc kept"
+            echo "RC pruning: deleted $(wc -l < "$RUNNER_TEMP/rcs-to-delete.txt" | tr -d ' ') old rc or nightly release(s), newest 7 kept"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Stable and daily releases only: rc builds are prereleases, and the tap
