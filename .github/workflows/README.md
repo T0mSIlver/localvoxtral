@@ -221,11 +221,12 @@ tag so an rc can never become the base for the next stable version. Users
 opt in with `LOCALVOXTRAL_CHANNEL=rc` (see the
 [install page](https://t0msilver.github.io/localvoxtral/install)).
 
-After publishing, an rc deletes the rc releases beyond the newest 7, tags
-included, and every leftover `-nightly` release (that channel is gone). The
-selection is `scripts/ci/prune-rc-releases.sh`: it takes tags on stdin,
-prints only tags matching the rc or old nightly shape exactly, and touches
-no network, so `test-prune-rc-releases.sh` can hold it to the cases that
+After publishing, an rc deletes the rc and leftover `-nightly` releases
+beyond the newest 7 of that pool by publication time, tags included, so old
+nightlies age out one per new rc. The tag just published is never selected.
+The selection is `scripts/ci/prune-rc-releases.sh`: it takes tag and
+`published_at` lines on stdin, prints only tags matching the rc or old
+nightly shape exactly, and touches no network, so `test-prune-rc-releases.sh` can hold it to the cases that
 matter (a stable tag is invisible to it). The workflow re-checks both shapes
 before each delete.
 
