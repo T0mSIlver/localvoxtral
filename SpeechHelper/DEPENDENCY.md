@@ -1,6 +1,7 @@
 # Dependency: mlx-audio-swift streaming ASR
 
-`SpeechEngine` drives [`Blaizzy/mlx-audio-swift`](https://github.com/Blaizzy/mlx-audio-swift)'s
+`SpeechEngine` drives [`Neywa-Labs/mlx-audio-swift`](https://github.com/Neywa-Labs/mlx-audio-swift)'s
+(formerly `Blaizzy/mlx-audio-swift`; the old links redirect)
 VoxtralRealtime and NemotronASR engines as an **upstream SwiftPM dependency** (product
 `MLXAudioSTT`, MIT-licensed). VoxtralRealtime used to be vendored into `Sources/SpeechEngine/`
 with local patches; those patches were upstreamed (see below), so we depend instead of vendor.
@@ -20,20 +21,25 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "c793e5cc0891c3c0f1856a41ca9151b116ba7c36"
+    url: "https://github.com/Neywa-Labs/mlx-audio-swift.git",
+    revision: "373644559fe15f3e8a4d3f68d36b94a111e66dbb"
 )
 ```
 
-This fork commit (branch `pin/nemotron-unified-on-902920c-v2`) is upstream's `902920c` plus
-the Nemotron Unified port, which the catalog's Unified entry needs. Its NemotronASR code is
-the port as posted upstream in Neywa-Labs/mlx-audio-swift#374 (`87c2920`), minus the two
-lines upstream's #349 added after `902920c`. It must become an upstream SHA before merge.
+`3736445` is upstream's merge of the Nemotron Unified port
+([#374](https://github.com/Neywa-Labs/mlx-audio-swift/pull/374), 2026-11-07), 67 commits past
+`902920c`. Against the fork commit the Unified entry was measured on (`c793e5c`), review changed
+the port in four ways speechd sees: the buffered encoder is no longer `MLX.compile`d per window
+shape, it keeps its audio buffer as an `MLXArray`, per-feature mel normalization always zeroes
+the frames past `samples / hop`, and an unknown prompt language falls back to the default
+silently instead of warning on stderr. The rest of the range adds other models, moves Voxtral
+Realtime onto the shared `TekkenTokenizer`, and raises the floor to mlx-swift 0.33.0 and adds
+zstd to the graph.
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-`902920c` is upstream main on 2026-10-23. Over the previous pin it carries:
+The pin before, `902920c`, was upstream main on 2026-10-23. Over its previous pin it carried:
 
 - Voxtral Realtime streaming: encoder KV rows written into preallocated storage
   ([#272](https://github.com/Blaizzy/mlx-audio-swift/pull/272)), the mel Hann window reused per
@@ -142,7 +148,7 @@ casts; `VoxtralRealtimeStreamSession.swift` differed only in the delta routing b
 Upstream's manifest uses `.upToNextMajor` for every dependency, so unconstrained resolution can
 drift onto known-bad versions. We pin the two risky ones exactly:
 
-- **mlx-swift `exact: "0.32.3"`** — matches upstream's own `Package.resolved` and its manifest
+- **mlx-swift `exact: "0.33.0"`** — matches upstream's own `Package.resolved` and its manifest
   floor. Never resolve to 0.31.4 or 0.31.5, which carry the `evalLock` deadlock
   ([mlx-swift#428](https://github.com/ml-explore/mlx-swift/issues/428), fixed in 0.31.6). Its
   manifest needs swift-tools-version 6.3.
