@@ -123,6 +123,17 @@ set -euo pipefail
 #                  score {"id","text"} rows with no speech engine;
 #                  `compare <before> <after>` pairs two runs by label, e.g.
 #                  eval-term-recall --asr nemotron
+#                  `--asr apple` runs Apple's DictationTranscriber in the
+#                  test process instead of a speech service (LVX-36; macOS 26,
+#                  no TCC grant, finals only, prints final lags and stop
+#                  tails), with `--bias none|session|noise` (contextual
+#                  strings: none, the case's session terms, the noise terms),
+#                  `--pace realtime|fast` (80 ms buffers at real time, the
+#                  default, or as fast as it takes them: text only),
+#                  `--finalization frequent|standard` and
+#                  `--allow-asset-download` (else a locale whose speech assets
+#                  are not installed fails setup), e.g.
+#                  eval-term-recall --asr apple --bias session
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -947,9 +958,17 @@ case "$CMD" in
     TR_RECORDINGS=""
     TR_HYPOTHESES=""
     TR_COMPARE=()
+    TR_BIAS=""
+    TR_PACE=""
+    TR_FINALIZATION=""
+    TR_ASSET_DOWNLOAD=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --asr|--label|--limit|--case|--recordings|--hypotheses)
+        --allow-asset-download)
+          TR_ASSET_DOWNLOAD=1
+          shift
+          ;;
+        --asr|--label|--limit|--case|--recordings|--hypotheses|--bias|--pace|--finalization)
           if [[ $# -lt 2 ]]; then
             echo "eval-term-recall: $1 needs a value" >&2
             exit 1
@@ -961,6 +980,9 @@ case "$CMD" in
             --case) TR_CASES+=("$2") ;;
             --recordings) TR_RECORDINGS="$2" ;;
             --hypotheses) TR_HYPOTHESES="$2" ;;
+            --bias) TR_BIAS="$2" ;;
+            --pace) TR_PACE="$2" ;;
+            --finalization) TR_FINALIZATION="$2" ;;
           esac
           shift 2
           ;;
@@ -1000,6 +1022,17 @@ case "$CMD" in
     if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES" \
           || ${#TR_CASES[@]} -gt 0 ) ]]; then
       echo "eval-term-recall compare takes no other options" >&2
+      exit 1
+    fi
+    # Only the in-process Apple engine takes a list or these settings.
+    if [[ "$TR_ASR" != apple && ( -n "$TR_BIAS$TR_PACE$TR_FINALIZATION" || "$TR_ASSET_DOWNLOAD" == 1 ) ]]; then
+      echo "eval-term-recall: --bias, --pace, --finalization and --allow-asset-download need --asr apple" >&2
+      exit 1
+    fi
+    if [[ -n "$TR_BIAS" && ! "$TR_BIAS" =~ ^(none|session|noise)$ ]] \
+      || [[ -n "$TR_PACE" && ! "$TR_PACE" =~ ^(realtime|fast)$ ]] \
+      || [[ -n "$TR_FINALIZATION" && ! "$TR_FINALIZATION" =~ ^(frequent|standard)$ ]]; then
+      echo "eval-term-recall: --bias none|session|noise, --pace realtime|fast, --finalization frequent|standard" >&2
       exit 1
     fi
     if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_RECORDINGS" ) ]]; then
@@ -1045,12 +1078,20 @@ case "$CMD" in
           fi
           TR_OPTIONAL+=",\"recordingDirectory\":\"$TR_RECORDINGS\""
         fi
-        speech_model_row "$TR_ASR" eval-term-recall
-        TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
-        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
-          "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
-          "$TR_OPTIONAL" >"$TR_MARKER"
-        ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+        if [[ "$TR_ASR" == apple ]]; then
+          # In process: no speech service to start.
+          TR_LABEL="${TR_LABEL:-apple-${TR_BIAS:-none}}"
+          printf '{"mode":"audio","label":"%s","asr":"apple","bias":"%s","applePace":"%s","appleFinalization":"%s","appleAllowAssetDownload":%s%s}\n' \
+            "$TR_LABEL" "${TR_BIAS:-none}" "${TR_PACE:-realtime}" "${TR_FINALIZATION:-frequent}" \
+            "$([[ "$TR_ASSET_DOWNLOAD" == 1 ]] && echo true || echo false)" "$TR_OPTIONAL" >"$TR_MARKER"
+        else
+          speech_model_row "$TR_ASR" eval-term-recall
+          TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
+          printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
+            "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
+            "$TR_OPTIONAL" >"$TR_MARKER"
+          ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+        fi
       fi
       # The run file comes back through the log: the Mac's copy is under a
       # work dir that a fresh LV_BUILD_DIR or the gc verb can drop.

@@ -187,6 +187,15 @@ if grep -q 'runs live inference' "$TMP_DIR/stderr"; then
   fail "an opted-in integration was refused"
 fi
 
+# LVX-36: the Apple engine's options are refused for a speech service, and
+# a bad value is refused, both before any sync.
+new_transport_log
+run_remote_build 'bias without apple' 1 eval-term-recall --asr nemotron --bias session
+assert_stderr_has 'need --asr apple'
+run_remote_build 'unknown pace' 1 eval-term-recall --asr apple --pace slow
+assert_stderr_has '--pace realtime|fast'
+assert_no_transport 'a refused apple option'
+
 # #2041: the replay cap needs a replay and a count, refused before any sync.
 new_transport_log
 run_remote_build 'replay cap without a replay' 1 eval-e2e --replay-newest 40
