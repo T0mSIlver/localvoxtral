@@ -12,8 +12,8 @@
 # No postflight: stable releases are notarized (#1430), so the cask installs
 # the app as Apple signed it, quarantine flag included.
 #
-# Stable only. `brew upgrade` compares version strings, and a nightly
-# (vX.Y.Z-nightly.DATE) or an rc in the same cask would move stable users onto
+# Stable only. `brew upgrade` compares version strings, and an rc
+# (vX.Y.Z-rc.N) in the same cask would move stable users onto
 # a prerelease. The tag shape is checked here so every caller gets the refusal.
 #
 # Original cask by @achembarpu (achembarpu/localvoxtral, feat/homebrew-cask).

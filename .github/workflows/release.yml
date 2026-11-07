@@ -17,8 +17,9 @@ name: Release App
 #     that run on main when he is at the Mac, so the commit is main as it was
 #     then, and can be behind main's head. Nothing new, or nothing checked:
 #     no release that day.
-#   * nightly: on demand only (release.sh nightly). A prerelease of main's
-#     head without the e2e gate, never /releases/latest, pruned to 7.
+#   * rc: on demand only (release.sh rc [ref]). A release candidate for the
+#     next daily (X.(Y+1).0-rc.N), built from any ref without the e2e gate,
+#     never /releases/latest, pruned to 7 (scripts/ci/rc-version.sh).
 #
 # Rehearsal: `publish=false` runs the whole pipeline and uploads the
 # artifacts, but creates no tag and no release. That is how a change to THIS
@@ -28,11 +29,11 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "stable (hand-cut), daily (minor bump of the newest main commit the e2e dictation passed on) or nightly (main, prerelease)"
+        description: "stable (hand-cut), daily (minor bump of the newest main commit the e2e dictation passed on) or rc (any ref, prerelease)"
         required: false
         default: "stable"
         type: choice
-        options: [stable, daily, nightly]
+        options: [stable, daily, rc]
       bump:
         description: "Version bump from the latest v* tag (stable channel only)"
         required: false
@@ -97,8 +98,8 @@ jobs:
       # Stable releases dispatch on main; X.Y.Z-rc.N prereleases may dispatch
       # on any branch (the Compute version step enforces this pairing), so a
       # release candidate can be installed via install.sh and hand-tested
-      # end-to-end before the branch merges. Daily and nightly releases
-      # publish from main only. Rehearsals (publish=false) run from any ref
+      # end-to-end before the branch merges. Daily releases publish from main
+      # only; an rc release from any ref. Rehearsals (publish=false) run from any ref
       # on any channel.
       #
       # The dispatched commit, not the branch name: the branch can move while
@@ -130,7 +131,7 @@ jobs:
         #   * it is a daily release and scripts/ci/daily-release-plan.sh finds
         #     nothing to ship: main is already the newest stable tag, or no
         #     commit since that tag passed the e2e dictation check.
-        # Stable and nightly dispatches always build.
+        # Stable and rc dispatches always build.
         #
         # A daily release checks out the commit the plan picked, which can be
         # behind main's head, so every step below builds, tags and ships that
@@ -141,7 +142,7 @@ jobs:
         # day: both notarization waits are cut to what is left of the window
         # (scripts/ci/night-deadline.sh), so a slow Apple fails the run before
         # it tags anything instead of holding the Mac into the owner's day.
-        # Stable, nightly and rehearsal runs, and a daily dispatched in the
+        # Stable, rc and rehearsal runs, and a daily dispatched in the
         # day, keep the full 3 h waits.
         #
         # The release machinery this file calls after the daily detach
@@ -169,7 +170,7 @@ jobs:
             PUBLISH="${PUBLISH_INPUT:-true}"
           fi
           case "$CHANNEL" in
-            stable|daily|nightly) ;;
+            stable|daily|rc) ;;
             *) echo "Unknown channel: $CHANNEL"; exit 1 ;;
           esac
           case "$PUBLISH" in
@@ -177,7 +178,7 @@ jobs:
             *) echo "Unknown publish value: $PUBLISH"; exit 1 ;;
           esac
 
-          if [[ "$PUBLISH" == "true" && "$CHANNEL" != "stable" \
+          if [[ "$PUBLISH" == "true" && "$CHANNEL" == "daily" \
                 && "$GITHUB_REF_NAME" != "main" ]]; then
             echo "The $CHANNEL channel publishes from main only. To exercise this pipeline from '$GITHUB_REF_NAME', dispatch with publish=false (rehearsal)."
             exit 1
@@ -260,18 +261,18 @@ jobs:
           if [[ "$CHANNEL" == "daily" ]]; then
             BUMP=minor
           fi
-          if [[ "$CHANNEL" == "nightly" ]]; then
-            # Every tag that exists anywhere, so the same-day .N search cannot
-            # pick a name the remote already holds.
+          if [[ "$CHANNEL" == "rc" ]]; then
+            # Every tag that exists anywhere, so the rc.N search cannot pick a
+            # name the remote already holds.
             TAGS_FILE="$RUNNER_TEMP/existing-tags.txt"
             {
               git tag --list
               git ls-remote --tags origin | sed -n 's#.*refs/tags/##p' | sed 's/\^{}$//'
             } | sort -u > "$TAGS_FILE"
-            DECISION="$(./scripts/ci/nightly-version.sh "$(date -u +%Y%m%d)" "$TAGS_FILE")"
+            DECISION="$(./scripts/ci/rc-version.sh "$TAGS_FILE")"
             VERSION="$(sed -n 's/^version=//p' <<<"$DECISION")"
             PRERELEASE=true
-            echo "Nightly derived from $(sed -n 's/^base=//p' <<<"$DECISION")"
+            echo "RC derived from $(sed -n 's/^base=//p' <<<"$DECISION")"
           elif [[ -n "$EXPLICIT" ]]; then
             if [[ ! "$EXPLICIT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
               echo "Invalid explicit version: $EXPLICIT (expected X.Y.Z or X.Y.Z-rc.N)"; exit 1
@@ -281,10 +282,10 @@ jobs:
           else
             # --exclude keeps rc tags out of the bump base, or a stale rc
             # would poison the arithmetic below. It excludes every `v*-*` tag,
-            # which is also what keeps nightlies out of the stable bump:
-            # v0.8.5-nightly.20260916 must never become the base for v0.8.6.
-            # scripts/ci/nightly-version.sh asserts the same property from the
-            # nightly side (test-nightly-version.sh).
+            # which is also what keeps rc tags out of the stable bump:
+            # v0.9.0-rc.1 must never become the base for v0.9.1.
+            # scripts/ci/rc-version.sh asserts the same property from the rc
+            # side (test-rc-version.sh).
             LATEST="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude 'v*-*' 2>/dev/null || echo v0.0.0)"
             BASE="${LATEST#v}"
             IFS=. read -r MA MI PA <<< "$BASE"
@@ -428,7 +429,7 @@ jobs:
       - name: Check the signing credentials
         # Stable and daily releases (and their rehearsals) must ship signed with
         # Developer ID and notarized, so a missing identity or notarytool
-        # profile fails them here, before packaging. A nightly falls back to
+        # profile fails them here, before packaging. An rc falls back to
         # ad-hoc signing with a warning, and its release notes say so;
         # install.sh still re-signs an ad-hoc download for the macOS 26 launch
         # stall. Both checks name what is missing: the identity in the
@@ -457,9 +458,9 @@ jobs:
           if [[ -z "$missing" ]]; then
             echo "notarize=true" >> "$GITHUB_OUTPUT"
             echo "Signing: $DEVELOPER_ID_IDENTITY, notarized with profile $NOTARY_PROFILE" | tee -a "$GITHUB_STEP_SUMMARY"
-          elif [[ "$CHANNEL" == "nightly" ]]; then
+          elif [[ "$CHANNEL" == "rc" ]]; then
             echo "notarize=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Nightly falls back to ad-hoc signing: $missing"
+            echo "::warning::An rc falls back to ad-hoc signing: $missing"
             echo "Signing: **ad-hoc, not notarized** ($missing)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "::error::A $CHANNEL release must be signed with Developer ID and notarized, but $missing."
@@ -469,7 +470,7 @@ jobs:
       - name: Gate — package app bundle
         if: steps.plan.outputs.proceed != 'false'
         env:
-          # Empty for an ad-hoc nightly, so package_app.sh signs ad-hoc.
+          # Empty for an ad-hoc rc, so package_app.sh signs ad-hoc.
           LOCALVOXTRAL_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && env.DEVELOPER_ID_IDENTITY || '' }}
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && '1' || '0' }}
         # Cold: the app, then both MLX helpers through xcodebuild, which
@@ -641,10 +642,10 @@ jobs:
         # forgotten file makes a duller release, never a failed one. The one
         # hard failure is a file that exists and says nothing — see the script.
         #
-        # A nightly additionally gets a fixed header saying what it is and how
-        # to install it, because a prerelease of main needs that context far
-        # more than a stable release does. A hand-written nightly file (rare)
-        # lands under that header.
+        # An rc additionally gets a fixed header saying what it is and how to
+        # install it, because a prerelease needs that context far more than a
+        # stable release does. A hand-written rc file (rare) lands under that
+        # header.
         #
         # Every release says how it is signed. A notarized one tells users
         # coming from an ad-hoc build (every release before #1430) to re-grant
@@ -676,16 +677,16 @@ jobs:
             fi
             echo ""
           } > "$BODY_PATH"
-          if [[ "$CHANNEL" == "nightly" ]]; then
+          if [[ "$CHANNEL" == "rc" ]]; then
             {
-              echo "Nightly build of \`main\` at \`$(git rev-parse --short HEAD)\`, built and gated by the same pipeline as a stable release."
+              echo "Release candidate built from \`$GITHUB_REF_NAME\` at \`$(git rev-parse --short HEAD)\`, built and gated by the same pipeline as a stable release."
               echo ""
-              echo "This is **not a stable release**. It ships whatever was on \`main\` when it was built."
+              echo "This is **not a stable release**. It ships whatever was on \`$GITHUB_REF_NAME\` when it was built."
               echo ""
               echo "Install it:"
               echo ""
               echo '```bash'
-              echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=nightly bash"
+              echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=rc bash"
               echo '```'
               echo ""
               echo "Re-run that line to update. To go back to stable, run the installer without \`LOCALVOXTRAL_CHANNEL\`."
@@ -704,7 +705,7 @@ jobs:
         # body is the notes above GitHub's generated PR list, uploads the
         # seven assets with retries (a stable release adds the update feed
         # and its deltas), checks them, and only then publishes.
-        # A nightly or rc is a prerelease and never marked Latest, so
+        # An rc is a prerelease and never marked Latest, so
         # /releases/latest, which install.sh's stable path and the README
         # follow, keeps pointing at the newest stable release.
         #
@@ -761,47 +762,48 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Prune old nightly releases
-        # Without this, on-demand nightlies would pile up on the releases page.
-        # Keep the newest 7 and delete the rest, releases and tags both.
+      - name: Prune old rc releases
+        # Without this, on-demand rcs would pile up on the releases page.
+        # Keep the newest 7 and delete the rest, releases and tags both. It
+        # also deletes every leftover -nightly release, so those age out.
         #
-        # The selection lives in scripts/ci/prune-nightly-releases.sh, which
-        # takes tags on stdin, prints only tags matching the nightly shape
-        # exactly, and touches no network — so it is tested
-        # (test-prune-nightly-releases.sh, in ci.yml's shell-test step)
-        # against the cases that matter here: a stable or rc tag must be
-        # invisible to it. The shape is re-checked in the loop below, because
-        # the next command is a delete.
-        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true' && steps.plan.outputs.channel == 'nightly'
+        # The selection lives in scripts/ci/prune-rc-releases.sh, which takes
+        # tags on stdin, prints only tags matching the rc or old nightly
+        # shape exactly, and touches no network — so it is tested
+        # (test-prune-rc-releases.sh, in ci.yml's shell-test step) against
+        # the cases that matter here: a stable tag must be invisible to it.
+        # The shapes are re-checked in the loop below, because the next
+        # command is a delete.
+        if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true' && steps.plan.outputs.channel == 'rc'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # 1000, not 100: the prune only sees what this list returns, so a
-          # window smaller than the release history would let nightlies
-          # older than the window outlive the keep-7 rule forever.
+          # window smaller than the release history would let rcs and
+          # nightlies older than the window outlive the prune forever.
           gh release list --limit 1000 --json tagName --jq '.[].tagName' \
             > "$RUNNER_TEMP/release-tags.txt"
-          ./scripts/ci/prune-nightly-releases.sh --keep 7 "$RUNNER_TEMP/release-tags.txt" \
-            > "$RUNNER_TEMP/nightlies-to-delete.txt"
-          if [[ ! -s "$RUNNER_TEMP/nightlies-to-delete.txt" ]]; then
-            echo "Nightly pruning: nothing to delete (7 or fewer nightly releases)" \
+          ./scripts/ci/prune-rc-releases.sh --keep 7 "$RUNNER_TEMP/release-tags.txt" \
+            > "$RUNNER_TEMP/rcs-to-delete.txt"
+          if [[ ! -s "$RUNNER_TEMP/rcs-to-delete.txt" ]]; then
+            echo "RC pruning: nothing to delete (7 or fewer rc releases, no old nightlies)" \
               | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           while IFS= read -r TAG; do
             [[ -n "$TAG" ]] || continue
-            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}(\.[0-9]+)?$ ]]; then
-              echo "refusing to delete a tag that is not a nightly: $TAG"; exit 1
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rc\.[0-9]+|nightly\.[0-9]{8}(\.[0-9]+)?)$ ]]; then
+              echo "refusing to delete a tag that is not an rc or an old nightly: $TAG"; exit 1
             fi
-            echo "Deleting old nightly release and tag: $TAG"
+            echo "Deleting old rc release and tag: $TAG"
             gh release delete "$TAG" --cleanup-tag --yes
-          done < "$RUNNER_TEMP/nightlies-to-delete.txt"
+          done < "$RUNNER_TEMP/rcs-to-delete.txt"
           {
-            echo "Nightly pruning: deleted $(wc -l < "$RUNNER_TEMP/nightlies-to-delete.txt" | tr -d ' ') old nightly release(s), newest 7 kept"
+            echo "RC pruning: deleted $(wc -l < "$RUNNER_TEMP/rcs-to-delete.txt" | tr -d ' ') old rc or nightly release(s), newest 7 rc kept"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Stable and daily releases only: nightlies and rc builds are prereleases, and the tap
+  # Stable and daily releases only: rc builds are prereleases, and the tap
   # is what `brew upgrade` follows. This job runs after the release is public,
   # so a failure here leaves a good release and a stale tap; cask.yml's header
   # has the one-line repair.

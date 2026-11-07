@@ -73,7 +73,7 @@ if grep -q 'default\.store\|huggingface' <<<"$ZAP"; then
 fi
 pass "zap leaves shared paths alone"
 
-expect_refusal "nightly tag" v0.9.1-nightly.20260921 "$SHA"
+expect_refusal "old nightly tag" v0.9.1-nightly.20260921 "$SHA"
 expect_refusal "rc tag" v1.0.0-rc.1 "$SHA"
 expect_refusal "tag without v" 0.9.0 "$SHA"
 expect_refusal "short sha256" v0.9.0 abc123
