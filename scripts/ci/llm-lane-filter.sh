@@ -27,7 +27,10 @@
 # fail-open behavior when it cannot produce a diff at all.
 set -euo pipefail
 
-MARKER='[run-llm-eval]'
+# What the filter prints names the marker without brackets: a reason pasted
+# into a PR body as proof must not opt that PR in (LVX-114).
+MARKER_NAME='run-llm-eval'
+MARKER="[$MARKER_NAME]"
 SKIP_MARKER='skip-llm-eval'
 
 # LLM-relevant paths. A path belongs here when changing it can alter what
@@ -268,10 +271,10 @@ if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]] \
     && grep -qF "$MARKER" "$MARKER_TEXT_FILE"; then
   echo "run=true"
   if [[ "$SKIP_STATE" == "absent" ]]; then
-    echo "reason=explicit $MARKER marker"
+    echo "reason=explicit $MARKER_NAME marker"
     echo "skip_marker=absent"
   else
-    echo "reason=explicit $MARKER marker, which overrides the $SKIP_MARKER marker beside it"
+    echo "reason=explicit $MARKER_NAME marker, which overrides the $SKIP_MARKER marker beside it"
     echo "skip_marker=overridden"
   fi
   exit 0
@@ -331,7 +334,7 @@ echo "run=false"
 # "and push": the marker is only read from the event payload at run-creation
 # time — editing the PR body after a skipped run creates no new run, and
 # reruns reuse the original payload, so a late-added marker needs a push.
-echo "reason=no LLM-relevant changes; add $MARKER to the PR body or commit message and push to opt in"
+echo "reason=no LLM-relevant changes; add the $MARKER_NAME marker, in square brackets, to the PR body or commit message and push to opt in"
 case "$SKIP_STATE" in
   present) echo "skip_marker=unneeded" ;;
   no-reason) echo "skip_marker=no-reason" ;;
