@@ -31,7 +31,7 @@ commit c1 "$T0"
 tag v0.9.0
 commit c2 "$((T0 + 1 * DAY))"       # first commit after the stable tag
 commit c3 "$((T0 + 5 * DAY))"
-tag v0.10.0-nightly.20260101         # a nightly never counts as a release
+tag v0.10.0-rc.1                     # an rc never counts as a release
 commit c4 "$((T0 + 9 * DAY))"
 
 # check <now-offset-days> [limit-days]: prints the script's output, returns its status.
@@ -46,7 +46,7 @@ field() { sed -n "s/^$1=//p" "$TMP_DIR/out"; }
 # 1: the oldest unreleased commit (c2, day 1) is 11 days old on day 12.
 if check 12; then fail "12 days without a release passed: $(cat "$TMP_DIR/out")"; fi
 [[ "$(field stale)" == true ]] || fail "stale=$(field stale)"
-[[ "$(field base)" == v0.9.0 ]] || fail "base must be the stable tag, never the nightly: $(field base)"
+[[ "$(field base)" == v0.9.0 ]] || fail "base must be the stable tag, never the rc: $(field base)"
 [[ "$(field waiting)" == 3 ]] || fail "waiting=$(field waiting), expected 3"
 [[ "$(field oldest_days)" == 11 ]] || fail "oldest_days=$(field oldest_days), expected 11"
 grep -q "gh run list -w release.yml" "$TMP_DIR/out" || fail "the reason names where to look: $(cat "$TMP_DIR/out")"

@@ -63,7 +63,7 @@ expect_refusal() {
   pass "$description -> refused ($(head -n1 "$TMP_DIR/refused.err"))"
 }
 COMMON=(--build 2100 --minimum-system 15.0 --pub-date "$DATE")
-expect_refusal "a nightly tag" --tag v0.18.1-nightly.20261103 "${COMMON[@]}" --zip "1:$SIG_A"
+expect_refusal "an rc tag" --tag v0.18.0-rc.1 "${COMMON[@]}" --zip "1:$SIG_A"
 expect_refusal "an unsigned zip" --tag v0.18.0 "${COMMON[@]}" --zip "47351174:"
 expect_refusal "a zero-length zip" --tag v0.18.0 "${COMMON[@]}" --zip "0:$SIG_A"
 expect_refusal "a delta from the same build" --tag v0.18.0 "${COMMON[@]}" --zip "1:$SIG_A" --delta "2100:5:$SIG_B"

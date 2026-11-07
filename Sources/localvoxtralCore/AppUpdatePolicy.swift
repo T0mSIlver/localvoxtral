@@ -31,7 +31,7 @@ package enum AppUpdatePolicy {
         /// A CI launch beside the owner's copy (launch smoke, lanes).
         case ciCopy
         /// Not signed by the release team: try-pr, a self-signed dev build,
-        /// an ad-hoc nightly.
+        /// an ad-hoc rc.
         case notReleaseSigned
     }
 

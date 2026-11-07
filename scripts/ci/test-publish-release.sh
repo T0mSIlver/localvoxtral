@@ -234,9 +234,9 @@ contains "missing or empty asset $DIST/appcast.xml"
 expect_eq "releases" "$(release_jq 'length')" 0
 pass
 
-NIGHTLY=v0.13.1-nightly.20261004
-scenario "$NIGHTLY"
-publish 0 "a nightly is a prerelease and never Latest" "$NIGHTLY"
+RC=v0.14.0-rc.2
+scenario "$RC"
+publish 0 "an rc is a prerelease and never Latest" "$RC"
 expect_eq "prerelease" "$(release_jq '.[0].prerelease')" true
 expect_eq "make_latest" "$(release_jq '.[0].make_latest')" false
 pass

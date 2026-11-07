@@ -50,25 +50,23 @@ expect_ok v1.0.0-rc.2 "docs/release-notes/v1.0.0-rc.2.md" "prerelease tags follo
 
 expect_ok v9.9.9 "" "an unrelated tag does not pick up another tag's file"
 
-# --- nightly tags ------------------------------------------------------------
-# The nightly channel tags vX.Y.Z-nightly.YYYYMMDD[.N] every night from main.
-# Those releases normally carry no hand-written file, so the common case must
-# be the quiet one (generated notes), and the shape must be accepted rather
-# than rejected mid-release.
+# --- rc channel tags ----------------------------------------------------------
+# The rc channel tags vX.(Y+1).0-rc.N on demand. Those releases normally carry
+# no hand-written file, so the common case must be the quiet one (generated
+# notes), and the shape must be accepted rather than rejected mid-release.
 
-expect_ok v0.8.5-nightly.20260916 "" \
-  "a nightly tag with no notes file publishes with generated notes only"
-expect_ok v0.8.5-nightly.20260916.3 "" \
-  "a same-day nightly sequence tag is accepted too"
+expect_ok v0.18.0-rc.4 "" \
+  "an rc tag with no notes file publishes with generated notes only"
 
-printf 'nightly notes\n' >"$TMP_DIR/docs/release-notes/v0.8.5-nightly.20260917.md"
-expect_ok v0.8.5-nightly.20260917 "docs/release-notes/v0.8.5-nightly.20260917.md" \
-  "a nightly MAY still ship a hand-written file"
+printf 'rc notes\n' >"$TMP_DIR/docs/release-notes/v0.18.0-rc.5.md"
+expect_ok v0.18.0-rc.5 "docs/release-notes/v0.18.0-rc.5.md" \
+  "an rc MAY still ship a hand-written file"
 
-expect_fail "a nightly tag with a short date is refused" "v0.8.5-nightly.2026091" "$TMP_DIR"
-expect_fail "a nightly tag with no date is refused" "v0.8.5-nightly" "$TMP_DIR"
-expect_fail "a nightly-ish tag with a trailing path segment is refused" \
-  "v0.8.5-nightly.20260916/../../etc/passwd" "$TMP_DIR"
+expect_fail "an rc tag with no number is refused" "v0.18.0-rc" "$TMP_DIR"
+expect_fail "an rc tag with a trailing path segment is refused" \
+  "v0.18.0-rc.1/../../etc/passwd" "$TMP_DIR"
+expect_fail "an old nightly tag is no longer a release shape" \
+  "v0.8.5-nightly.20260916" "$TMP_DIR"
 
 # --- the one hard failure ---------------------------------------------------
 # A file that exists but says nothing would publish a release whose human
