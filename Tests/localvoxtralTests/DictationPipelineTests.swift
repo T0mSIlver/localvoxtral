@@ -4537,6 +4537,9 @@ final class DictationPipelineTests: XCTestCase {
         addTeardownBlock { @MainActor in
             XCTAssertEqual(unexpectedMoves.moves, [], "phase moves outside DictationPhase.canMove")
         }
+        // And each realtime socket along its handshake and final-commit edges.
+        viewModel.session.realtimeAPIClient.failTestOnUnexpectedMoves()
+        viewModel.session.mistralRealtimeClient.failTestOnUnexpectedMoves()
         if let polish {
             settings.llmPolishingEnabled = true
             settings.llmPolishingEndpointURL = polishEndpoint

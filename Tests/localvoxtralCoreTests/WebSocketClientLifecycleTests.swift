@@ -105,7 +105,9 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertFalse(mistral.sendAudioChunk(Data([3, 4])))
     }
 
-    func testRealtimeTerminalErrorSuppressesErrorForUserInitiatedDisconnect() {
+    /// The socket's failure callback lands after `disconnect()` closed it:
+    /// the user's disconnect is the only event.
+    func testRealtimeTerminalErrorAfterUserDisconnectRaisesNothing() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0, from: $1) }
@@ -116,7 +118,8 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        client.debugPrimeConnectedStateForTesting(task: task, isUserInitiatedDisconnect: true)
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.disconnect()
         client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "socket failed")
 
         let after = client.debugStateSnapshot()

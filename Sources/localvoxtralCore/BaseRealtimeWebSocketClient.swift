@@ -29,7 +29,6 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
         var webSocketTask: URLSessionWebSocketTask?
         var socketState: SocketState = .disconnected
         var onEvent: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
-        var isUserInitiatedDisconnect = false
         /// Stamped by `connect()` inside the same locked block that installs the
         /// new socket, so no reader can see the new name beside the old socket.
         /// Deliberately NOT reset by a close: a socket that dies still names
@@ -56,6 +55,7 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
     private let rejectedFrameTally = Mutex<(generation: RealtimeConnectionGeneration, count: Int)>((.none, 0))
     #if DEBUG
     private let rejectedFrameObserver = Mutex<(@Sendable (String) -> Void)?>(nil)
+    private let unexpectedMoveObserver = Mutex<(@Sendable (String) -> Void)?>(nil)
     #endif
 
     // MARK: - Abstract interface (override in subclasses)
@@ -140,6 +140,15 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
         return components.joined(separator: " ")
     }
 
+    /// Logs a handshake or final-commit move the `canMove` tables refuse;
+    /// the phases' `move(to:onRefused:)` calls it.
+    func reportUnexpectedMove(_ move: String) {
+        Log.backends.fault("realtime client: unexpected \(move, privacy: .public)")
+        #if DEBUG
+        unexpectedMoveObserver.withLock { $0 }?(move)
+        #endif
+    }
+
     /// Handles a terminal socket error by cleaning up state and emitting events.
     ///
     /// Subclasses **must** override this to clean up their own state (timers,
@@ -154,10 +163,9 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
                 guard s.socketState != .disconnected, s.webSocketTask === task else {
                     return (nil, false, .none)
                 }
-                let shouldEmitError = !s.isUserInitiatedDisconnect
                 let generation = s.connectionGeneration
                 self.closeBaseStateLocked(&s, cancelTask: false)
-                return (shouldEmitError ? errorMessage : nil, true, generation)
+                return (errorMessage, true, generation)
             }
 
         if let error = outcome.error {
@@ -182,7 +190,6 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
         s.webSocketTask = nil
         s.urlSession = nil
         s.socketState = .disconnected
-        s.isUserInitiatedDisconnect = false
         DispatchQueue.global().async {
             task?.cancel(with: .normalClosure, reason: nil)
             session?.invalidateAndCancel()
@@ -195,7 +202,6 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
         s.urlSession?.invalidateAndCancel()
         s.urlSession = nil
         s.socketState = .disconnected
-        s.isUserInitiatedDisconnect = false
         #endif
     }
 
@@ -286,6 +292,11 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
     }
 
     #if DEBUG
+    /// Sees every handshake or final-commit move the `canMove` tables refuse.
+    package func debugObserveUnexpectedMoves(_ observer: (@Sendable (String) -> Void)?) {
+        unexpectedMoveObserver.withLock { $0 = observer }
+    }
+
     /// Hears each Backends line a rejected frame logs.
     package func debugObserveRejectedFrameLog(_ observer: (@Sendable (String) -> Void)?) {
         rejectedFrameObserver.withLock { $0 = observer }
