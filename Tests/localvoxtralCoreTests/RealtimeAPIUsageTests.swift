@@ -23,7 +23,6 @@ final class RealtimeAPIUsageTests: XCTestCase {
         let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
         client.debugPrimeConnectedStateForTesting(
             task: task,
-            isUserInitiatedDisconnect: true,
             hasReceivedSessionCreated: sessionCreated,
             usageBackend: backend,
             usageModel: model
@@ -87,7 +86,7 @@ final class RealtimeAPIUsageTests: XCTestCase {
             session.invalidateAndCancel()
         }
         client.debugPrimeConnectedStateForTesting(
-            task: task, isUserInitiatedDisconnect: true, hasReceivedSessionCreated: true,
+            task: task, hasReceivedSessionCreated: true,
             usageBackend: .bundledHelper, usageModel: "m")
 
         client.sendAudioChunk(oneSecond)

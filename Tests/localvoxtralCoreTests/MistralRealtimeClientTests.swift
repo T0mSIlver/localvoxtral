@@ -187,6 +187,7 @@ final class MistralRealtimeClientTests: XCTestCase {
     ) -> (MistralRealtimeWebSocketClient, URLSession, URLSessionWebSocketTask) {
         let client = MistralRealtimeWebSocketClient(
             targetStreamingDelayMilliseconds: targetStreamingDelayMilliseconds)
+        client.failTestOnUnexpectedMoves()
         let (session, task) = makeWebSocketTask()
         // Connected but pre-session.created: every frame is encoded and
         // recorded, then queued locally instead of hitting a socket.
@@ -764,7 +765,9 @@ final class MistralRealtimeClientTests: XCTestCase {
         }
     }
 
-    func testTerminalErrorSuppressesErrorForUserInitiatedDisconnect() {
+    /// The socket's failure callback lands after `disconnect()` closed it:
+    /// the user's disconnect is the only event.
+    func testTerminalErrorAfterUserDisconnectRaisesNothing() {
         let client = MistralRealtimeWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0, from: $1) }
@@ -775,7 +778,8 @@ final class MistralRealtimeClientTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        client.debugPrimeConnectedStateForTesting(task: task, isUserInitiatedDisconnect: true)
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.disconnect()
         client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "socket failed")
 
         let events = collector.snapshot()

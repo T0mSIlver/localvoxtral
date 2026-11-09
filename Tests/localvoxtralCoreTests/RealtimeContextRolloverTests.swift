@@ -235,6 +235,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 onTransmit?(task, text)
             }
             client.setEventHandler { [weak self] event, generation in self?.hear(event, from: generation) }
+            client.failTestOnUnexpectedMoves()
             if !dials {
                 client.debugSetRolloverSocket { [weak self] in
                     guard let self else { fatalError("harness gone") }

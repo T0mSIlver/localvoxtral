@@ -82,7 +82,6 @@ extension UsageLedgerAppTests {
         let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
         client.debugPrimeConnectedStateForTesting(
             task: task,
-            isUserInitiatedDisconnect: true,
             hasReceivedSessionCreated: sessionCreated,
             usageModel: MistralRealtimeWebSocketClient.defaultModel
         )
@@ -145,7 +144,7 @@ extension UsageLedgerAppTests {
             session.invalidateAndCancel()
         }
         client.debugPrimeConnectedStateForTesting(
-            task: task, isUserInitiatedDisconnect: true, hasReceivedSessionCreated: true,
+            task: task, hasReceivedSessionCreated: true,
             usageModel: MistralRealtimeWebSocketClient.defaultModel)
 
         client.sendAudioChunk(oneSecond)

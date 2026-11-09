@@ -68,6 +68,7 @@ final class RealtimeServerCommitTests: XCTestCase {
             task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
             client.debugObserveTransmits { _, text in wire.serverReceives(text) }
             client.setEventHandler { event, _ in wire.hear(event) }
+            client.failTestOnUnexpectedMoves()
             client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
             client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
             if handshake { self.handshake() }
