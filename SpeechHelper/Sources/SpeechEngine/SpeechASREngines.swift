@@ -147,15 +147,20 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
         self.model = model
     }
 
+    /// Unified only: its first full-context step compiles new kernels (LVX-111).
+    func warmUpSamples(transcriptionDelayMs: Int?) -> Int {
+        model.isBuffered
+            ? NemotronUnifiedLayout.warmUpSamples(forTranscriptionDelayMs: transcriptionDelayMs) : 0
+    }
+
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
         terms _: SessionTerms
     ) -> SpeechASRStreamingSession {
-        let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
         let session: NemotronASRStreamSession
         if model.isBuffered {
-            let frames = NemotronUnifiedLayout.frames(forLatencyMilliseconds: rung)
+            let frames = NemotronUnifiedLayout.frames(forTranscriptionDelayMs: transcriptionDelayMs)
             // Neither throw can happen: `isBuffered` is checked above, and
             // NemotronUnifiedLayout's frames are valid by construction.
             session = try! model.makeStreamSession(
@@ -163,6 +168,7 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
                 bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
             )
         } else {
+            let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
             session = model.makeStreamSession(language: nil, chunkMs: rung)
         }
         guard model.isBuffered else {

@@ -50,6 +50,19 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             engine: engine,
             lockWeights: true
         )
+        let started = ContinuousClock.now
+        let steps = EngineWarmUp.run(
+            engine,
+            transcriptionDelayMs: transcriptionDelayMs,
+            stepSamples: stepMilliseconds * 16,
+            utteranceLimit: utteranceLimit
+        )
+        if steps > 0 {
+            // The warm-up session is gone; return its buffers, as after a dictation.
+            Memory.clearCache()
+            FileHandle.standardError.write(Data(
+                "speechd: warm-up \(steps) steps in \(ContinuousClock.now - started)\n".utf8))
+        }
         return try RealtimeSpeechServer(
             engine: engine,
             port: port,

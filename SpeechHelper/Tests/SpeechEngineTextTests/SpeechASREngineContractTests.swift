@@ -126,15 +126,38 @@ final class NemotronChunkLadderTests: XCTestCase {
 }
 
 final class NemotronUnifiedLayoutTests: XCTestCase {
-    /// Latency is chunk + right context, 80 ms per frame, and never above the rung.
-    func testEveryRungKeepsItsLatency() {
-        for rung in NemotronChunkLadder.supportedMilliseconds {
-            let frames = NemotronUnifiedLayout.frames(forLatencyMilliseconds: rung)
-            XCTAssertEqual(frames[0], 70)
-            XCTAssertLessThanOrEqual((frames[1] + frames[2]) * 80, max(rung, 160))
+    private func frames(_ delay: Int?) -> [Int] {
+        NemotronUnifiedLayout.frames(forTranscriptionDelayMs: delay)
+    }
+
+    /// Unified takes every 80 ms step from 160 to 2080 ms, not 3.5's rungs: the
+    /// latency (chunk + right) is the delay rounded down to a frame.
+    func testEveryEightyMillisecondStepKeepsItsLatency() {
+        for step in stride(from: 160, through: 2080, by: 80) {
+            for delay in [step, step + 79] {
+                let f = frames(delay)
+                XCTAssertEqual(f[0], 70, "\(delay) ms")
+                XCTAssertEqual((f[1] + f[2]) * 80, step, "\(delay) ms")
+                XCTAssertGreaterThanOrEqual(f[1], 1, "\(delay) ms")
+                XCTAssertGreaterThanOrEqual(f[2], 1, "\(delay) ms")
+            }
         }
-        XCTAssertEqual(NemotronUnifiedLayout.frames(forLatencyMilliseconds: 320), [70, 2, 2])
-        XCTAssertEqual(NemotronUnifiedLayout.frames(forLatencyMilliseconds: 1120), [70, 7, 7])
+    }
+
+    /// NVIDIA's rows, except 320 ms (speechd's default) on a 2-frame chunk; a latency
+    /// between rows takes the lower row's chunk; outside 160-2080 ms it clamps.
+    func testNvidiasRowsSpeechdsDefaultAndTheClamp() {
+        XCTAssertEqual(frames(nil), [70, 2, 2])
+        XCTAssertEqual(frames(320), [70, 2, 2])
+        XCTAssertEqual(frames(160), [70, 1, 1])
+        XCTAssertEqual(frames(240), [70, 1, 2])
+        XCTAssertEqual(frames(560), [70, 2, 5])
+        XCTAssertEqual(frames(1120), [70, 7, 7])
+        XCTAssertEqual(frames(2080), [70, 13, 13])
+        XCTAssertEqual(frames(400), [70, 2, 3])
+        XCTAssertEqual(frames(1600), [70, 7, 13])
+        XCTAssertEqual(frames(80), [70, 1, 1])
+        XCTAssertEqual(frames(5000), [70, 13, 13])
     }
 
     func testRecognizesABufferedCheckpointFromItsConfig() throws {
