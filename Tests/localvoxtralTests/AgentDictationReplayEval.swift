@@ -83,10 +83,12 @@ extension AgentDictationE2EEvalTests {
         var requestsWithLearnedTerm = [0, 0]
         var outputsChanged = [0, 0]
         for (index, entry) in entries.enumerated() {
+            var caseSeconds = 0
             do {
                 let wav = try Data(contentsOf: audioStore.fileURL(for: entry.id))
                 let pcm = try RecordedAudioSet.pcm16(fromWAVData: wav)
-                seconds += pcm.count / AudioChunkBuffer.bytesPerSecond
+                caseSeconds = pcm.count / AudioChunkBuffer.bytesPerSecond
+                seconds += caseSeconds
                 let transcript = try await transcribe(pcm: pcm, enablement: enablement)
                 let dayZero = try await replayPolish(
                     transcript, entry: entry, learnedTerms: [], speakerTerms: set.speakerTerms,
@@ -107,9 +109,12 @@ extension AgentDictationE2EEvalTests {
                 print("replay [\(index + 1)/\(entries.count)] ok")
             } catch {
                 failures += 1
-                // The error's type, never its message: a backend that echoes
-                // the request would put the user's words in the log.
-                print("replay [\(index + 1)/\(entries.count)] failed: \(type(of: error))")
+                // Never the error's message: a backend that echoes the request
+                // would put the user's words in the log. The kind and the
+                // audio length tell a stall from an empty final (LVX-109).
+                print(
+                    "replay [\(index + 1)/\(entries.count)] failed: "
+                        + "\(EvalSpeechStage.logSafeSummary(of: error)), \(caseSeconds) s of audio")
             }
         }
 

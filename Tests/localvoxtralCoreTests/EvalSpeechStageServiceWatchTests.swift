@@ -69,6 +69,7 @@ final class EvalSpeechStageServiceWatchTests: XCTestCase {
                 _ = try await result.value
                 XCTFail("a dead service returned a transcript")
             } catch {
+                XCTAssertEqual((error as? EvalSpeechStage.Failure)?.kind, .noAnswer)
                 do {
                     try watch.record(error)
                 } catch let failure as EvalSpeechStage.Failure {
@@ -95,6 +96,7 @@ final class EvalSpeechStageServiceWatchTests: XCTestCase {
         }
         let failure = error as? EvalSpeechStage.Failure
         XCTAssertEqual(failure?.serviceStalled, false, String(describing: error))
+        XCTAssertEqual(failure?.kind, .emptyFinal)
         XCTAssertTrue(
             failure?.description.hasPrefix("empty final transcript from ") == true,
             String(describing: error)
@@ -102,6 +104,38 @@ final class EvalSpeechStageServiceWatchTests: XCTestCase {
         var watch = EvalSpeechStage.ServiceWatch(endpoint: endpoint)
         try watch.record(error)
         XCTAssertEqual(watch.consecutiveStalls, 0)
+    }
+
+    /// A socket error ends the utterance as a stall of kind `.socketError`,
+    /// and the log-safe summary names the kind without the server's message,
+    /// which can echo the user's words (LVX-109).
+    func testSocketErrorIsAStallWhoseSummaryLeavesOutTheMessage() async throws {
+        let clock = ManualSessionClock()
+        let client = FakeRealtimeClient()
+        client.setOnConnect { client.emit(.error("echoed user words")) }
+        let endpoint = endpoint
+        let utterance = Task {
+            try await EvalSpeechStage.transcribe(
+                pcm: Data(count: 32_000),
+                client: client,
+                endpoint: .init(url: endpoint, apiKey: "", model: "voxtral"),
+                timeout: 30,
+                clock: clock.clock
+            )
+        }
+        await clock.waitForSleepers(1)
+        clock.advance(by: 1)
+        do {
+            _ = try await utterance.value
+            XCTFail("a socket error returned a transcript")
+        } catch {
+            let failure = try XCTUnwrap(error as? EvalSpeechStage.Failure)
+            XCTAssertEqual(failure.kind, .socketError)
+            XCTAssertTrue(failure.serviceStalled)
+            let summary = EvalSpeechStage.logSafeSummary(of: error)
+            XCTAssertEqual(summary, "speech stage, socket error")
+            XCTAssertFalse(summary.contains("echoed"))
+        }
     }
 
     func testEmptyFinalIsAnEmptyTranscriptWhenTheEvalAllowsIt() async throws {
