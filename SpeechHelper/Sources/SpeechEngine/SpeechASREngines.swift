@@ -89,9 +89,10 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     /// Feeds the offline right pad's zeros through `step` and stops once the tail
     /// decodes as silence (`SilentTailStop`), instead of `session.finish()`, which
     /// decodes the whole pad. The first batch reaches the earliest position the stop
-    /// can fire at, then one token at a time. A stop that never sees the silence ends
-    /// with the pad, its last positions undecoded. With no audio, or a session
-    /// already ended, `finish()` runs as before.
+    /// can fire at, then one token at a time. A stop that never sees the silence
+    /// decodes what `finish()` would: the pad plus one token of zeros, which stands in
+    /// for `finish()`'s trailing zeros and reaches its last position. With no audio, or
+    /// a session already ended, `finish()` runs as before.
     func appSideFinish() -> SpeechStreamDelta {
         guard samplesTaken > 0, !session.isFinished else {
             let delta = session.finish()
@@ -107,7 +108,8 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
         // After `z` pad tokens, `step` has read the positions below
         // `alignedRegion + z - 1`; the front end holds back up to one token more.
         let alignedRegion = leftPadTokens + (samplesTaken + alignment) / spt
-        let padTokens = SilentTailStop.rightPadTokens(delayMs: delayMs)
+        // The pad, plus the token of zeros that reaches `finish()`'s last position.
+        let padTokens = SilentTailStop.rightPadTokens(delayMs: delayMs) + 1
         var fed = min(padTokens, max(1, stop.fromPosition + stop.padTokens + 2 - alignedRegion))
         var chunk = alignment + fed * spt
         var observed = session.tokens.count
