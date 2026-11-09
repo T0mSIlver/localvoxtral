@@ -80,7 +80,15 @@ takes 0.8 GB on disk, against Voxtral's 2.6 GB.
 
 Nemotron is a cache-aware streaming RNN-T, not a decoder that attends over
 the whole utterance. It transcribes in fixed 320 ms chunks, and it is the
-less accurate of the two models. NVIDIA publishes it under OpenMDW 1.1.
+least accurate of the three models. NVIDIA publishes it under OpenMDW 1.1.
+
+The pane also offers
+[NVIDIA Nemotron Unified ASR 0.6B in 8-bit](https://huggingface.co/T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit),
+0.7 GB on disk. It is the same kind of RNN-T, but it streams buffered: every
+step re-encodes the last 5.6 s of audio with the new chunk, so it uses about
+four times Nemotron 3.5's GPU. In exchange it makes fewer errors than 3.5,
+especially in French, and covers 25 European languages. It runs at the same
+320 ms latency, also under OpenMDW 1.1.
 
 Changing the model picker restarts the helper and downloads the new
 checkpoint.

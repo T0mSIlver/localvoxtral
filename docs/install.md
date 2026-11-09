@@ -117,6 +117,7 @@ your login keychain.
    ```bash
    rm -rf ~/.cache/huggingface/hub/models--T0mSIlver--Voxtral-Mini-4B-Realtime-2602-4bit-qhead \
      ~/.cache/huggingface/hub/models--mlx-community--nemotron-3.5-asr-streaming-0.6b-8bit \
+     ~/.cache/huggingface/hub/models--T0mSIlver--nemotron-labs-unified-asr-0.6b-8bit \
      ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-0.8B-8bit \
      ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-OptiQ-4bit \
      ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit

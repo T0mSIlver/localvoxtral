@@ -461,8 +461,20 @@ enum SpeechModelLoader {
                 modelID: modelID,
                 modelRevision: modelRevision,
                 modelDirectory: modelDirectory,
-                fromDirectory: { try NemotronASRModel.fromDirectory($0) },
-                fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
+                fromDirectory: { directory in
+                    try NemotronASRModel.fromDirectory(
+                        directory,
+                        computeDType: NemotronUnifiedLayout.isBufferedCheckpoint(directory: directory)
+                            ? .float16 : .bfloat16
+                    )
+                },
+                fromPretrained: { id in
+                    // Development only. The checkpoint's kind is known after the download,
+                    // so a Unified one loads again from the cache with the app's float16.
+                    let model = try await NemotronASRModel.fromPretrained(id)
+                    guard model.isBuffered else { return model }
+                    return try await NemotronASRModel.fromPretrained(id, computeDType: .float16)
+                }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
             return NemotronASREngine(model: model)

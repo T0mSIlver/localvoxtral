@@ -1,6 +1,7 @@
 # Dependency: mlx-audio-swift streaming ASR
 
-`SpeechEngine` drives [`Blaizzy/mlx-audio-swift`](https://github.com/Blaizzy/mlx-audio-swift)'s
+`SpeechEngine` drives [`Neywa-Labs/mlx-audio-swift`](https://github.com/Neywa-Labs/mlx-audio-swift)'s
+(formerly `Blaizzy/mlx-audio-swift`; the old links redirect)
 VoxtralRealtime and NemotronASR engines as an **upstream SwiftPM dependency** (product
 `MLXAudioSTT`, MIT-licensed). VoxtralRealtime used to be vendored into `Sources/SpeechEngine/`
 with local patches; those patches were upstreamed (see below), so we depend instead of vendor.
@@ -20,15 +21,25 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+    url: "https://github.com/Neywa-Labs/mlx-audio-swift.git",
+    revision: "373644559fe15f3e8a4d3f68d36b94a111e66dbb"
 )
 ```
+
+`3736445` is upstream's merge of the Nemotron Unified port
+([#374](https://github.com/Neywa-Labs/mlx-audio-swift/pull/374), 2026-11-07), 67 commits past
+`902920c`. Against the fork commit the Unified entry was measured on (`c793e5c`), review changed
+the port in four ways speechd sees: the buffered encoder is no longer `MLX.compile`d per window
+shape, it keeps its audio buffer as an `MLXArray`, per-feature mel normalization always zeroes
+the frames past `samples / hop`, and an unknown prompt language falls back to the default
+silently instead of warning on stderr. The rest of the range adds other models, moves Voxtral
+Realtime onto the shared `TekkenTokenizer`, and raises the floor to mlx-swift 0.33.0 and adds
+zstd to the graph.
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-`902920c` is upstream main on 2026-10-23. Over the previous pin it carries:
+The pin before, `902920c`, was upstream main on 2026-10-23. Over its previous pin it carried:
 
 - Voxtral Realtime streaming: encoder KV rows written into preallocated storage
   ([#272](https://github.com/Blaizzy/mlx-audio-swift/pull/272)), the mel Hann window reused per
@@ -54,7 +65,7 @@ consumed, #264 appends decoder KV rows in place instead of rebuilding the window
 the transcript one token at a time instead of re-detokenizing it every step. `session.text` is
 still the full transcript, so the append-only delta routing below is unchanged.
 
-The same tree already carries NVIDIA Nemotron 3.5 ASR streaming — #195/#196 port the model,
+The same tree already carries NVIDIA Nemotron ASR streaming (the catalog ships Nemotron Unified) — #195/#196 port the model,
 #208 adds the incremental `NemotronASRStreamSession`, #236 widens the checkpoint loader — so
 adding the second catalog entry (#463) needed no pin change. Two Nemotron facts the adapter
 in `SpeechASREngines.swift` depends on:
@@ -62,9 +73,11 @@ in `SpeechASREngines.swift` depends on:
 - It is an **RNN-T**: it only ever appends text, and it never emits end-of-stream on its own,
   so the append-only delta contract carries it unchanged and there is no `maxTokens` to cap.
   `UtteranceLimit` is therefore enforced by our adapter, on the audio the session accepts.
-- Its session decodes in fixed chunks of 80 ms encoder frames; the model card publishes WER
-  for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
-  those rungs. Its decoder strips the model's `<xx-XX>` language tag itself.
+- Its session decodes in fixed chunks of 80 ms encoder frames; the Nemotron 3.5 card publishes
+  WER for 80/160/320/560/1120 ms, and `NemotronChunkLadder` maps `--transcription-delay-ms` onto
+  those rungs. Nemotron Unified maps the same rungs onto its own buffer layouts
+  (`NemotronUnifiedLayout`): 160/320/560/1120 ms, the 80 ms rung raised to 160 ms, its lowest
+  latency. Its decoder strips the model's `<xx-XX>` language tag itself.
 
 Its `advance()` recomputes the whole mel from the raw buffer on every `step`, which is
 O(utterance) per step — upstream calls it negligible at utterance scale and a future
@@ -133,7 +146,7 @@ casts; `VoxtralRealtimeStreamSession.swift` differed only in the delta routing b
 Upstream's manifest uses `.upToNextMajor` for every dependency, so unconstrained resolution can
 drift onto known-bad versions. We pin the two risky ones exactly:
 
-- **mlx-swift `exact: "0.32.3"`** — matches upstream's own `Package.resolved` and its manifest
+- **mlx-swift `exact: "0.33.0"`** — matches upstream's own `Package.resolved` and its manifest
   floor. Never resolve to 0.31.4 or 0.31.5, which carry the `evalLock` deadlock
   ([mlx-swift#428](https://github.com/ml-explore/mlx-swift/issues/428), fixed in 0.31.6). Its
   manifest needs swift-tools-version 6.3.
