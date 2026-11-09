@@ -51,8 +51,13 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
         return SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)
     }
 
+    /// Pad tokens in a row, past the transcription delay, that end the stop's flush
+    /// (LVX-110). On 260 term-recall stops the last text token never came after one
+    /// such token; two leave a token of margin and cut the flush from 18 steps to about 11.
+    static let silentTailTokens = 2
+
     func finish() -> SpeechStreamDelta {
-        let delta = session.finish()
+        let delta = session.finish(stopAfterSilentTail: Self.silentTailTokens)
         return SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)
     }
 

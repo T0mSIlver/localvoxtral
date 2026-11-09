@@ -20,13 +20,21 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "902920c5042322dd69b6d3aa9b6a5c22c19919d8"
+    url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+    revision: "aaa146328bf44d032da48ab981032ef7d5655d55"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
+
+This fork commit (branch `perf/voxtral-finish-silent-tail`) is upstream's `902920c` plus one
+change: `VoxtralRealtimeStreamSession.finish(stopAfterSilentTail:)`. A stop decodes the
+offline right pad, `(delay + 1) + 10` tokens, one decoder step each; none of 260 term-recall
+stops ended on EOS inside it. With the option, once the decoder is past the last real audio token by
+the transcription delay, the flush ends after that many streaming-pad tokens in a row.
+`VoxtralASRSession` passes 2 (LVX-110). Not yet posted upstream; it must become an upstream
+SHA, or stay a deliberate fork pin, before the next upstream bump.
 
 `902920c` is upstream main on 2026-10-23. Over the previous pin it carries:
 
