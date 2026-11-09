@@ -137,6 +137,21 @@ final class RealtimeServerCodecTests: XCTestCase {
         )
     }
 
+    func testParseSessionUpdateCarriesTheDictationLanguage() throws {
+        XCTAssertEqual(
+            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","language":" fr "}"#.utf8)),
+            .sessionUpdate(terms: nil, language: "fr")
+        )
+        XCTAssertEqual(
+            try RealtimeClientMessage.parse(Data(#"{"type":"session.update","context_bias":["herdr"],"language":"de"}"#.utf8)),
+            .sessionUpdate(terms: SessionTerms(["herdr"]), language: "de")
+        )
+        // Empty or not a string: no language, so the connection keeps its own.
+        for frame in [#"{"type":"session.update","language":""}"#, #"{"type":"session.update","language":7}"#] {
+            XCTAssertEqual(try RealtimeClientMessage.parse(Data(frame.utf8)), .sessionUpdate(terms: nil, language: nil))
+        }
+    }
+
     func testParseSessionUpdateCarriesTheCleanedTermList() throws {
         let frame = #"{"type":"session.update","context_bias":["Claude  Code","herdr","HERDR"," ","\#(String(repeating: "x", count: 65))"]}"#
         XCTAssertEqual(

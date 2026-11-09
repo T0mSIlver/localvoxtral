@@ -20,7 +20,8 @@ final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms _: SessionTerms
+        terms _: SessionTerms,
+        language _: String?
     ) -> SpeechASRStreamingSession {
         // The decoder emits one token per audio frame, so the token cap is the
         // limit expressed in this model's frame rate.
@@ -156,20 +157,26 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms _: SessionTerms
+        terms _: SessionTerms,
+        language: String?
     ) -> SpeechASRStreamingSession {
+        // Nil keeps the checkpoint's default prompt (`auto` for Unified).
+        let promptKey = NemotronPromptLanguage.key(for: language, in: model.promptDictionary)
+        let promptIndex = model.promptDictionary[promptKey ?? model.defaultLanguage]
+        FileHandle.standardError.write(Data(
+            "speechd: nemotron session language \(promptKey ?? model.defaultLanguage) prompt \(promptIndex.map(String.init) ?? "none")\n".utf8))
         let session: NemotronASRStreamSession
         if model.isBuffered {
             let frames = NemotronUnifiedLayout.frames(forTranscriptionDelayMs: transcriptionDelayMs)
             // Neither throw can happen: `isBuffered` is checked above, and
             // NemotronUnifiedLayout's frames are valid by construction.
             session = try! model.makeStreamSession(
-                language: nil,
+                language: promptKey,
                 bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
             )
         } else {
             let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
-            session = model.makeStreamSession(language: nil, chunkMs: rung)
+            session = model.makeStreamSession(language: promptKey, chunkMs: rung)
         }
         guard model.isBuffered else {
             return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
@@ -181,7 +188,7 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
             offline: { samples in
                 model.generate(
                     audio: MLXArray(samples),
-                    generationParameters: STTGenerateParameters()
+                    generationParameters: STTGenerateParameters(language: promptKey)
                 ).text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         )

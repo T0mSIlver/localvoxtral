@@ -46,10 +46,13 @@ public protocol SpeechASREngine: Sendable {
     ///   - terms: the connection's `context_bias` list. An engine that can bias
     ///     its decoding toward them does; neither shipped engine can yet
     ///     (LVX-2, LVX-12), so both ignore it.
+    ///   - language: the connection's dictation language, an ISO 639-1 code, or nil
+    ///     to let the model detect it. Nemotron conditions on it; Voxtral ignores it.
     func makeSession(
         transcriptionDelayMs: Int?,
         utteranceLimit: UtteranceLimit,
-        terms: SessionTerms
+        terms: SessionTerms,
+        language: String?
     ) -> SpeechASRStreamingSession
     /// Samples of silence `EngineWarmUp` feeds a throwaway session at load; 0 for none.
     func warmUpSamples(transcriptionDelayMs: Int?) -> Int

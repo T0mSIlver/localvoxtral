@@ -86,6 +86,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// The configuration's `contextBias`, sent with `pendingModelName` in
         /// the socket's one `session.update`.
         var pendingContextBias: [String] = []
+        /// The configuration's `language`, sent the same way.
+        var pendingLanguage: String?
         /// The open socket's ledger line: who serves it, the model it asked
         /// for, and the PCM bytes handed to it. Nil backend records nothing.
         var usageBackend: UsageEntry.Backend?
@@ -255,6 +257,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.pendingMessages.removeAll(keepingCapacity: true)
         s.pendingModelName = modelName
         s.pendingContextBias = configuration.contextBias
+        s.pendingLanguage = configuration.language
         s.hasReceivedSessionCreated = false
         s.hasBypassedSessionCreatedGate = false
         s.hasSentSessionUpdate = false
@@ -887,7 +890,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     private func openSendGateLocked(_ s: inout State) {
         let modelName = s.pendingModelName
         if !s.hasSentSessionUpdate, !modelName.isEmpty,
-           let text = Self.sessionUpdateFrame(model: modelName, contextBias: s.pendingContextBias) {
+           let text = Self.sessionUpdateFrame(
+               model: modelName, contextBias: s.pendingContextBias, language: s.pendingLanguage) {
             s.hasSentSessionUpdate = true
             s.pendingMessages.insert(PendingFrame(text: text), at: 0)
             debugLog("queue event type=session.update")
@@ -897,10 +901,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
     /// The socket's one `session.update`. The term list rides it as
     /// `context_bias`, the field Mistral's realtime API reads, only when the
-    /// model takes terms: every other server gets the frame it always did.
-    package static func sessionUpdateFrame(model: String, contextBias: [String]) -> String? {
+    /// model takes terms, and the dictation language as `language` only when
+    /// the model takes one: every other server gets the frame it always did.
+    package static func sessionUpdateFrame(
+        model: String, contextBias: [String], language: String? = nil
+    ) -> String? {
         var frame: [String: Any] = ["type": "session.update", "model": model]
         if !contextBias.isEmpty { frame["context_bias"] = contextBias }
+        if let language { frame["language"] = language }
         guard let data = try? JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys]) else {
             return nil
         }
@@ -1221,6 +1229,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.isReplayingHandshakeQueue = false
         s.pendingModelName = ""
         s.pendingContextBias = []
+        s.pendingLanguage = nil
         s.rollover?.watchdog?.cancel()
         s.rollover = nil
         s.socketAudioBytes = 0
@@ -1332,18 +1341,21 @@ extension RealtimeAPIWebSocketClient {
         usageBackend: UsageEntry.Backend? = nil,
         usageModel: String = "",
         modelName: String = "",
-        contextBias: [String] = []
+        contextBias: [String] = [],
+        language: String? = nil
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
             s.pendingModelName = modelName
             s.pendingContextBias = contextBias
+            s.pendingLanguage = language
             s.configuration = RealtimeSessionConfiguration(
                 endpoint: task.originalRequest?.url ?? URL(string: "ws://127.0.0.1/v1/realtime")!,
                 apiKey: "",
                 model: modelName,
                 usageBackend: usageBackend,
-                contextBias: contextBias
+                contextBias: contextBias,
+                language: language
             )
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
