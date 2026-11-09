@@ -62,6 +62,12 @@ the tied output head. The quantized head cuts the decode loop's largest
 projection from ~30 ms to ~3 ms per token and saves ~530 MB of memory, with
 no loss in transcription quality.
 
+When you stop, Voxtral still has the last half second of speech to decode.
+The helper decodes it until the model has emitted two silence tokens past its
+transcription delay, about 11 decoder steps instead of the whole 18-token
+padding the offline model uses: the stop takes about 0.45 s instead of 0.64 s
+on an M1 Pro.
+
 One dictation can run for up to an hour. The limit guards against a session
 left running and is not a speed limit. The helper holds a steady 3.5 GB and
 stays ahead of live speech for at least three hours. When a dictation reaches
