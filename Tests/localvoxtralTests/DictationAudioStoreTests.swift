@@ -158,7 +158,7 @@ final class DictationAudioStoreTests: XCTestCase {
 
     private func stopOverlaySession(_ viewModel: DictationViewModel) {
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
     }

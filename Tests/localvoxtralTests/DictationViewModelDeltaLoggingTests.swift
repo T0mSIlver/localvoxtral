@@ -177,7 +177,7 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
     /// on it and ends on that sentence, not on Ready (#1865).
     func testTranscriptionStoppedMidDictationBecomesTheStatusLine() {
         let viewModel = makeViewModel(enableDeltaLogging: true)
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.statusText = "Transcribing..."
         let message = "10-minute limit reached; start again."
 

@@ -207,8 +207,7 @@ final class SpokenSendWiringTests: XCTestCase {
         harness.viewModel.session.handle(event: .finalTranscript("e help me constr"))
         // The next generation is cut short by the stop and promoted.
         harness.viewModel.session.handle(event: .partialTranscript("uct"))
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.phase = .finalizing
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
 
         XCTAssertEqual(harness.typedText, "So I need you. Please help me construct")
@@ -406,8 +405,7 @@ final class SpokenSendWiringTests: XCTestCase {
 
         harness.viewModel.session.handle(event: .partialTranscript("run the tests send it"))
         XCTAssertEqual(harness.typedText, "")
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.phase = .finalizing
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
 
         XCTAssertEqual(harness.typedText, "run the tests send it")
@@ -472,8 +470,7 @@ final class SpokenSendWiringTests: XCTestCase {
 
         @MainActor
         func stop() {
-            viewModel.isDictating = false
-            viewModel.isFinalizingStop = true
+            viewModel.phase = .finalizing
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
         }
     }
@@ -578,7 +575,7 @@ final class SpokenSendWiringTests: XCTestCase {
         viewModel.session.applyPreCapturedSessionTargetVerdict()
 
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.configureLiveAutoPasteReplacementCorrectorForSession()
         return Harness(
             viewModel: viewModel,

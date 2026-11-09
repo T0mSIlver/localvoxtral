@@ -445,15 +445,15 @@ final class ViewSnapshotTests: XCTestCase {
         let states: [(name: String, apply: (DictationViewModel) -> Void)] = [
             ("idle", { _ in }),
             ("connecting", {
-                $0.isConnectingRealtimeSession = true
+                $0.phase = .connecting
                 $0.statusText = DictationViewModel.StatusStrings.connectingRealtimeBackend
             }),
             ("dictating", {
-                $0.isDictating = true
+                $0.phase = .dictating
                 $0.statusText = "Listening"
             }),
             ("finalizing", {
-                $0.isFinalizingStop = true
+                $0.phase = .finalizing
                 $0.statusText = DictationViewModel.StatusStrings.polishing
             }),
             // The mic sent no audio, so the app stopped the dictation (#1865).

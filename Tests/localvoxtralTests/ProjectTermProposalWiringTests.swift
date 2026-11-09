@@ -124,7 +124,7 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         viewModel.session.projectTermProposalTask = nil
         viewModel.session.context.claudeSessionJoin = join
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -214,7 +214,7 @@ final class ProjectTermProposalWiringTests: XCTestCase {
             viewModel.session.projectTermProposalTask = nil
             viewModel.session.context.claudeSessionJoin = join()
             viewModel.session.sessionOutputMode = .liveAutoPaste
-            viewModel.isFinalizingStop = true
+            viewModel.phase = .finalizing
             viewModel.transcript.currentDictationEventText = text
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
             await viewModel.session.projectTermProposalTask?.value

@@ -48,8 +48,7 @@ final class StallBackfillPipelineTests: XCTestCase {
         XCTAssertEqual(usage.first?.audioSeconds ?? 0, 10.5, accuracy: 1e-9)
 
         // Mistral's done repeats its deltas, without the stalled words.
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.phase = .finalizing
         session.handle(event: .finalTranscript(Self.beforeStall + Self.afterStall))
         session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(harness.viewModel)
@@ -71,8 +70,7 @@ final class StallBackfillPipelineTests: XCTestCase {
         session.handle(event: .partialTranscript(Self.afterStall))
         _ = await transcriber.called.value(failAfter: 10)
 
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.phase = .finalizing
         session.handle(event: .finalTranscript(Self.beforeStall + Self.afterStall))
         session.finishStoppedSession(promotePendingSegment: false)
         XCTAssertEqual(harness.overlay.committedTexts, [], "the commit waits for the backfill in flight")
@@ -161,7 +159,7 @@ final class StallBackfillPipelineTests: XCTestCase {
         )
         session.latchSessionAudio(outputMode: .overlayBuffer)
         session.audio.sessionRecording.append(Self.pcm)
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         return Harness(viewModel: viewModel, overlay: overlay, ledger: ledger, records: records)
     }
 }

@@ -72,7 +72,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testRefusedSocketErrorDuringTimeoutResolutionWinsOverTimeout() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         viewModel.session.isShowingConnectionFailureAlert = true
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
         retainForTestProcessLifetime(viewModel)
 
@@ -156,7 +156,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
 
         viewModel.session.handle(event: .disconnected)
 
@@ -679,7 +679,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         var hookCalls = 0
         viewModel.session.onDictationStartRequested = { hookCalls += 1 }
-        viewModel.session.isAwaitingMicrophonePermission = true
+        viewModel.session.phase = .awaitingMicrophonePermission
 
         viewModel.startDictation()
 
@@ -1071,7 +1071,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.engines.applyPolishingBackendModeChange(.externalURL)
 
         XCTAssertFalse(

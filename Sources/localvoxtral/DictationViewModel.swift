@@ -25,7 +25,7 @@ enum MenuBarIndicatorState: Equatable {
 
 @MainActor
 @Observable
-final class DictationViewModel {
+final class DictationViewModel: DictationPhaseReading {
     // Tokenized status/error categories keep control flow stable if user-facing
     // copy changes in the future.
     enum StatusToken: Equatable {
@@ -156,12 +156,7 @@ final class DictationViewModel {
     @ObservationIgnored
     let session: DictationSessionController
 
-    var isDictating: Bool { get { session.isDictating } set { session.isDictating = newValue } }
-    var isFinalizingStop: Bool { get { session.isFinalizingStop } set { session.isFinalizingStop = newValue } }
-    var isConnectingRealtimeSession: Bool {
-        get { session.isConnectingRealtimeSession }
-        set { session.isConnectingRealtimeSession = newValue }
-    }
+    var phase: DictationPhase { get { session.phase } set { session.phase = newValue } }
     var realtimeSessionIndicatorState: RealtimeSessionIndicatorState {
         get { session.realtimeSessionIndicatorState }
         set { session.realtimeSessionIndicatorState = newValue }
@@ -177,10 +172,6 @@ final class DictationViewModel {
     var sessionSecureInputActive: Bool {
         get { session.sessionSecureInputActive }
         set { session.sessionSecureInputActive = newValue }
-    }
-    var isAwaitingMicrophonePermission: Bool {
-        get { session.isAwaitingMicrophonePermission }
-        set { session.isAwaitingMicrophonePermission = newValue }
     }
     var isAccessibilityTrusted: Bool { session.isAccessibilityTrusted }
     var currentStatusToken: StatusToken { session.currentStatusToken }

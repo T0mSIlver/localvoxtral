@@ -176,7 +176,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         let harness = try makeHarness(recordsEnabled: true, withHistory: true)
         let history = try XCTUnwrap(harness.history)
         func dictate() async {
-            harness.viewModel.isFinalizingStop = true
+            harness.viewModel.phase = .finalizing
             harness.viewModel.transcript.currentDictationEventText = "polish this text"
             harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
             await harness.viewModel.session.polishAndCommitTask?.value
@@ -1003,7 +1003,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "polish this text"
         return Harness(viewModel: viewModel, captureDirectory: captureDirectory, history: history)
     }

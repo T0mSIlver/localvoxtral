@@ -6,7 +6,10 @@ session state the views read. The dictation itself lives in
 `DictationSessionController` (#432 step 8c):
 
 - `DictationSessionController.swift`: session state, start and stop, the
-  realtime clients, the stop's inputs to the commit
+  realtime clients, the stop's inputs to the commit. Where the session is
+  lives in one `phase` (`DictationPhase`, in `localvoxtralCore`: idle,
+  awaiting the microphone prompt, connecting, dictating, finalizing); a move
+  its `canMove` table refuses logs a fault to `Log.dictation`
 - `DictationSessionController+Session.swift`: managed-backend wait, connect
   and its timeout, stop-finalization, connection-failure handling
 - `DictationSessionController+StopCommit.swift`: the stop-commit, meaning each

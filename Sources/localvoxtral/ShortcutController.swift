@@ -3,11 +3,7 @@ import Foundation
 /// What the keyboard triggers ask of the dictation session they drive.
 /// `DictationViewModel` adopts it; a test fake records the calls.
 @MainActor
-protocol ShortcutSessionControlling: AnyObject {
-    var isDictating: Bool { get }
-    var isConnectingRealtimeSession: Bool { get }
-    var isFinalizingStop: Bool { get }
-    var isAwaitingMicrophonePermission: Bool { get }
+protocol ShortcutSessionControlling: DictationPhaseReading {
     var isAccessibilityTrusted: Bool { get }
     var statusText: String { get set }
     var lastError: String? { get set }
@@ -550,10 +546,7 @@ final class ShortcutController {
 /// Where a gesture lands with no session to drive. Nothing happens, loudly.
 @MainActor
 private final class DetachedShortcutSession: ShortcutSessionControlling {
-    var isDictating: Bool { false }
-    var isConnectingRealtimeSession: Bool { false }
-    var isFinalizingStop: Bool { false }
-    var isAwaitingMicrophonePermission: Bool { false }
+    var phase: DictationPhase { .idle }
     var isAccessibilityTrusted: Bool { false }
     var statusText: String {
         get { "" }

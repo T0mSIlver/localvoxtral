@@ -66,7 +66,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.session.sessionOutputMode = .overlayBuffer
         settings.dictationOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
 
@@ -95,7 +95,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -126,7 +126,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.session.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
         // The priming stands in for a real connect, so the session has to be on
@@ -199,7 +199,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true
         viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
@@ -241,7 +241,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true
         viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
@@ -268,7 +268,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.shortcuts.isPushToTalkShortcutHeld = true
         viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
@@ -325,7 +325,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.statusText = "Polishing..."
         let polishTask = Task<Void, Never> {
             while !Task.isCancelled {
@@ -357,7 +357,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.session.polishAndCommitTask = Task<Void, Never> {}
 
@@ -384,7 +384,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello world"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -435,7 +435,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "postgres for local voxtral"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -465,7 +465,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.session.handle(event: .partialTranscript("post"))
         viewModel.session.handle(event: .partialTranscript("gres "))
@@ -503,11 +503,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.handle(event: .partialTranscript("foo "))
         viewModel.session.handle(event: .finalTranscript("foo "))
-        viewModel.isDictating = false
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
@@ -539,7 +538,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         return viewModel
@@ -642,7 +641,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello world"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -682,7 +681,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello world"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -715,7 +714,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             retainForTestProcessLifetime(viewModel)
 
             viewModel.session.sessionOutputMode = .overlayBuffer
-            viewModel.isFinalizingStop = true
+            viewModel.phase = .finalizing
             viewModel.transcript.currentDictationEventText = "hello world"
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
             await awaitStoppedSessionCommit(viewModel)
@@ -749,7 +748,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello world"
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)
@@ -815,7 +814,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "postgres rocks"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -864,7 +863,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "postgres rocks"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -900,7 +899,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "postgres"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -943,7 +942,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "postgres"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -982,7 +981,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1015,7 +1014,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "postgres"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1069,7 +1068,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.transcript.currentDictationEventText = "hello"
         let stopCountBefore = EscapeCancelHandler.stopCallCount
@@ -1106,7 +1105,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.sessionOutputMode = outputMode
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
@@ -1132,7 +1131,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.sessionOutputMode = outputMode
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
@@ -1157,7 +1156,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.session.abortConnectingSession()
@@ -1181,13 +1180,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.cancelDictation()
         XCTAssertFalse(viewModel.session.wasCancelled)
 
         // Next session: a normal stop must still promote and commit.
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
 
@@ -1213,7 +1212,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
         viewModel.session.wasCancelled = true
@@ -1242,7 +1241,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.transcript.currentDictationEventText = "hello"
         viewModel.transcript.pendingSegmentText = " world"
 

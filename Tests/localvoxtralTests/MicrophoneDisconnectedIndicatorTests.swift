@@ -33,7 +33,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         viewModel.session.stopDictationForUnavailableMicrophone()
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.stopDictation(reason: "user")
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -53,7 +53,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Mic sent no audio. Dictation stopped.")
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.stopDictation(reason: "user")
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
@@ -85,7 +85,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         return viewModel
     }
 }

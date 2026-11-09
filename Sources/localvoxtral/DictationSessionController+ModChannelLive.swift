@@ -43,7 +43,7 @@ extension DictationSessionController {
             textInsertion.retirePromptRelay(cancelling: true)
             return false
         }
-        isFinalizingStop = true
+        phase = .finalizing
         statusText = StatusStrings.finalizing
         // Every word the hold-back stream holds goes to the mod before the
         // ack counts.

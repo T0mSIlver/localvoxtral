@@ -4,6 +4,20 @@ import Foundation
 import Observation
 import os
 
+/// Reads one phase of a `DictationPhase` as a flag, for the session and
+/// for the controllers that drive it through a protocol.
+@MainActor
+protocol DictationPhaseReading: AnyObject {
+    var phase: DictationPhase { get }
+}
+
+extension DictationPhaseReading {
+    var isDictating: Bool { phase == .dictating }
+    var isFinalizingStop: Bool { phase == .finalizing }
+    var isConnectingRealtimeSession: Bool { phase == .connecting }
+    var isAwaitingMicrophonePermission: Bool { phase == .awaitingMicrophonePermission }
+}
+
 /// One dictation, from the start request to the commit: the managed-backend
 /// wait, the connect and its timeout, audio capture, the realtime events and
 /// the transcript they build, the reconnect run, the stop's finalization, and
@@ -19,7 +33,7 @@ import os
 /// teardown.
 @MainActor
 @Observable
-final class DictationSessionController {
+final class DictationSessionController: DictationPhaseReading {
     typealias StatusStrings = DictationViewModel.StatusStrings
     typealias StatusToken = DictationViewModel.StatusToken
     typealias ErrorToken = DictationViewModel.ErrorToken
@@ -35,13 +49,38 @@ final class DictationSessionController {
         DictationViewModel.secureKeyboardEntryWarningMessage
     }
 
-    var isDictating = false {
-        didSet { resumeIdleWaitersIfIdle() }
+    /// Where the dictation is: one phase at a time (`DictationPhase`).
+    var phase: DictationPhase = .idle {
+        didSet {
+            guard phase != oldValue else { return }
+            if oldValue.canMove(to: phase) {
+                Log.dictation.debug(
+                    "phase \(oldValue.rawValue, privacy: .public) -> \(self.phase.rawValue, privacy: .public)"
+                )
+            } else {
+                Log.dictation.fault(
+                    "unexpected phase move \(oldValue.rawValue, privacy: .public) -> \(self.phase.rawValue, privacy: .public)"
+                )
+                #if DEBUG
+                debugOnUnexpectedPhaseMove?(oldValue, phase)
+                #endif
+            }
+            resumeIdleWaitersIfIdle()
+        }
     }
-    var isFinalizingStop = false {
-        didSet { resumeIdleWaitersIfIdle() }
+
+    #if DEBUG
+    /// Sees every move `DictationPhase.canMove` refuses.
+    @ObservationIgnored
+    var debugOnUnexpectedPhaseMove: ((DictationPhase, DictationPhase) -> Void)?
+    #endif
+
+    /// Ends `current` if the session is in it, and leaves any other phase
+    /// alone: a late callback from an attempt that already ended must not
+    /// end the phase that replaced it.
+    func leavePhase(_ current: DictationPhase) {
+        if phase == current { phase = .idle }
     }
-    var isConnectingRealtimeSession = false
     var realtimeSessionIndicatorState: RealtimeSessionIndicatorState = .idle
     /// The text the realtime events built: the partial in flight, the
     /// dictation event the overlay commits, the latest segment and the
@@ -506,8 +545,6 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
-    @ObservationIgnored
-    var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.
     @ObservationIgnored
     var microphonePermissionTimeoutTask: Task<Void, Never>?
@@ -887,7 +924,7 @@ final class DictationSessionController {
         case .authorized:
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
-            isAwaitingMicrophonePermission = true
+            phase = .awaitingMicrophonePermission
             statusText = StatusStrings.requestingMicrophonePermission
             debugLog("microphone permission prompt requested")
             let attemptID = UUID()
@@ -902,7 +939,7 @@ final class DictationSessionController {
                         return
                     }
                     self.microphonePermissionAttemptID = nil
-                    self.isAwaitingMicrophonePermission = false
+                    self.leavePhase(.awaitingMicrophonePermission)
                     self.debugLog("microphone permission result granted=\(granted)")
                     guard granted else {
                         self.statusText = StatusStrings.microphoneAccessDenied
@@ -933,7 +970,7 @@ final class DictationSessionController {
                 // A cancelled timeout belongs to a prompt a newer one replaced:
                 // it must not clear the newer prompt's flag.
                 guard let self, !Task.isCancelled, self.isAwaitingMicrophonePermission else { return }
-                self.isAwaitingMicrophonePermission = false
+                self.leavePhase(.awaitingMicrophonePermission)
                 self.microphonePermissionAttemptID = nil
                 self.statusText = StatusStrings.ready
                 if self.shortcuts.shouldCancelPushToTalkStartAfterConnect() {
@@ -985,7 +1022,6 @@ final class DictationSessionController {
         polishAndCommitTask = nil
         audio.cancelSendAndCommitTasks()
         audio.healthMonitor.stop()
-        isAwaitingMicrophonePermission = false
 
         audio.stopSessionAudioCapture()
         audio.audioDucking.restoreAfterSession()
@@ -1002,7 +1038,9 @@ final class DictationSessionController {
                 realtimeErrorDuringStop = true
             }
         }
-        isDictating = false
+        // Finalizing from here on every path: the one that skips the
+        // finalization still owns its commit until it completes.
+        phase = .finalizing
         // An Overlay Buffer stop keeps Escape until its commit is done:
         // the text waits there on the final and the polish, and Escape
         // cancels it (`completeStoppedSessionCleanup` releases the key).
@@ -1019,7 +1057,6 @@ final class DictationSessionController {
             return
         }
 
-        isFinalizingStop = true
         stopAwaitsBackendFinal = true
         stopFinalizationTimeout = finalizationTimeout
         statusText = StatusStrings.finalizing
@@ -1047,7 +1084,7 @@ final class DictationSessionController {
     /// included, would retarget the commit to whatever app has focus (#1478).
     func ownStopWithoutFinalization() {
         sessionConnectionGeneration = .none
-        isFinalizingStop = true
+        phase = .finalizing
         if !wasCancelled {
             beginOverlayFinalization()
         }

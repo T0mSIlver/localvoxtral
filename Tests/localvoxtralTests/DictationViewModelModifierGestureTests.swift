@@ -15,7 +15,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let viewModel = makeViewModel(settings: settings)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.shortcuts.handleModifierOnlyTap(mode: .overlayBuffer)
 
@@ -35,7 +35,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let viewModel = makeViewModel(settings: settings, coordinator: coordinator)
 
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.shortcuts.handleModifierOnlyTap(mode: .overlayBuffer)
 
@@ -54,7 +54,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let viewModel = makeViewModel(settings: settings)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.shortcuts.handleModifierOnlyHoldStart()
 
@@ -72,7 +72,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         let viewModel = makeViewModel(settings: settings)
 
-        viewModel.isAwaitingMicrophonePermission = true
+        viewModel.phase = .awaitingMicrophonePermission
 
         viewModel.shortcuts.handleModifierOnlyHoldStart()
 
@@ -82,7 +82,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         )
 
         settings.dictationOutputMode = .overlayBuffer
-        viewModel.isAwaitingMicrophonePermission = false
+        viewModel.phase = .idle
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
 
         await viewModel.session.beginDictationSession()
