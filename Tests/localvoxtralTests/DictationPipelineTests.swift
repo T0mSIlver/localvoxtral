@@ -4531,6 +4531,12 @@ final class DictationPipelineTests: XCTestCase {
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()
+        // Every scenario moves the session only along `DictationPhase`'s edges.
+        let unexpectedMoves = UnexpectedPhaseMoves()
+        viewModel.session.debugOnUnexpectedPhaseMove = { unexpectedMoves.moves.append("\($0) -> \($1)") }
+        addTeardownBlock { @MainActor in
+            XCTAssertEqual(unexpectedMoves.moves, [], "phase moves outside DictationPhase.canMove")
+        }
         if let polish {
             settings.llmPolishingEnabled = true
             settings.llmPolishingEndpointURL = polishEndpoint
@@ -4816,6 +4822,11 @@ private final class SessionRecords {
         waits.append((count, wait))
         return await wait.value(failAfter: failAfter)
     }
+}
+
+@MainActor
+private final class UnexpectedPhaseMoves {
+    var moves: [String] = []
 }
 #endif
 

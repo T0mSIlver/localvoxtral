@@ -18,7 +18,7 @@ extension DictationSessionController {
             textInsertion.flushFinalLiveReplacementCorrections()
         }
         guard spokenCommandGate.action != nil || (!wasCancelled && textInsertion.pendingTextWaitsOnPaste) else { return false }
-        isFinalizingStop = true
+        phase = .finalizing
         statusText = StatusStrings.finalizing
         let sessionAudio = audio.sessionRecording.finish()
         let storedAudio = sessionStoresAudio ? sessionAudio : nil

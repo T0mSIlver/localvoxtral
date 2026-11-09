@@ -306,13 +306,12 @@ extension DictationSessionController {
     ) {
         audio.cancelSendAndCommitTasks()
         audio.healthMonitor.stop()
-        isAwaitingMicrophonePermission = false
         audio.stopSessionAudioCapture()
         // Here and not at the drop: a reconnect keeps the session running, and
         // fading the user's music back mid-sentence would announce a blip they
         // were never meant to notice. This is the end of the line.
         audio.audioDucking.restoreAfterSession()
-        isDictating = false
+        phase = .finalizing
         disarmSilenceAutoStop()
         disarmSpokenStop()
         escapeCancelHandler.stop()

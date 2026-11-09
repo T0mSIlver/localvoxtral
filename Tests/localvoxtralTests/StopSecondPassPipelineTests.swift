@@ -689,8 +689,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         var records: [DictationSessionRecord] { recordLog.all }
 
         @MainActor func stop() {
-            viewModel.isDictating = false
-            viewModel.isFinalizingStop = true
+            viewModel.phase = .finalizing
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
         }
     }

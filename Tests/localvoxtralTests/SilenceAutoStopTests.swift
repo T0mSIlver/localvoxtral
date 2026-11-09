@@ -36,7 +36,7 @@ final class SilenceAutoStopTests: XCTestCase {
             apiKey: "session-key",
             model: "session-model"
         )
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         return (viewModel, overlay, client)
     }
 

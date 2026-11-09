@@ -131,7 +131,7 @@ final class LiveSpokenSendWiringTests: XCTestCase {
 
         harness.partial("send it")
         harness.final("Send it.")
-        harness.viewModel.isDictating = false
+        harness.viewModel.phase = .idle
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
         XCTAssertTrue(harness.viewModel.isFinalizingStop, "the wait counts as finalizing")
 
@@ -161,7 +161,7 @@ final class LiveSpokenSendWiringTests: XCTestCase {
         harness.final("run the tests.")
         harness.partial("send it")
         harness.final("Send it.")
-        harness.viewModel.isDictating = false
+        harness.viewModel.phase = .idle
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
         XCTAssertTrue(harness.viewModel.isFinalizingStop, "the wait counts as finalizing")
 
@@ -192,7 +192,7 @@ final class LiveSpokenSendWiringTests: XCTestCase {
         harness.final("Send it.")
         harness.partial("fix the build")
         harness.final("fix the build")
-        harness.viewModel.isDictating = false
+        harness.viewModel.phase = .idle
         harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
         XCTAssertTrue(harness.viewModel.isFinalizingStop, "the wait counts as finalizing")
 
@@ -390,8 +390,7 @@ final class LiveSpokenSendWiringTests: XCTestCase {
 
         @MainActor
         func stop() {
-            viewModel.isDictating = false
-            viewModel.isFinalizingStop = true
+            viewModel.phase = .finalizing
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
         }
     }
@@ -463,7 +462,7 @@ final class LiveSpokenSendWiringTests: XCTestCase {
             ttyForegroundPIDs: { _ in [2] }
         )
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.configureLiveAutoPasteReplacementCorrectorForSession()
         return Harness(viewModel: viewModel, focuser: focuser, events: events, records: records, sessions: sessions)
     }

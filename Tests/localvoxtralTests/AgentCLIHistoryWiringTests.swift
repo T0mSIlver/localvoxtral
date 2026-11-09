@@ -59,7 +59,7 @@ final class AgentCLIHistoryWiringTests: XCTestCase {
     private func dictate(_ viewModel: DictationViewModel, join: ClaudeSessionJoin?, text: String) async {
         viewModel.session.context.claudeSessionJoin = join
         viewModel.session.sessionOutputMode = viewModel.settings.dictationOutputMode
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await awaitStoppedSessionCommit(viewModel)

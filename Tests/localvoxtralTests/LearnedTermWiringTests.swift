@@ -47,7 +47,7 @@ final class LearnedTermWiringTests: XCTestCase {
     /// `polishAndCommitTask`, so the commit is awaited before anything is read.
     private func commit(_ viewModel: DictationViewModel, text: String) async {
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         XCTAssertNotNil(
@@ -111,7 +111,7 @@ final class LearnedTermWiringTests: XCTestCase {
             service: polishing
         )
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "open useauth.ts please"
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         let commitTask = viewModel.session.polishAndCommitTask

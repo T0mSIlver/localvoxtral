@@ -154,7 +154,7 @@ final class DesktopSessionPolishTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "run the tests dash dash filter auth"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)

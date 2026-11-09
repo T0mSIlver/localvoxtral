@@ -778,11 +778,11 @@ extension DictationSessionController {
     ) {
         let cancelled = wasCancelled
         wasCancelled = false
-        isFinalizingStop = false
+        leavePhase(.finalizing)
         stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
         stopReplaysReconnectGap = false
         postModChannelBand(.done)
-        isConnectingRealtimeSession = false
+        leavePhase(.connecting)
         isCompletingStoppedSession = false
         escapeCancelHandler.stop()
         realtimeFinalizationLastActivityAt = nil

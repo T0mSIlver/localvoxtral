@@ -31,7 +31,7 @@ final class SessionClockTests: XCTestCase {
         let clock = ManualSessionClock()
         let presenter = RecordingConnectionFailurePresenter()
         let viewModel = makeViewModel(clock: clock, presenter: presenter)
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.session.scheduleConnectTimeout()
         let timeoutTask = viewModel.session.connectTimeoutTask
 
@@ -162,7 +162,7 @@ final class SessionClockTests: XCTestCase {
     func testFinalizationWatchdogPollsOnTheClock() async {
         let clock = ManualSessionClock()
         let viewModel = makeViewModel(clock: clock)
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.session.sessionOutputMode = .liveAutoPaste
 
         viewModel.session.startStopFinalizationWatchdog()
@@ -186,7 +186,7 @@ final class SessionClockTests: XCTestCase {
         let client = FakeRealtimeClient()
         client.setConnected(true)
         viewModel.session.activeRealtimeClient = client
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.session.sessionOutputMode = .liveAutoPaste
 
         viewModel.session.scheduleStopFinalization()
@@ -229,7 +229,7 @@ final class SessionClockTests: XCTestCase {
         client.setConnected(true)
         client.setFinalizationInactivityThreshold(1.5)
         viewModel.session.activeRealtimeClient = client
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.session.sessionOutputMode = .liveAutoPaste
 
         viewModel.session.scheduleStopFinalization()

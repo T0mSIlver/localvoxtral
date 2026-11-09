@@ -938,7 +938,7 @@ final class RealtimeReconnectTests: XCTestCase {
 
         let client = FakeRealtimeClient()
         viewModel.session.activeRealtimeClient = client
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         // The session starts where a real one does: on the socket its connect
         // opened, with the client and the view model naming the same one.
         viewModel.session.sessionConnectionGeneration = client.stampNewConnection()

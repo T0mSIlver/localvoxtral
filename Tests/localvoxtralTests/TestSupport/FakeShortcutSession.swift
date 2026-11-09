@@ -6,12 +6,9 @@ import Foundation
 /// wrote, the way the view model's do.
 @MainActor
 final class FakeShortcutSession: ShortcutSessionControlling {
-    var isDictating = false
-    var isConnectingRealtimeSession = false
-    var isFinalizingStop = false
-    var isAwaitingMicrophonePermission = false
+    var phase: DictationPhase = .idle
     var isAccessibilityTrusted = true
-    /// A start makes `isDictating` true and a stop false, as a session that
+    /// A start makes the phase `dictating` and a stop `idle`, as a session that
     /// connects at once would.
     var startDictationSucceeds = false
     var statusText = "Ready"
@@ -29,11 +26,11 @@ final class FakeShortcutSession: ShortcutSessionControlling {
 
     func startDictation(outputMode: DictationOutputMode?) {
         startedModes.append(outputMode)
-        if startDictationSucceeds { isDictating = true }
+        if startDictationSucceeds { phase = .dictating }
     }
     func endDictation(reason: String) {
         stopReasons.append(reason)
-        if startDictationSucceeds { isDictating = false }
+        if startDictationSucceeds { phase = .idle }
     }
     func toggleDictation(outputMode: DictationOutputMode?) { toggledModes.append(outputMode) }
     func clearSecureInputRefusalSignalsIfAttemptEnded() { refusalSignalClears += 1 }

@@ -574,7 +574,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = input
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)

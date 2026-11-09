@@ -278,7 +278,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "run --force now"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -324,7 +324,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "run --force now"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -362,7 +362,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "look at user session manager.swift."
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -460,7 +460,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "fix the bug in the auth module"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -718,7 +718,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = transcript
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -772,7 +772,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "fix the user session manager"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1054,7 +1054,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = transcript
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1206,7 +1206,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "fix this paste clipboard thanks"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1273,7 +1273,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             retainForTestProcessLifetime(viewModel)
 
             viewModel.session.sessionOutputMode = .overlayBuffer
-            viewModel.isFinalizingStop = true
+            viewModel.phase = .finalizing
             viewModel.transcript.currentDictationEventText = "look at usersessionmanager.swift"
 
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1326,7 +1326,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "open useauth.ts and fix the import"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1379,7 +1379,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "look at user session manager.swift"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1440,7 +1440,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "look at user session manager.swift"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1507,7 +1507,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1650,7 +1650,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -1707,7 +1707,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = transcript
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)

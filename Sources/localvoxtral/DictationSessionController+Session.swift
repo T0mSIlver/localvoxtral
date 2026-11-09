@@ -120,7 +120,7 @@ extension DictationSessionController {
         managedPolishingSkippedAtStart = false
 
         guard needsManagedDictation || needsManagedPolishing else {
-            isConnectingRealtimeSession = true
+            phase = .connecting
             managedStartupTask?.cancel()
             let startupTaskID = UUID()
             managedStartupTaskID = startupTaskID
@@ -143,7 +143,7 @@ extension DictationSessionController {
             return
         }
 
-        isConnectingRealtimeSession = true
+        phase = .connecting
         statusText = managedBackendStartupStatusText(
             dictation: needsManagedDictation,
             polishing: needsManagedPolishing
@@ -427,7 +427,7 @@ extension DictationSessionController {
         let ownerTaskID = managedStartupTaskID
         sessionStartGeneration &+= 1
         let startGeneration = sessionStartGeneration
-        isConnectingRealtimeSession = true
+        phase = .connecting
         await captureTerminalScreenContextForSession(isCurrent: {
             !Task.isCancelled && self.ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         })
@@ -439,13 +439,13 @@ extension DictationSessionController {
             if ownsSharedSessionState {
                 context.discardTerminalScreenCapture()
                 clearLatchedSessionMetadata()
-                isConnectingRealtimeSession = false
+                leavePhase(.connecting)
             }
             return nil
         }
         if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode, afterRouteResolved: true) {
             context.discardTerminalScreenCapture()
-            isConnectingRealtimeSession = false
+            leavePhase(.connecting)
             return nil
         }
         refreshInsertionScalarTracingForSession()
@@ -681,8 +681,8 @@ extension DictationSessionController {
         cancelConnectTimeout()
         cancelRealtimeReconnect()
         quitHoldsStoppedSession = false
-        isFinalizingStop = false
-        isConnectingRealtimeSession = false
+        leavePhase(.finalizing)
+        leavePhase(.connecting)
         // Every attempt starts with a fresh secure-input sample: a stale
         // `true` from a previously refused start would keep the warning icon
         // lit through an attempt that exits early for an unrelated reason
@@ -795,8 +795,7 @@ extension DictationSessionController {
     /// The socket is open and the microphone already runs
     /// (`startSessionMicrophone`): start sending what it captured.
     func beginListeningAfterConnection() {
-        isConnectingRealtimeSession = false
-        isDictating = true
+        phase = .dictating
         // Here, not at connect: a connect that times out or is refused
         // must never leave other audio down. Both output modes duck.
         audio.audioDucking.duckForSessionStart()
@@ -989,14 +988,13 @@ extension DictationSessionController {
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         shortcuts.clearPushToTalkShortcutSessionAttempt()
-        isConnectingRealtimeSession = false
-        isDictating = false
+        // A stopped session still finalizing is not this attempt's to end.
+        if phase != .finalizing { phase = .idle }
         // An aborted connect never reaches stopped-session cleanup, so the
         // cancellation flag must be cleared here or it leaks into the next
         // session and silently skips its overlay commit.
         wasCancelled = false
         escapeCancelHandler.stop()
-        isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()

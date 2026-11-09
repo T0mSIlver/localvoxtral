@@ -183,7 +183,7 @@ final class CopyLastDictationTests: XCTestCase {
     func testCopyingDuringADictationLeavesTheStatusLineAlone() {
         let (viewModel, written) = makeViewModel(polishing: nil)
         finishOverlayDictation(viewModel, text: "the one before")
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.statusText = "Listening..."
 
         viewModel.copyLastDictation()
@@ -317,7 +317,7 @@ final class CopyLastDictationTests: XCTestCase {
 
     private func finishOverlayDictation(_ viewModel: DictationViewModel, text: String) {
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
     }

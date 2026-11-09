@@ -4,11 +4,8 @@ import Observation
 /// What the permission prompts and refreshes ask of the session they report
 /// into. `DictationViewModel` adopts it.
 @MainActor
-protocol PermissionSessionControlling: AnyObject {
-    var isDictating: Bool { get }
-    var isConnectingRealtimeSession: Bool { get }
-    var isFinalizingStop: Bool { get }
-    var isAwaitingMicrophonePermission: Bool { get set }
+protocol PermissionSessionControlling: DictationPhaseReading {
+    var phase: DictationPhase { get set }
     var statusText: String { get set }
     var lastError: String? { get set }
     var currentStatusToken: DictationViewModel.StatusToken { get }
@@ -122,7 +119,7 @@ final class PermissionsCoordinator {
         guard session.capturesFromMicrophone else { return }
         guard session.microphone.authorizationStatus() == .notDetermined else { return }
 
-        session.isAwaitingMicrophonePermission = true
+        session.phase = .awaitingMicrophonePermission
         session.debugLog("startup microphone permission prompt requested")
 
         let granted = await withCheckedContinuation { continuation in
@@ -132,7 +129,7 @@ final class PermissionsCoordinator {
         }
 
         guard !Task.isCancelled else { return }
-        session.isAwaitingMicrophonePermission = false
+        if session.phase == .awaitingMicrophonePermission { session.phase = .idle }
         session.debugLog("startup microphone permission result granted=\(granted)")
 
         guard granted else {

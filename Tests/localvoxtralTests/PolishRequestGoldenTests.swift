@@ -518,7 +518,7 @@ final class PolishRequestGoldenTests: XCTestCase {
         let joinWorkspace = viewModel.context.claudeSessionJoin?.snapshot.workspace
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = scenario.transcript
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)

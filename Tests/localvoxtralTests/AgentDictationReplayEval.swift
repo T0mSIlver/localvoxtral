@@ -187,7 +187,7 @@ extension AgentDictationE2EEvalTests {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = transcript
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         await viewModel.session.polishAndCommitTask?.value

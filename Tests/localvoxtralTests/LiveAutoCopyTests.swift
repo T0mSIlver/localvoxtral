@@ -22,7 +22,7 @@ final class LiveAutoCopyTests: XCTestCase {
             startRuntimeServices: false
         )
         retainForTestProcessLifetime(viewModel)
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: { _ in true },
             modifierStateReader: { false },
