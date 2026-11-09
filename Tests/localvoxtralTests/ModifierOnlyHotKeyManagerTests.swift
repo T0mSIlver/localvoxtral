@@ -47,9 +47,7 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
 
         let snapshot = manager.debugGestureSnapshotForTesting()
         XCTAssertNil(snapshot.targetModifier)
-        XCTAssertFalse(snapshot.isModifierDown)
-        XCTAssertFalse(snapshot.wasInterruptedByKey)
-        XCTAssertFalse(snapshot.isInHoldState)
+        XCTAssertEqual(snapshot.phase, .idle)
     }
 
     func testRapidStartStopCyclesProduceNoResidualState() {
@@ -159,7 +157,7 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
             scheduler.fireAll()
 
             XCTAssertEqual(holdStartCount, 0, "\(target): hold fired after the right key was released")
-            XCTAssertFalse(manager.debugGestureSnapshotForTesting().isModifierDown, "\(target)")
+            XCTAssertEqual(manager.debugGestureSnapshotForTesting().phase, .idle, "\(target)")
         }
     }
 
@@ -189,7 +187,7 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(tapCount, 0)
         XCTAssertEqual(holdStartCount, 0)
         XCTAssertEqual(holdReleaseCount, 0)
-        XCTAssertFalse(manager.debugGestureSnapshotForTesting().wasInterruptedByKey)
+        XCTAssertEqual(manager.debugGestureSnapshotForTesting().phase, .idle)
     }
 
     func testRepeatedPressInvalidatesEarlierHoldTimerByGeneration() async {
@@ -321,7 +319,7 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
 
         XCTAssertEqual(holdStartCount, 1)
         XCTAssertEqual(holdReleaseCount, 1)
-        XCTAssertFalse(manager.debugGestureSnapshotForTesting().isInHoldState)
+        XCTAssertEqual(manager.debugGestureSnapshotForTesting().phase, .idle)
     }
 
     func testSeparateManagerInstancesDoNotClobberEachOther() async {

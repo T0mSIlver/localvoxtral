@@ -201,8 +201,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
-        viewModel.shortcuts.isPushToTalkShortcutHeld = true
-        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
+        viewModel.shortcuts.gesture = .held(.shortcut, ownsStart: true)
         viewModel.session.scheduleConnectTimeout()
         let timeoutTask = viewModel.session.connectTimeoutTask
 
@@ -243,8 +242,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
-        viewModel.shortcuts.isPushToTalkShortcutHeld = true
-        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
+        viewModel.shortcuts.gesture = .held(.shortcut, ownsStart: true)
 
         viewModel.shortcuts.handleDictationShortcutRelease()
         viewModel.session.handle(event: .connected)
@@ -270,9 +268,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.phase = .connecting
         viewModel.statusText = "Connecting to realtime backend..."
-        viewModel.shortcuts.isPushToTalkShortcutHeld = true
-        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
-        viewModel.shortcuts.isModifierOnlyHoldActive = true
+        viewModel.shortcuts.gesture = .held(.modifierHold, ownsStart: true)
 
         viewModel.shortcuts.handleDictationShortcutRelease()
         viewModel.session.handle(event: .connected)
@@ -309,7 +305,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.shortcuts.applyHotKeySettingsChange()
 
-        XCTAssertEqual(viewModel.shortcuts.hotKeyManager.debugCurrentRegistrationKind, .none)
+        XCTAssertEqual(viewModel.shortcuts.hotKeyManager.registration, .none)
         XCTAssertNil(viewModel.lastError)
     }
 

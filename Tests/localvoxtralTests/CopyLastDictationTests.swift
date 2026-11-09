@@ -395,13 +395,13 @@ final class CopyLastDictationShortcutTests: XCTestCase {
         shortcuts.settings.dictationShortcutMode = .pushToTalk
 
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: true, hotKeyID: .overlay)
-        XCTAssertTrue(shortcuts.isPushToTalkShortcutHeld)
+        XCTAssertTrue(shortcuts.isDictationAttemptGestureActive)
 
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: true, hotKeyID: .copyLastDictation)
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: false, hotKeyID: .copyLastDictation)
 
         XCTAssertEqual(session.copyLastDictationCalls, 1)
-        XCTAssertTrue(shortcuts.isPushToTalkShortcutHeld, "the copy key's release is not the dictation key's")
+        XCTAssertTrue(shortcuts.isDictationAttemptGestureActive, "the copy key's release is not the dictation key's")
         XCTAssertEqual(session.refusalSignalClears, 0)
     }
 

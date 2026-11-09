@@ -16,14 +16,19 @@ final class HotKeyManager {
         case failure(RegistrationFailure)
     }
 
-    #if DEBUG
-    enum DebugRegistrationKind: Equatable {
+    /// Which dictation trigger is installed. One at a time: each
+    /// registration takes the previous one down first.
+    enum Registration: Equatable {
         case none
+        /// The legacy single Carbon shortcut.
         case single
+        /// The two per-mode Carbon shortcuts; a nil slot registers nothing.
         case dual(overlay: Bool, livePaste: Bool)
+        /// Fn / Globe, Right Command or Right Option, run by `ModifierOnlyHotKeyManager`.
         case modifierOnly
+        /// A chord of modifiers (#863), run by `chordMonitor`.
+        case dictationChord
     }
-    #endif
 
     static let handlerRegistrationErrorMessage = "Failed to register global hotkey handler."
     static let registrationErrorStatus = "Failed to register global hotkey."
@@ -66,15 +71,15 @@ final class HotKeyManager {
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private nonisolated(unsafe) static weak var hotKeyTarget: HotKeyManager?
     private var modifierOnlyManager = ModifierOnlyHotKeyManager()
-    private var isUsingModifierOnly = false
-    /// The dictation key is a chord (#863), run by `chordMonitor`.
-    private var isUsingDictationChord = false
+    private(set) var registration: Registration = .none
 
     /// True while a modifier-only registration is installed, a chord
     /// included. Lets the view model retry a launch-time registration that
     /// failed because Accessibility trust had not landed yet, without
     /// churning a live one.
-    var isModifierOnlyRegistrationActive: Bool { isUsingModifierOnly || isUsingDictationChord }
+    var isModifierOnlyRegistrationActive: Bool {
+        registration == .modifierOnly || registration == .dictationChord
+    }
 
     /// Maps hotkey IDs to output modes for dual-shortcut dispatch.
     private var hotKeyIDToMode: [UInt32: DictationOutputMode] = [:]
@@ -106,7 +111,6 @@ final class HotKeyManager {
     let chordMonitor = ModifierChordHotKeyMonitor()
 
     #if DEBUG
-    private(set) var debugCurrentRegistrationKind: DebugRegistrationKind = .none
     private(set) static var debugForcedHandlerInstallResult: Bool?
     private(set) static var debugForcedRegisterStatusesByID: [UInt32: OSStatus] = [:]
     private(set) static var debugUnregisterCallCount = 0
@@ -164,35 +168,26 @@ final class HotKeyManager {
 
         unregister()
         modifierOnlyManager = candidateManager
-        isUsingModifierOnly = true
-        #if DEBUG
-        debugCurrentRegistrationKind = .modifierOnly
-        #endif
+        registration = .modifierOnly
         return .success
     }
 
     private func registerDictationChord(_ chord: ModifierChord?, holdDelay: Double) -> RegistrationResult {
         guard let chord else {
             unregister()
-            #if DEBUG
-            debugCurrentRegistrationKind = .none
-            #endif
             return .success
         }
         guard chordMonitor.setDictationChord(chord, holdDelay: holdDelay) else {
             // The monitor dropped the chord it had, if any.
-            isUsingDictationChord = false
+            if registration == .dictationChord { registration = .none }
             Log.modifierKeys.error(
                 "Dictation chord registration failed; preserving any previous non-chord registration.")
             return .failure(.modifierOnlyHotKeyUnavailable)
         }
         // `unregister` must take the previous trigger, not this chord.
-        isUsingDictationChord = false
+        if registration == .dictationChord { registration = .none }
         unregister()
-        isUsingDictationChord = true
-        #if DEBUG
-        debugCurrentRegistrationKind = .modifierOnly
-        #endif
+        registration = .dictationChord
         return .success
     }
 
@@ -202,12 +197,7 @@ final class HotKeyManager {
     func register(shortcut: DictationShortcut?) -> RegistrationResult {
         unregister()
 
-        guard let shortcut else {
-            #if DEBUG
-            debugCurrentRegistrationKind = .none
-            #endif
-            return .success
-        }
+        guard let shortcut else { return .success }
 
         if !installHandlerIfNeeded() {
             return .failure(.handlerInstallFailed)
@@ -234,9 +224,7 @@ final class HotKeyManager {
         if let ref {
             hotKeyRefs[Self.overlayHotKeyID] = ref
         }
-        #if DEBUG
-        debugCurrentRegistrationKind = .single
-        #endif
+        registration = .single
 
         return .success
     }
@@ -251,12 +239,7 @@ final class HotKeyManager {
     ) -> RegistrationResult {
         unregister()
 
-        guard overlay != nil || livePaste != nil else {
-            #if DEBUG
-            debugCurrentRegistrationKind = .none
-            #endif
-            return .success
-        }
+        guard overlay != nil || livePaste != nil else { return .success }
 
         if !installHandlerIfNeeded() {
             return .failure(.handlerInstallFailed)
@@ -308,6 +291,7 @@ final class HotKeyManager {
                 Log.modifierKeys.error(
                     "Live Auto-Paste hotkey registration failed after Overlay Buffer hotkey registered; preserving overlay hotkey and surfacing failure."
                 )
+                registration = .dual(overlay: true, livePaste: false)
                 return .failure(.livePasteShortcutUnavailable)
             }
             livePasteRegistered = true
@@ -317,12 +301,7 @@ final class HotKeyManager {
             }
         }
 
-        #if DEBUG
-        debugCurrentRegistrationKind = .dual(
-            overlay: overlayRegistered,
-            livePaste: livePasteRegistered
-        )
-        #endif
+        registration = .dual(overlay: overlayRegistered, livePaste: livePasteRegistered)
         return .success
     }
 
@@ -333,14 +312,15 @@ final class HotKeyManager {
         Self.debugUnregisterCallCount += 1
         #endif
         heldDictationHotKeyID = nil
-        if isUsingModifierOnly {
+        switch registration {
+        case .modifierOnly:
             modifierOnlyManager.stop()
-            isUsingModifierOnly = false
-        }
-        if isUsingDictationChord {
+        case .dictationChord:
             _ = chordMonitor.setDictationChord(nil, holdDelay: 0)
-            isUsingDictationChord = false
+        case .none, .single, .dual:
+            break
         }
+        registration = .none
 
         for (_, ref) in hotKeyRefs {
             UnregisterEventHotKey(ref)

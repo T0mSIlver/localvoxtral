@@ -31,6 +31,27 @@ final class ModifierOnlyHotKeyManager {
         }
     }
 
+    /// Where one press of the target modifier is. A press starts `pressed`;
+    /// the hold threshold moves it to `holding`; another key or modifier
+    /// voids it. Every press ends in `idle` at its release.
+    ///
+    ///     idle ─▶ pressed ─▶ holding ─▶ idle      (release: tap from pressed,
+    ///                │          │                  hold release from holding)
+    ///                └────┬─────┘
+    ///                     ▼
+    ///                interrupted ─▶ idle          (release fires nothing)
+    enum GesturePhase: Equatable {
+        case idle
+        /// Down, short of the hold threshold: a release now is a tap.
+        case pressed
+        /// Down past the hold threshold: push to talk runs until the release.
+        case holding
+        /// Another key or modifier joined the press: its release fires nothing.
+        case interrupted
+
+        var isModifierDown: Bool { self != .idle }
+    }
+
     typealias HoldScheduler =
         @MainActor (_ delay: Double, _ fire: @escaping @MainActor @Sendable () -> Void) -> Void
 
@@ -237,14 +258,8 @@ final class ModifierOnlyHotKeyManager {
             )
         }
 
-        guard state.targetModifier != nil, state.isModifierDown else { return }
-        state.wasInterruptedByKey = true
-        state.generation &+= 1
-
-        if state.isInHoldState {
-            state.isInHoldState = false
-            fire(.holdRelease)
-        }
+        guard state.targetModifier != nil, state.phase.isModifierDown else { return }
+        perform(state.interrupt())
     }
 
     private func handleFlagsChanged(
@@ -265,18 +280,18 @@ final class ModifierOnlyHotKeyManager {
         let isTargetKeyEvent = Self.isTargetModifierKeyEvent(target, keyCode: keyCode)
         let effect: GestureEffect
 
-        if state.isModifierDown {
+        if state.phase.isModifierDown {
             if isTargetKeyEvent || !targetFlagPresent {
                 // The left twin keeps `.command` / `.option` set after the
                 // right key is up; only the right key's device bit says so (#1270).
                 let targetKeyHeld = targetFlagPresent
                     && (!isTargetKeyEvent || Self.targetSideStillHeld(target, flags: flags))
-                effect = handleTargetModifierReleaseIfNeeded(targetFlagPresent: targetKeyHeld)
+                effect = targetKeyHeld ? .none : state.release()
             } else {
-                effect = handleModifierInterruptedByFlagsTimeline()
+                effect = state.interrupt()
             }
         } else if targetFlagPresent && isTargetKeyEvent {
-            effect = handleTargetModifierPress()
+            effect = state.press()
         } else {
             effect = .none
         }
@@ -284,58 +299,9 @@ final class ModifierOnlyHotKeyManager {
         perform(effect)
     }
 
-    private func handleTargetModifierPress() -> GestureEffect {
-        state.isModifierDown = true
-        state.wasInterruptedByKey = false
-        state.isInHoldState = false
-        state.generation &+= 1
-        return .scheduleHold(generation: state.generation, delay: state.holdThresholdSeconds)
-    }
-
-    private func handleTargetModifierReleaseIfNeeded(targetFlagPresent: Bool) -> GestureEffect {
-        guard !targetFlagPresent, state.isModifierDown else { return .none }
-
-        state.isModifierDown = false
-        state.generation &+= 1
-
-        if state.wasInterruptedByKey {
-            state.wasInterruptedByKey = false
-            state.isInHoldState = false
-            return .none
-        }
-
-        if state.isInHoldState {
-            state.isInHoldState = false
-            return .fire(.holdRelease)
-        }
-
-        return .fire(.tap)
-    }
-
-    private func handleModifierInterruptedByFlagsTimeline() -> GestureEffect {
-        state.wasInterruptedByKey = true
-        state.generation &+= 1
-
-        if state.isInHoldState {
-            state.isInHoldState = false
-            return .fire(.holdRelease)
-        }
-
-        return .none
-    }
-
     private func handleHoldThresholdElapsed(generation: UInt64) {
-        guard state.targetModifier != nil,
-              state.generation == generation,
-              state.isModifierDown,
-              !state.wasInterruptedByKey,
-              !state.isInHoldState
-        else {
-            return
-        }
-
-        state.isInHoldState = true
-        fire(.holdStart)
+        guard state.targetModifier != nil else { return }
+        perform(state.holdThresholdElapsed(generation: generation))
     }
 
     private func perform(_ effect: GestureEffect) {
@@ -445,9 +411,7 @@ final class ModifierOnlyHotKeyManager {
     func debugGestureSnapshotForTesting() -> ModifierOnlyHotKeyDebugSnapshot {
         ModifierOnlyHotKeyDebugSnapshot(
             targetModifier: state.targetModifier,
-            isModifierDown: state.isModifierDown,
-            wasInterruptedByKey: state.wasInterruptedByKey,
-            isInHoldState: state.isInHoldState,
+            phase: state.phase,
             generation: state.generation
         )
     }
@@ -463,16 +427,52 @@ final class ModifierOnlyHotKeyManager {
 private struct ModifierGestureState {
     var targetModifier: ModifierOnlyHotKeyManager.ModifierKey?
     var holdThresholdSeconds = 0.35
-    var isModifierDown = false
-    var wasInterruptedByKey = false
-    var isInHoldState = false
+    var phase: ModifierOnlyHotKeyManager.GesturePhase = .idle
+    /// Bumped on every move, so a hold timer armed for an earlier press
+    /// finds a newer generation and does nothing.
     var generation: UInt64 = 0
 
-    mutating func resetGesture() {
-        isModifierDown = false
-        wasInterruptedByKey = false
-        isInHoldState = false
+    private mutating func move(to next: ModifierOnlyHotKeyManager.GesturePhase) {
+        phase = next
         generation &+= 1
+    }
+
+    /// The target modifier went down.
+    mutating func press() -> GestureEffect {
+        move(to: .pressed)
+        return .scheduleHold(generation: generation, delay: holdThresholdSeconds)
+    }
+
+    /// The target modifier came up: a tap, a hold's release, or nothing
+    /// after an interruption.
+    mutating func release() -> GestureEffect {
+        let released = phase
+        move(to: .idle)
+        switch released {
+        case .pressed: return .fire(.tap)
+        case .holding: return .fire(.holdRelease)
+        case .idle, .interrupted: return .none
+        }
+    }
+
+    /// Another key or modifier joined the press. A running hold ends here,
+    /// not at the target's release.
+    mutating func interrupt() -> GestureEffect {
+        let wasHolding = phase == .holding
+        move(to: .interrupted)
+        return wasHolding ? .fire(.holdRelease) : .none
+    }
+
+    /// The hold timer armed at `generation` fired. Only the press that armed
+    /// it, still short of the threshold, becomes a hold.
+    mutating func holdThresholdElapsed(generation armed: UInt64) -> GestureEffect {
+        guard generation == armed, phase == .pressed else { return .none }
+        phase = .holding
+        return .fire(.holdStart)
+    }
+
+    mutating func resetGesture() {
+        move(to: .idle)
     }
 
     mutating func resetAll() {
@@ -509,9 +509,7 @@ enum ModifierOnlyHotKeyStartOutcome: String, Equatable {
 #if DEBUG
 struct ModifierOnlyHotKeyDebugSnapshot: Equatable {
     var targetModifier: ModifierOnlyHotKeyManager.ModifierKey?
-    var isModifierDown: Bool
-    var wasInterruptedByKey: Bool
-    var isInHoldState: Bool
+    var phase: ModifierOnlyHotKeyManager.GesturePhase
     var generation: UInt64
 }
 #endif
