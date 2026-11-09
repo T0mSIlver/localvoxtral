@@ -88,17 +88,18 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
 final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
     private let model: NemotronASRModel
-    private let termBoost: NemotronASRTermBoostConfig
+    private let hotwordsConfig: NemotronASRHotwordsConfig
 
+    // Measurement only: `--term-boost a,b,c` reads as alpha, context score, depth scaling.
     init(model: NemotronASRModel, termBoost: TermBoostSettings?) {
         self.model = model
-        self.termBoost = termBoost.map {
-            NemotronASRTermBoostConfig(
-                firstTokenBoost: $0.firstTokenBoost,
-                continuationBoost: $0.continuationBoost,
-                margin: $0.margin
+        self.hotwordsConfig = termBoost.map {
+            NemotronASRHotwordsConfig(
+                alpha: $0.firstTokenBoost,
+                contextScore: $0.continuationBoost,
+                depthScaling: $0.margin
             )
-        } ?? NemotronASRTermBoostConfig()
+        } ?? NemotronASRHotwordsConfig()
     }
 
     func makeSession(
@@ -117,14 +118,13 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
             let frames = NemotronUnifiedLayout.frames(forTranscriptionDelayMs: transcriptionDelayMs)
             session = model.makeStreamSession(
                 language: promptKey,
-                bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2])
+                bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2]),
+                hotwords: terms.terms, hotwordsConfig: hotwordsConfig
             )
         } else {
             let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
-            session = model.makeStreamSession(language: promptKey, chunkMs: rung)
-        }
-        if !terms.terms.isEmpty {
-            session.setBoostTerms(terms.terms, config: termBoost)
+            session = model.makeStreamSession(
+                language: promptKey, chunkMs: rung, hotwords: terms.terms, hotwordsConfig: hotwordsConfig)
         }
         return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
     }
