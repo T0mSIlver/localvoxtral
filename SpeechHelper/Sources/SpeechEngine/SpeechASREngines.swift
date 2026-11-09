@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXAudioSTT
 import SpeechEngineText
 
@@ -43,27 +44,105 @@ final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
         if !terms.terms.isEmpty {
             session.setBoostTerms(terms.terms, config: termBoost)
         }
-        return VoxtralASRSession(session: session, maxDecodedTokens: maxDecodedTokens)
+        return VoxtralASRSession(
+            session: session, maxDecodedTokens: maxDecodedTokens,
+            delayMs: transcriptionDelayMs ?? model.config.transcriptionDelayMs,
+            leftPadTokens: model.config.nLeftPadTokens,
+            padTokenId: model.config.streamingPadTokenId
+        )
     }
 }
 
 final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
     private let session: VoxtralRealtimeStreamSession
     private let maxDecodedTokens: Int
+    private let delayMs: Int
+    private let leftPadTokens: Int
+    private let padTokenId: Int
+    private var samplesTaken = 0
 
-    init(session: VoxtralRealtimeStreamSession, maxDecodedTokens: Int) {
+    /// Pad tokens in a row, past the transcription delay, that end a stop's flush
+    /// (LVX-110). On 260 term-recall stops the text never went on after one; two
+    /// leave a token of margin.
+    static let silentTailTokens = 2
+
+    init(
+        session: VoxtralRealtimeStreamSession,
+        maxDecodedTokens: Int,
+        delayMs: Int,
+        leftPadTokens: Int,
+        padTokenId: Int
+    ) {
         self.session = session
         self.maxDecodedTokens = maxDecodedTokens
+        self.delayMs = delayMs
+        self.leftPadTokens = leftPadTokens
+        self.padTokenId = padTokenId
     }
 
     func step(_ samples: [Float]) -> SpeechStreamDelta {
+        samplesTaken += samples.count
         let delta = session.step(samples)
         return SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)
     }
 
+    /// Feeds the offline right pad's zeros through `step` and stops once the tail
+    /// decodes as silence (`SilentTailStop`), instead of `session.finish()`, which
+    /// decodes the whole pad. The first batch reaches the earliest position the stop
+    /// can fire at, then one token at a time. A stop that never sees the silence ends
+    /// with the pad, its last positions undecoded. With no audio, or a session
+    /// already ended, `finish()` runs as before.
+    func appSideFinish() -> SpeechStreamDelta {
+        guard samplesTaken > 0, !session.isFinished else {
+            let delta = session.finish()
+            return SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)
+        }
+        let spt = SilentTailStop.samplesPerToken
+        var stop = SilentTailStop(
+            realSamples: samplesTaken, delayMs: delayMs, leftPadTokens: leftPadTokens,
+            padTokens: Self.silentTailTokens, padTokenId: padTokenId
+        )
+        let promptLength = 1 + leftPadTokens + SilentTailStop.delayTokens(delayMs: delayMs)
+        let alignment = SilentTailStop.alignmentSamples(after: samplesTaken)
+        // After `z` pad tokens, `step` has read the positions below
+        // `alignedRegion + z - 1`; the front end holds back up to one token more.
+        let alignedRegion = leftPadTokens + (samplesTaken + alignment) / spt
+        let padTokens = SilentTailStop.rightPadTokens(delayMs: delayMs)
+        var fed = min(padTokens, max(1, stop.fromPosition + stop.padTokens + 2 - alignedRegion))
+        var chunk = alignment + fed * spt
+        var observed = session.tokens.count
+        var text = ""
+        var ids: [Int] = []
+        flush: while true {
+            let delta = session.step([Float](repeating: 0, count: chunk))
+            text += delta.text
+            ids += delta.tokenIds
+            let tokens = session.tokens
+            for index in observed..<tokens.count
+            where stop.observe(token: tokens[index], position: promptLength + index) {
+                break flush
+            }
+            observed = tokens.count
+            guard !session.isFinished, fed < padTokens else { break }
+            fed += 1
+            chunk = spt
+        }
+        // As `finish()` does: the flush leaves a cold working set behind.
+        Memory.clearCache()
+        return SpeechStreamDelta(text: text, tokenIds: ids)
+    }
+
     func finish() -> SpeechStreamDelta {
-        let delta = session.finish()
-        return SpeechStreamDelta(text: delta.text, tokenIds: delta.tokenIds)
+        let before = session.tokens.count
+        let start = ContinuousClock.now
+        let delta = appSideFinish()
+        let elapsed = ContinuousClock.now - start
+        // MEASUREMENT ONLY (LVX-110). Token classes only (P pad, T anything else), never text.
+        let pattern = session.tokens.dropFirst(before).map { $0 == padTokenId ? "P" : "T" }.joined()
+        let ms = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1000
+        FileHandle.standardError.write(Data(
+            "BENCH flush silent_tail=app\(Self.silentTailTokens) ms=\(String(format: "%.1f", ms)) tokens=\(pattern.count) eos=\(session.isFinished ? 1 : 0) pattern=\(pattern)\n".utf8))
+        return delta
     }
 
     var text: String { session.text }
