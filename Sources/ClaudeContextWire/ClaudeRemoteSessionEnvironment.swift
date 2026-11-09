@@ -24,6 +24,10 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     /// host over its own ssh. Compared by the desktop join arm against the
     /// session the desktop window shows; never dialed, never a path.
     case desktopSessionID
+    /// `$T3CODE_THREAD_ID`, the id of the T3 Code thread that runs this
+    /// session on this host (LVX-55). Compared by the T3 Code join arm
+    /// against the thread T3 Code's window shows; never dialed, never a path.
+    case t3ThreadID
     case tmux
     case tmuxPane
     /// `$STY`, GNU screen's session handle — `<pid>.<tty>.<host>`, set in every
@@ -84,6 +88,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .cmuxSocketPath: return "X-Lvx-Env-Cmux-Socket-Path"
         case .bridgeSessionID: return "X-Lvx-Env-Bridge-Session-Id"
         case .desktopSessionID: return "X-Lvx-Env-Desktop-Session-Id"
+        case .t3ThreadID: return "X-Lvx-Env-T3-Thread-Id"
         case .tmux: return "X-Lvx-Env-Tmux"
         case .tmuxPane: return "X-Lvx-Env-Tmux-Pane"
         case .screenSession: return "X-Lvx-Env-Screen-Session"
@@ -113,6 +118,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .cmuxSocketPath: return "$CMUX_SOCKET_PATH"
         case .bridgeSessionID: return "$CLAUDE_CODE_BRIDGE_SESSION_ID"
         case .desktopSessionID: return "$CLAUDE_CODE_HOST_SESSION_ID"
+        case .t3ThreadID: return "$T3CODE_THREAD_ID"
         case .tmux: return "$TMUX"
         case .tmuxPane: return "$TMUX_PANE"
         case .screenSession: return "$STY"
@@ -194,6 +200,10 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
     /// id: the desktop app allocates it, and the only thing done with it is an
     /// equality test against the session the desktop window shows.
     public var desktopSessionID: String?
+    /// T3 Code's thread id. A label like the desktop id: T3 Code allocates it,
+    /// and the only thing done with it is an equality test against the thread
+    /// T3 Code's window shows.
+    public var t3ThreadID: String?
     public var tmux: String?
     public var tmuxPane: String?
     /// GNU screen's `$STY`. A multiplexer label like the tmux pair: never a
@@ -232,6 +242,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         cmuxSocketPath: String? = nil,
         bridgeSessionID: String? = nil,
         desktopSessionID: String? = nil,
+        t3ThreadID: String? = nil,
         tmux: String? = nil,
         tmuxPane: String? = nil,
         screenSession: String? = nil,
@@ -251,6 +262,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         self.cmuxSocketPath = cmuxSocketPath
         self.bridgeSessionID = bridgeSessionID
         self.desktopSessionID = desktopSessionID
+        self.t3ThreadID = t3ThreadID
         self.tmux = tmux
         self.tmuxPane = tmuxPane
         self.screenSession = screenSession
@@ -280,6 +292,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .cmuxSocketPath: return cmuxSocketPath
             case .bridgeSessionID: return bridgeSessionID
             case .desktopSessionID: return desktopSessionID
+            case .t3ThreadID: return t3ThreadID
             case .tmux: return tmux
             case .tmuxPane: return tmuxPane
             case .screenSession: return screenSession
@@ -302,6 +315,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .cmuxSocketPath: cmuxSocketPath = newValue
             case .bridgeSessionID: bridgeSessionID = newValue
             case .desktopSessionID: desktopSessionID = newValue
+            case .t3ThreadID: t3ThreadID = newValue
             case .tmux: tmux = newValue
             case .tmuxPane: tmuxPane = newValue
             case .screenSession: screenSession = newValue

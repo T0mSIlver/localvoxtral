@@ -32,20 +32,38 @@ extension AgentDictationE2EEvalTests {
         guard enablement.provider == .speechd else {
             throw XCTSkip("the replay runs on the local speech and polishing services only")
         }
-        let set = try DictationReplaySupport.loadSet(
-            at: repoRoot.appendingPathComponent(replayPath, isDirectory: true))
+        // An absolute path is a set another account exported on this Mac
+        // (`remote-build.sh eval-e2e --replay /Users/Shared/lv-replay-*`).
+        // Opening a store writes beside it, so the run works on its own
+        // private copy, on this Mac, removed when it ends; the export stays
+        // as it was.
+        let setURL: URL
+        if replayPath.hasPrefix("/") {
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lv-replay-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: copy, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            addTeardownBlock { try? FileManager.default.removeItem(at: copy) }
+            setURL = copy.appendingPathComponent("set", isDirectory: true)
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: replayPath, isDirectory: true), to: setURL)
+        } else {
+            setURL = repoRoot.appendingPathComponent(replayPath, isDirectory: true)
+        }
+        let set = try DictationReplaySupport.loadSet(at: setURL)
         guard case let .success(history) = DictationSessionStore.open(url: set.storeURL) else {
             throw EvalInfraError("the replay set's default.store does not open")
         }
         let audioStore = DictationAudioStore(directoryURL: set.audioDirectory)
         let stored = audioStore.storedIDs()
-        let entries = await history.entries(since: nil)
+        let replayable = await history.entries(since: nil)
             // Only text that reached the target app is a reference.
             .filter {
                 stored.contains($0.id) && $0.commitSucceeded
                     && $0.outputMode == DictationOutputMode.overlayBuffer.rawValue
             }
-            .reversed()  // oldest first, the order they were spoken in
+        // Newest first from the store: the cap keeps the newest, then they
+        // replay oldest first, the order they were spoken in.
+        let entries = Array(replayable.prefix(enablement.replayNewest ?? replayable.count).reversed())
         guard !entries.isEmpty else {
             throw EvalInfraError("no Overlay Buffer dictation in the set has audio")
         }
@@ -65,10 +83,12 @@ extension AgentDictationE2EEvalTests {
         var requestsWithLearnedTerm = [0, 0]
         var outputsChanged = [0, 0]
         for (index, entry) in entries.enumerated() {
+            var caseSeconds = 0
             do {
                 let wav = try Data(contentsOf: audioStore.fileURL(for: entry.id))
                 let pcm = try RecordedAudioSet.pcm16(fromWAVData: wav)
-                seconds += pcm.count / AudioChunkBuffer.bytesPerSecond
+                caseSeconds = pcm.count / AudioChunkBuffer.bytesPerSecond
+                seconds += caseSeconds
                 let transcript = try await transcribe(pcm: pcm, enablement: enablement)
                 let dayZero = try await replayPolish(
                     transcript, entry: entry, learnedTerms: [], speakerTerms: set.speakerTerms,
@@ -89,9 +109,12 @@ extension AgentDictationE2EEvalTests {
                 print("replay [\(index + 1)/\(entries.count)] ok")
             } catch {
                 failures += 1
-                // The error's type, never its message: a backend that echoes
-                // the request would put the user's words in the log.
-                print("replay [\(index + 1)/\(entries.count)] failed: \(type(of: error))")
+                // Never the error's message: a backend that echoes the request
+                // would put the user's words in the log. The kind and the
+                // audio length tell a stall from an empty final (LVX-109).
+                print(
+                    "replay [\(index + 1)/\(entries.count)] failed: "
+                        + "\(EvalSpeechStage.logSafeSummary(of: error)), \(caseSeconds) s of audio")
             }
         }
 

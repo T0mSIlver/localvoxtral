@@ -570,8 +570,7 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.settings.projectTermProposalsEnabled = true
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])]
             )
         )
         let store = LearnedTermStore(fileURL: nil)
@@ -832,7 +831,6 @@ final class DictationPipelineTests: XCTestCase {
         let viewModel = pipeline.viewModel
         viewModel.settings.dictationHistoryRetention = .forever
         viewModel.settings.diagnosticRecordsEnabled = true
-        // Not `.succeeded`: that arms the edit watcher's real timer.
         pipeline.overlay.commitOutcome = .copiedToClipboard(message: "copied")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
@@ -885,6 +883,66 @@ final class DictationPipelineTests: XCTestCase {
             "no alert was presented during the second dictation")
         // The first dictation still said what went wrong, once.
         XCTAssertEqual(alertsOfTheFirst, ["LLM Polishing Returned No Text"])
+    }
+
+    /// The edit watch after an inserted commit sleeps on the session clock
+    /// (LVX-95): the window closes when the clock passes it, and the
+    /// dictation's record gets its verdict.
+    func testTheEditWatchClosesOnTheSessionClockAndPatchesTheRecord() async throws {
+        // Records, and the watch, come with the polish path.
+        StubHTTPProtocol.reply.withLock {
+            $0 = .http(200, #"{"choices":[{"message":{"role":"assistant","content":"\#(Self.phrase)"}}]}"#)
+        }
+        let monitor = await MainActor.run { EditSignalTestMonitor() }
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(session: StubHTTPProtocol.session()),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false,
+            editKeyMonitor: { monitor }
+        )
+        let viewModel = pipeline.viewModel
+        viewModel.settings.dictationHistoryRetention = .forever
+        viewModel.settings.diagnosticRecordsEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-diag-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let recordStore = DiagnosticRecordStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.diagnosticRecordStore = recordStore
+        viewModel.sessionStore = store
+        viewModel.session.diagnosticRecordStore = recordStore
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertTrue(monitor.isInstalled, "the inserted commit opened no edit watch")
+
+        // History hears the verdict once the record holds it: the end of the
+        // record write, the window and the patch, whichever comes last.
+        let watcher = viewModel.session.editSignalWatcher
+        let patched = BoundedWait()
+        let toHistory = watcher.onOutcome
+        watcher.onOutcome = { id, outcome in
+            toHistory?(id, outcome)
+            patched.resolve()
+        }
+        let window = EditSignalPolicy.windowSeconds(wordCount: EditSignalPolicy.wordCount(of: Self.phrase))
+        await pipeline.clock.waitForSleeper(dueIn: window)
+        pipeline.clock.advance(by: window)
+        let didPatch = await patched.value(failAfter: 10)
+        XCTAssertTrue(didPatch, "the record never got the window's verdict")
+
+        XCTAssertFalse(monitor.isInstalled, "the window closed and took its observer down")
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(names.count, 1)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(
+            DiagnosticRecord.self, from: Data(contentsOf: directory.appendingPathComponent(try XCTUnwrap(names.first)))
+        )
+        XCTAssertEqual(record.behavior?.outcome, .clean)
+        XCTAssertEqual(record.behavior?.watchWindowSeconds, window)
     }
 
     /// The polish-failure alert is modal. The edit watch of the inserted
@@ -1056,6 +1114,53 @@ final class DictationPipelineTests: XCTestCase {
             "the quit lost the dictation")
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], "saved as not inserted")
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted on the way out")
+    }
+
+    /// The same quit while one of the app's own Cmd+V pastes awaits its
+    /// restore: no restore runs after the quit, so the copy is written at
+    /// once, not held behind it (LVX-54).
+    func testWithHistoryOffAQuitDuringAPendingPasteCopiesTheTextAtOnce() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
+
+        // A fenced text pasted into Claude Desktop by Cmd+V; its restore
+        // sleeps on a clock nobody advances.
+        let insertion = pipeline.viewModel.textInsertion
+        insertion.pasteRestoreSleep = ManualSessionClock().sleep
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+        }
+        insertion.debugSetAccessibilityTrusted(true)
+        var pastes = 0
+        insertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: { true },
+            commandVPaster: { _ in pastes += 1; return true }
+        )
+        XCTAssertTrue(insertion.insertTextPrioritizingKeyboard("see:\n```\nline\n```").isSuccess)
+        XCTAssertEqual(pastes, 1, "precondition: a paste awaits its restore")
+
+        // What `applicationWillTerminate` runs before it drains History.
+        pipeline.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(
+            copied.values.map { $0.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece],
+            "the copy waited for a restore that never runs after a quit")
     }
 
     /// Quit after the stop, before the final transcript arrives: the text
@@ -3833,6 +3938,81 @@ final class DictationPipelineTests: XCTestCase {
             pipeline.records.all.map(\.rawText), ["Hello from the first session. And the second."])
     }
 
+    // MARK: - llama-server's /v1/realtime (#1943)
+
+    /// llama-server answers every commit with an item of its own and pads
+    /// the stream with silence for it, so the session's periodic commit
+    /// never reaches it: the stop's final commit is the only one, and its
+    /// `completed` commits the dictation.
+    func testOverlayBufferOnLlamaServerSendsOnlyTheFinalCommit() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, server: .llamaServer)
+
+        await startAndSpeak(pipeline)
+        for _ in 0 ..< 2 {
+            pipeline.clock.advance(by: TimingConstants.commitInterval)
+            await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+        }
+        sendLlamaPartials(pipeline, Self.phrase)
+        await stopAndFinalize(pipeline, server: .llamaServer)
+
+        XCTAssertEqual(commitFrames(pipeline), [true], "only the stop's final commit")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+    }
+
+    /// A rollover on llama-server: the retiring session gets a final commit
+    /// alone, the next one starts with no commit, and the stop commits both
+    /// sides once.
+    func testOverlayBufferOnLlamaServerCommitsBothSidesOfARolloverOnce() async throws {
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, contextBudget: Self.tinyContext, server: .llamaServer)
+        let first = "Hello from the first session."
+        let both = "Hello from the first session. And the second."
+
+        await startAndSpeak(pipeline)
+        sendLlamaPartials(pipeline, first)
+        XCTAssertTrue(pipeline.microphone.deliver(Self.speech(seed: 4)))
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        await pipeline.server.awaitFrame("the rollover's final commit") { $0.isFinalCommit }
+        XCTAssertEqual(commitFrames(pipeline), [true], "the retiring session gets the final commit alone")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a rollover is not a stop")
+        pipeline.server.forgetFrames()
+
+        pipeline.server.send(RealtimeServerModel.llamaCompleted(first))
+        await pipeline.server.awaitFrame("the next session's session.update") { $0.type == "session.update" }
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == both { shown.resolve() }
+        }
+        sendLlamaPartials(pipeline, "And the second.")
+        let shownBoth = await shown.value(failAfter: 10)
+        XCTAssertTrue(
+            shownBoth,
+            "overlay shows: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "nothing")"
+        )
+        pipeline.overlay.onRefresh = nil
+
+        await stopAndFinalize(pipeline, finalText: "And the second.", server: .llamaServer)
+
+        XCTAssertEqual(commitFrames(pipeline), [true], "the next session starts with no commit")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [both])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [both])
+    }
+
+    /// llama-server's spelling of the streamed text.
+    private func sendLlamaPartials(_ pipeline: Pipeline, _ text: String) {
+        pipeline.server.send([
+            "type": "conversation.item.input_audio_transcription.delta", "item_id": "item_test",
+            "content_index": 0, "delta": text,
+        ])
+    }
+
+    /// Each commit the server received since it last forgot its frames:
+    /// true for a final one.
+    private func commitFrames(_ pipeline: Pipeline) -> [Bool] {
+        pipeline.server.frames.filter { $0.type == "input_audio_buffer.commit" }.map(\.isFinalCommit)
+    }
+
     /// The second chunk passes the margin: the client ends the server session
     /// with a final commit, the server answers it with `retiringText`, and
     /// the client dials a fresh session on the same server, which starts its
@@ -4197,6 +4377,7 @@ final class DictationPipelineTests: XCTestCase {
     /// the client closes, and the session commits and records.
     private func stopAndFinalize(
         _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
+        server kind: RealtimeServerModel.Kind = .vllm,
         expectedError: String? = nil,
         finalStatus: String = DictationViewModel.StatusStrings.ready,
         alerts: [String] = [],
@@ -4225,7 +4406,9 @@ final class DictationPipelineTests: XCTestCase {
             XCTAssertLessThan(flushed, finalCommit, "and sends it ahead of the final commit", file: file, line: line)
         }
 
-        pipeline.server.send(["type": "transcription.done", "text": finalText])
+        pipeline.server.send(
+            kind == .llamaServer
+                ? RealtimeServerModel.llamaCompleted(finalText) : ["type": "transcription.done", "text": finalText])
         let recorded = await pipeline.records.waitForCount(recordsBefore + 1)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)
@@ -4309,16 +4492,17 @@ final class DictationPipelineTests: XCTestCase {
         contextBudget: RealtimeContextBudget? = nil,
         overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         workspaceCenter: NotificationCenter? = nil,
-        backendManager: (any ManagedBackendManaging)? = nil
+        backendManager: (any ManagedBackendManaging)? = nil,
+        editKeyMonitor: (@MainActor () -> any EditKeyMonitoring)? = nil,
+        server kind: RealtimeServerModel.Kind = .vllm
     ) async throws -> Pipeline {
-        let server = try FakeRealtimeServer()
+        let server = try FakeRealtimeServer(sessionCreated: RealtimeServerModel.sessionCreated(kind))
         addTeardownBlock { server.stop() }
         let endpoint = try await server.start()
 
         let settings = makeSettings(outputMode: outputMode)
         settings.dictationBackendMode = .externalURL
         settings.polishingBackendMode = .externalURL
-        settings.realtimeProvider = .realtimeAPI
         settings.realtimeAPIEndpointURL = endpoint.absoluteString
         settings.realtimeAPIModelName = Self.model
         // As in the e2e check: the inserted text is the transcript.
@@ -4342,7 +4526,8 @@ final class DictationPipelineTests: XCTestCase {
                 connectionFailurePresenter: presenter,
                 onSessionRecord: { records.append($0) },
                 clock: clock.clock,
-                realtimeContextLimit: { _ in contextBudget }
+                realtimeContextLimit: { _ in contextBudget },
+                editKeyMonitor: editKeyMonitor ?? { EditKeyNSEventMonitor() }
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()

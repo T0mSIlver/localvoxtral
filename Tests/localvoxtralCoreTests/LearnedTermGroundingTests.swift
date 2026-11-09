@@ -40,7 +40,6 @@ final class LearnedTermGroundingTests: XCTestCase {
         let proposal = outcome(transcript, proposals: ["GlyphAtlasCache"])
         XCTAssertEqual(proposal.entries, [])
         XCTAssertEqual(proposal.verificationCandidates, [])
-        XCTAssertEqual(proposal.phoneticEntries, [])
     }
 
     /// With no proposals, the learned source is exactly what it was before
@@ -68,6 +67,22 @@ final class LearnedTermGroundingTests: XCTestCase {
         )
         XCTAssertEqual(result.entries.map(\.replaceWith), ["PageComposer"])
         XCTAssertEqual(result.verificationCandidates.map(\.replaceWith), ["GlyphAtlasCache"])
+    }
+
+    /// LVX-92: five sound-alikes in a short transcript, where the cap is
+    /// four and longer terms rank first. The four longer proposals used to
+    /// take the slots and be dropped after, leaving the confirmed term none.
+    func testProposalsDoNotUseUpAConfirmedTermsNominationSlot() {
+        let transcript = "open spool writer cash ink well page cash folio index cash bindery queue cash and glyph cash"
+        let proposals = ["SpoolWriterCache", "InkWellPageCache", "FolioIndexCache", "BinderyQueueCache"]
+        XCTAssertEqual(RepoVocabularyMatcher.nominationCap(forTranscript: transcript), 4)
+        let allConfirmed = outcome(transcript, confirmed: proposals + ["GlyphCache"])
+        XCTAssertEqual(
+            Set(allConfirmed.verificationCandidates.map(\.replaceWith)), Set(proposals),
+            "the fixture must fill the cap before the confirmed term")
+
+        let result = outcome(transcript, confirmed: ["GlyphCache"], proposals: proposals)
+        XCTAssertEqual(result.verificationCandidates.map(\.replaceWith), ["GlyphCache"])
     }
 
     /// A pre-applied proposal is a `.learned` entry of the merge, and the

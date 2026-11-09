@@ -278,27 +278,6 @@ final class ShortcutController {
         )
     }
 
-    func updateDictationShortcut(_ shortcut: DictationShortcut?) {
-        let previousShortcut = settings.dictationShortcut
-        let previousWasEnabled = settings.dictationShortcutEnabled
-
-        settings.setDictationShortcut(shortcut)
-
-        switch registerCurrentHotKeys() {
-        case .success:
-            clearHotKeyErrors()
-            return
-        case .failure(let reason):
-            if previousWasEnabled {
-                settings.setDictationShortcut(previousShortcut ?? SettingsStore.defaultDictationShortcut)
-            } else {
-                settings.setDictationShortcut(nil)
-            }
-            _ = registerCurrentHotKeys()
-            applyHotKeyRegistrationFailure(reason)
-        }
-    }
-
     /// What recording a shortcut into one slot means once the other slot is
     /// taken into account.
     enum ShortcutAssignment: Equatable {

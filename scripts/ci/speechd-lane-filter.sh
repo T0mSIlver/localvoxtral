@@ -18,7 +18,10 @@
 # fail-open behavior when it cannot produce a diff at all.
 set -euo pipefail
 
-MARKER='[run-speechd-integration]'
+# What the filter prints names the marker without brackets: a reason pasted
+# into a PR body as proof must not opt that PR in (LVX-114).
+MARKER_NAME='run-speechd-integration'
+MARKER="[$MARKER_NAME]"
 
 # Changes here can alter the helper binary, its pinned mlx-audio-swift graph,
 # the managed launch/model-download contract, the packaged resource layout,
@@ -52,7 +55,7 @@ fi
 if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]] \
     && grep -qF "$MARKER" "$MARKER_TEXT_FILE"; then
   echo "run=true"
-  echo "reason=explicit $MARKER marker"
+  echo "reason=explicit $MARKER_NAME marker"
   exit 0
 fi
 
@@ -71,4 +74,4 @@ while IFS= read -r file; do
 done <"$CHANGED_FILES_FILE"
 
 echo "run=false"
-echo "reason=no speechd-relevant changes; add $MARKER to the PR body or commit message and push to opt in"
+echo "reason=no speechd-relevant changes; add the $MARKER_NAME marker, in square brackets, to the PR body or commit message and push to opt in"

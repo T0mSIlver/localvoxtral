@@ -1,42 +1,6 @@
 import Foundation
 
 extension SettingsStore {
-    var dictationShortcut: DictationShortcut? {
-        guard dictationShortcutEnabled else { return nil }
-
-        let candidate = DictationShortcut(
-            keyCode: dictationShortcutKeyCode,
-            carbonModifierFlags: dictationShortcutCarbonModifierFlags
-        ).normalized
-
-        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
-            return Self.defaultDictationShortcut
-        }
-
-        return candidate
-    }
-
-    func setDictationShortcut(_ shortcut: DictationShortcut?) {
-        // A chord has no hold to end push to talk with (#831).
-        guard shortcut?.modifierChord == nil else { return }
-        guard let shortcut else {
-            dictationShortcutEnabled = false
-            return
-        }
-
-        let normalizedShortcut = shortcut.normalized
-        let resolvedShortcut: DictationShortcut
-        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
-            resolvedShortcut = normalizedShortcut
-        } else {
-            resolvedShortcut = Self.defaultDictationShortcut
-        }
-
-        dictationShortcutKeyCode = resolvedShortcut.keyCode
-        dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
-        dictationShortcutEnabled = true
-    }
-
     // MARK: - Dual Shortcuts (per output mode)
 
     var overlayBufferShortcut: DictationShortcut? {

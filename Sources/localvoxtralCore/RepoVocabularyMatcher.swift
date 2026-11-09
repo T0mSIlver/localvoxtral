@@ -406,42 +406,22 @@ package enum RepoVocabularyMatcher {
         return Array(ranked.prefix(maxEntries))
     }
 
-    /// One source's grounding decision, carrying HOW it was reached.
-    ///
-    /// `entries` holds only spans that normalize to the term itself, so
-    /// `isFallbackOnly` is always false here; `PolishContextGrounding` keeps
-    /// the grade for callers that build candidates by hand.
+    /// One source's grounding decision.
     package struct GroundingOutcome: Equatable, Sendable {
+        /// Only spans that normalize to the term itself: what pre-applies.
         package let entries: [ReplacementEntry]
-        package let isFallbackOnly: Bool
-        /// Always empty from `groundedCandidates`: phonetic hits nominate now
-        /// (see there). Kept because the cross-source merge and the diagnostic
-        /// record still carry the grade.
-        package let phoneticEntries: [ReplacementEntry]
         /// Every sound-alike hit, strongest tier first. The transcript bytes
         /// stay untouched; the prompt renderer offers the terms to the model.
         package let verificationCandidates: [ReplacementEntry]
 
-        package init(
-            entries: [ReplacementEntry],
-            isFallbackOnly: Bool,
-            phoneticEntries: [ReplacementEntry] = [],
-            verificationCandidates: [ReplacementEntry] = []
-        ) {
+        package init(entries: [ReplacementEntry], verificationCandidates: [ReplacementEntry] = []) {
             self.entries = entries
-            self.isFallbackOnly = isFallbackOnly
-            self.phoneticEntries = phoneticEntries
             self.verificationCandidates = verificationCandidates
         }
 
         /// Not `none`: a static of that name on a non-Optional type shadows
         /// `Optional.none` at any use site that wraps it.
-        package static let empty = GroundingOutcome(
-            entries: [],
-            isFallbackOnly: false,
-            phoneticEntries: [],
-            verificationCandidates: []
-        )
+        package static let empty = GroundingOutcome(entries: [])
     }
 
     /// `entries` are the spans the production matcher REWRITES: exact-tier hits only (a lone
@@ -452,9 +432,12 @@ package enum RepoVocabularyMatcher {
     /// therefore tied distance-one fuzzy hits and must all abstain. Only when
     /// those tiers leave NOTHING, try one broader aligned match (which applies
     /// its own score margin) and otherwise abstain.
+    /// `exactOnly` terms pre-apply on an exact span but are never
+    /// nominated, so they spend none of the nomination cap (LVX-92).
     package static func groundedCandidates(
         transcript: String,
-        vocabulary: RepoVocabulary
+        vocabulary: RepoVocabulary,
+        exactOnly: Set<String> = []
     ) -> GroundingOutcome {
         let hits = rankedHits(transcript: transcript, vocabulary: vocabulary)
         // A lone word that merely normalizes to a term is not evidence the
@@ -590,7 +573,8 @@ package enum RepoVocabularyMatcher {
         let offerLimit = nominationCap(forTranscript: transcript)
         var verificationCandidates: [ReplacementEntry] = []
         var seenVerification = Set<VerificationKey>()
-        for entry in demoted + phoneticVerification + alignedVerification {
+        for entry in demoted + phoneticVerification + alignedVerification
+        where !exactOnly.contains(entry.replaceWith) {
             for heard in entry.matches where !addsUnspokenExtension(
                 term: entry.replaceWith, heard: heard, transcript: transcript
             ) {
@@ -605,12 +589,7 @@ package enum RepoVocabularyMatcher {
             if verificationCandidates.count == offerLimit { break }
         }
 
-        return GroundingOutcome(
-            entries: primaryEntries,
-            isFallbackOnly: false,
-            phoneticEntries: [],
-            verificationCandidates: verificationCandidates
-        )
+        return GroundingOutcome(entries: primaryEntries, verificationCandidates: verificationCandidates)
     }
 
     /// A nominated file name whose extension the speaker never said. Shown to

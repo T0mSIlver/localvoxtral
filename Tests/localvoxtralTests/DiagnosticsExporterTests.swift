@@ -35,7 +35,6 @@ final class DiagnosticsExporterTests: XCTestCase {
         let store = makeStore()
         store.dictationBackendMode = .externalURL
         store.polishingBackendMode = .externalURL
-        store.realtimeProvider = .realtimeAPI
         store.realtimeAPIEndpointURL = endpoint
         return store
     }

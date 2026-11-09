@@ -128,17 +128,61 @@ final class MistralBatchTranscriptionTests: XCTestCase {
         addTeardownBlock { server.stop() }
         let wav = Data(repeating: 1, count: 1_000_000)
         let measurements = Mutex<[MistralBatchTranscription.UploadMeasurement]>([])
+        let reported = expectation(description: "the upload was measured")
 
         _ = try? await MistralBatchTranscriptionClient().transcribe(
             wav: wav, language: nil, contextBias: [], apiKey: "k",
             endpoint: URL(string: "http://127.0.0.1:\(server.port)/v1/audio/transcriptions")!,
-            onUpload: { measurement in measurements.withLock { $0.append(measurement) } }
+            onUpload: { measurement in
+                measurements.withLock { $0.append(measurement) }
+                reported.fulfill()
+            }
         )
 
+        await fulfillment(of: [reported], timeout: 10)
         let measured = measurements.withLock { $0 }
         XCTAssertEqual(measured.count, 1)
         XCTAssertGreaterThan(measured.first?.bytes ?? 0, Int64(wav.count), "the multipart body holds the WAV")
         XCTAssertNotNil(measured.first?.bytesPerSecond)
+    }
+
+    /// The request can return before the session's delegate queue ran the
+    /// upload's progress callbacks (LVX-20). Held shut until the request has
+    /// returned, the queue still delivers the measurement once it runs.
+    func testTheMeasurementSurvivesProgressThatRunsAfterTheRequestReturned() async throws {
+        let server = try FakeLoopbackHTTPServer()
+        addTeardownBlock { server.stop() }
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: .ephemeral, delegate: nil, delegateQueue: queue)
+        addTeardownBlock { session.invalidateAndCancel() }
+        let gate = DispatchSemaphore(value: 0)
+        queue.addOperation { gate.wait() }
+        let wav = Data(repeating: 1, count: 1_000_000)
+        let measurements = Mutex<[MistralBatchTranscription.UploadMeasurement]>([])
+        let reported = expectation(description: "the upload was measured")
+
+        let returned = BoundedWait()
+        let request = Task {
+            _ = try? await MistralBatchTranscriptionClient(session: session).transcribe(
+                wav: wav, language: nil, contextBias: [], apiKey: "k",
+                endpoint: URL(string: "http://127.0.0.1:\(server.port)/v1/audio/transcriptions")!,
+                onUpload: { measurement in
+                    measurements.withLock { $0.append(measurement) }
+                    reported.fulfill()
+                }
+            )
+            returned.resolve()
+        }
+        let returnedWhileHeld = await returned.value(failAfter: 10)
+        gate.signal()
+        XCTAssertTrue(returnedWhileHeld, "the request waited for the delegate queue")
+        await request.value
+
+        await fulfillment(of: [reported], timeout: 10)
+        let measured = measurements.withLock { $0 }
+        XCTAssertEqual(measured.count, 1)
+        XCTAssertGreaterThan(measured.first?.bytes ?? 0, Int64(wav.count))
     }
     #endif
 }

@@ -313,10 +313,6 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
             "grounding is input-side and costs no prompt characters; it must not inherit the render budget"
         )
         XCTAssertEqual(prepared.grounding.entries.first?.replaceWith, "UserSessionManager.swift")
-        XCTAssertFalse(
-            prepared.grounding.isFallbackOnly,
-            "a structured repo path should hit the exact basename tier without a file cue"
-        )
     }
 
     func testPreparationIndexesStructuredPathsOnceAndScansOnlyNonPathText() {

@@ -63,8 +63,9 @@ extension DictationSessionController {
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let sessionAudio = audio.sessionRecording.finish()
         // With History off the record is dropped: the clipboard keeps the
-        // text, as for every other dictation that was not inserted (#1915).
-        _ = keepUntypedDictation { _ = saveSessionRecord(
+        // text, as for every other dictation that was not inserted (#1915),
+        // at once: no paste's restore runs after the quit (LVX-54).
+        _ = keepUntypedDictation(atQuit: true) { _ = saveSessionRecord(
             startedAt: sessionStartedAt ?? Date(),
             rawText: transcript.currentDictationEventText,
             polishedText: nil,

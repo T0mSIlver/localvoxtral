@@ -27,7 +27,10 @@
 # fail-open behavior when it cannot produce a diff at all.
 set -euo pipefail
 
-MARKER='[run-llm-eval]'
+# What the filter prints names the marker without brackets: a reason pasted
+# into a PR body as proof must not opt that PR in (LVX-114).
+MARKER_NAME='run-llm-eval'
+MARKER="[$MARKER_NAME]"
 SKIP_MARKER='skip-llm-eval'
 
 # LLM-relevant paths. A path belongs here when changing it can alter what
@@ -136,25 +139,27 @@ MARKER_TEXT_FILE="${2:-}"
 # repository or screen text stays out.
 EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/AGENTS.md'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Cmux.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Codex.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentActions.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentTypes.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrMachines.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrPanel.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HostRow.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+IntegrationRows.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Listener.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+ListenerStatus.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Opencode.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Plugin.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Preview.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+RemoteHosts.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+ShellSetup.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Statusline.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Cmux.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Codex.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+DictationNote.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+DoctorSkill.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentActions.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentTypes.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrMachines.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrPanel.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+HostRow.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+IntegrationRows.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Listener.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+ListenerStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Opencode.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Plugin.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Preview.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+RemoteHosts.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+ShellSetup.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Statusline.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationSettingsModel+Vibe.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift'
@@ -186,7 +191,7 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeStatuslineInstallService.swift'  # status line indicator
   'Sources/localvoxtralCore/ClaudeStatuslineCombine.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeShellRCSetup.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardCoordinator.swift'  # keeping the ssh forward alive
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardCoordinator.swift'  # keeping the ssh forward alive
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardLiveProcess.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOrphanReaper.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOwnership.swift'
@@ -266,10 +271,10 @@ if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]] \
     && grep -qF "$MARKER" "$MARKER_TEXT_FILE"; then
   echo "run=true"
   if [[ "$SKIP_STATE" == "absent" ]]; then
-    echo "reason=explicit $MARKER marker"
+    echo "reason=explicit $MARKER_NAME marker"
     echo "skip_marker=absent"
   else
-    echo "reason=explicit $MARKER marker, which overrides the $SKIP_MARKER marker beside it"
+    echo "reason=explicit $MARKER_NAME marker, which overrides the $SKIP_MARKER marker beside it"
     echo "skip_marker=overridden"
   fi
   exit 0
@@ -329,7 +334,7 @@ echo "run=false"
 # "and push": the marker is only read from the event payload at run-creation
 # time — editing the PR body after a skipped run creates no new run, and
 # reruns reuse the original payload, so a late-added marker needs a push.
-echo "reason=no LLM-relevant changes; add $MARKER to the PR body or commit message and push to opt in"
+echo "reason=no LLM-relevant changes; add the $MARKER_NAME marker, in square brackets, to the PR body or commit message and push to opt in"
 case "$SKIP_STATE" in
   present) echo "skip_marker=unneeded" ;;
   no-reason) echo "skip_marker=no-reason" ;;

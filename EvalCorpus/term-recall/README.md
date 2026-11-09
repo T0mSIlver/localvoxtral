@@ -40,6 +40,16 @@ From the same machine, against the Mac's speech test services:
 ./scripts/remote-build.sh eval-term-recall compare voxtral-none nemotron-none
 ```
 
+Apple's on-device DictationTranscriber (macOS 26) runs inside the test
+process instead, with no speech service. It keeps finalized results only, the
+text an append-only insertion path could take, and prints how long each final
+arrived after its audio ended. `--bias session` passes the case's session
+terms as contextual strings:
+
+```bash
+./scripts/remote-build.sh eval-term-recall --asr apple --bias session
+```
+
 Each run prints a scoreboard and leaves its run file in
 `EvalRecordings/term-recall/runs/<label>.jsonl`. `--hypotheses
 EvalRecordings/term-recall/<file>.jsonl` scores `{"id", "text"}` rows with no
@@ -105,7 +115,7 @@ technical is English; French sentences are matched against it.
 
 ## Scoring
 
-`TermRecallScorer` in `localvoxtralCore` (tests: `TermRecallScoringTests`,
+`TermRecallScorer` in `Tests/localvoxtralTestSupport` (tests: `TermRecallScoringTests`,
 Linux) does all of it:
 
 - Words are lowercased and split on anything that is not a letter or digit,

@@ -156,6 +156,10 @@ extension DictationSessionController {
                 self.startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
                 return
             }
+            if !self.stallBackfillsInFlight.isEmpty {
+                self.holdCommitForStallBackfills(sessionMode: sessionMode, sample: sample, earlyPolish: earlyPolish)
+                return
+            }
             self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample, earlyPolish: earlyPolish)
         }
         proceed()
@@ -980,7 +984,7 @@ extension DictationSessionController {
         // it off since has deleted the folder this would write into.
         sessionStore?.save(record, audio: settings.dictationAudioEnabled ? audio : nil)
         if let cutoff = retention.cutoff(now: record.finishedAt) {
-            sessionStore?.trim(olderThan: cutoff)
+            sessionStore?.trim(olderThan: cutoff, expiringBackups: retention.days != nil)
         }
         termSuggestionCadence?.dictationSaved()
         return record.id
@@ -1031,7 +1035,7 @@ extension DictationSessionController {
             return
         }
         guard let cutoff = retention.cutoff(now: now) else { return }
-        sessionStore?.trim(olderThan: cutoff)
+        sessionStore?.trim(olderThan: cutoff, expiringBackups: retention.days != nil)
     }
 
     func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {
@@ -1294,23 +1298,45 @@ extension DictationSessionController {
         }
     }
 
-    /// Runs the second pass as the commit's task, then commits. A new
-    /// dictation that cancels it saves the realtime text as not inserted,
-    /// as it does for a polish.
-    private func startStopSecondPass(
-        _ request: StopSecondPassRequest,
+    /// A stop right after a stall that carried speech: the stalled words are
+    /// still at the batch model, and the final already closed their segment.
+    /// Each backfill is bounded by its own deadline, so the hold is too.
+    /// Polish while you speak keeps its pieces: one the backfill changed
+    /// no longer prefixes the text, and the stop polishes the whole text.
+    private func holdCommitForStallBackfills(
         sessionMode: DictationOutputMode,
-        sample: OverlayStopSample
+        sample: OverlayStopSample,
+        earlyPolish: EarlyPolishRun?
     ) {
-        statusText = StatusStrings.transcribingAgain
-        let realtimeText = transcript.currentDictationEventText
+        let backfills = stallBackfillTasks
+        Log.backends.notice(
+            "stop holds the commit for \(self.stallBackfillsInFlight.count, privacy: .public) stall backfill(s) in flight")
+        armInterruptedCommitSave(sample: sample)
+        polishAndCommitTask = Task { @MainActor [weak self] in
+            for backfill in backfills { await backfill.value }
+            guard let self, !Task.isCancelled,
+                  await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode)
+            else { return }
+            self.commitOverlayBufferText(
+                sessionMode: sessionMode, sample: sample, earlyPolish: earlyPolish, readsBackJoinedPane: true)
+            // As for the second pass: whoever awaits the commit awaits its polish.
+            await self.polishAndCommitTask?.value
+        }
+    }
+
+    /// What a new dictation saves of this one if it starts while the commit
+    /// still waits on a batch reply: the realtime text, unpolished, as it is
+    /// then, with the words any backfill restored meanwhile. The interrupt
+    /// runs it before the session cleanup clears the transcript.
+    private func armInterruptedCommitSave(sample: OverlayStopSample) {
         // Only what the history keeps: the closure outlives the stop, and a
         // join can hold an ssh forward open.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         saveInterruptedPolishCommit = { [weak self] in
-            _ = self?.saveSessionRecord(
+            guard let self else { return }
+            _ = self.saveSessionRecord(
                 startedAt: sample.record.startedAt,
-                rawText: realtimeText,
+                rawText: self.transcript.currentDictationEventText,
                 polishedText: nil,
                 polishingDuration: nil,
                 provider: sample.record.provider,
@@ -1323,6 +1349,18 @@ extension DictationSessionController {
                 joined: historyJoin
             )
         }
+    }
+
+    /// Runs the second pass as the commit's task, then commits. A new
+    /// dictation that cancels it saves the realtime text as not inserted,
+    /// as it does for a polish.
+    private func startStopSecondPass(
+        _ request: StopSecondPassRequest,
+        sessionMode: DictationOutputMode,
+        sample: OverlayStopSample
+    ) {
+        statusText = StatusStrings.transcribingAgain
+        armInterruptedCommitSave(sample: sample)
         let uploadRates = secondPassUploadRates
         let measuredRate = uploadRates.rate(for: request.endpoint)
         let deadline = StopSecondPass.deadline(

@@ -61,6 +61,16 @@ ASSETS=(
   "localvoxtral-polishd-$TAG.dSYM.zip"
   "localvoxtral-speechd-$TAG.dSYM.zip"
 )
+# A stable release carries the update feed the installed apps read through
+# /releases/latest/download/appcast.xml, plus the deltas it names
+# (build-update-feed.sh, LVX-57). Without the feed, every installed copy would
+# stop updating, so its absence fails the publish.
+if ! $PRERELEASE; then
+  ASSETS+=("appcast.xml")
+  while IFS= read -r delta; do
+    ASSETS+=("$(basename "$delta")")
+  done < <(find "$DIR" -maxdepth 1 -name "localvoxtral-$TAG-from-*.delta" | sort)
+fi
 
 # Everything local is checked before the first network call.
 [[ -f "$NOTES" ]] || { echo "publish-release.sh: no notes file at $NOTES" >&2; exit 1; }

@@ -2,6 +2,7 @@ import Carbon.HIToolbox
 import Foundation
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 @MainActor
 final class DictationViewModelOverlayLifecycleTests: XCTestCase {
@@ -291,7 +292,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         }
 
         let settings = makeSettings(outputMode: .overlayBuffer)
-        settings.setDictationShortcut(SettingsStore.defaultDictationShortcut)
         settings.setOverlayBufferShortcut(nil)
         settings.setLivePasteShortcut(nil)
         // The subject is "no shortcuts left to register" — the modifier-only

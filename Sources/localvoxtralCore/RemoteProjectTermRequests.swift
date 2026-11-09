@@ -48,10 +48,11 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     package static let minimumSpokenPluginVersion = "1.21.0"
     package static let minimumSpokenVibeHooksVersion = "1.6.0"
 
-    package struct Pending: Equatable, Sendable {
+    package struct Pending: Sendable {
         package let agent: ProjectTermProposal.Agent
         package let project: LearnedTermProjectIdentity
-        package let excluding: [String]
+        /// Read when the answer is stored, minutes after the mark.
+        package let excluding: ProjectTermProposal.Exclusions
         /// The prompt revision the host's runner asks with.
         package let revision: Int
         package let markedAt: Date
@@ -94,7 +95,9 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     /// stamp. Returns whether it marked. Runs on the commit path: no I/O
     /// beyond the in-memory store snapshot.
     @discardableResult
-    package func request(for join: ClaudeSessionSnapshot, excluding: [String]) -> Bool {
+    package func request(
+        for join: ClaudeSessionSnapshot, excluding: @escaping ProjectTermProposal.Exclusions
+    ) -> Bool {
         guard let agent = ProjectTermProposal.Agent(join.agent),
               case .remote = join.origin,
               let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: join.sessionID),
@@ -224,7 +227,7 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         // leave the Mac asking daily for nothing.
         store.recordProposal(
             accepted, line: parsed.line ?? (slot.revision >= 2 ? "" : nil), revision: slot.revision,
-            agent: slot.agent, project: slot.project, excluding: slot.excluding)
+            agent: slot.agent, project: slot.project, excluding: slot.excluding())
         return accepted.count
     }
 

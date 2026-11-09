@@ -43,8 +43,16 @@ final class TermRecallEvalTests: XCTestCase {
         var asr: String?
         var endpoint: String?
         var asrModel: String?
-        /// audio: only `none` until an engine accepts a list (#316, #521).
+        /// audio: only `none` until an engine accepts a list (#316, #521),
+        /// except `apple`, which also takes `session` (the case's session
+        /// terms) or `noise` (the set's noise terms) as contextual strings.
         var bias: String?
+        /// audio, `apple` only (LVX-36): `realtime` (default) or `fast`
+        /// feeding, `frequent` (default) or `standard` finalization, and
+        /// whether a missing locale may be downloaded from Apple.
+        var applePace: String?
+        var appleFinalization: String?
+        var appleAllowAssetDownload: Bool?
         /// audio: `EvalRecordings/term-recall/<set>` with a manifest.json in
         /// the agent-dictation format. Absent = `say`.
         var recordingDirectory: String?
@@ -91,6 +99,8 @@ final class TermRecallEvalTests: XCTestCase {
 
         let run: TermRecallRun
         switch config.mode {
+        case .audio where config.asr == Self.appleASRName:
+            run = try await runApple(config, cases: cases, noiseTerms: caseFile.noiseTerms)
         case .audio:
             run = try await runAudio(config, cases: cases, noiseTerms: caseFile.noiseTerms)
         case .hypotheses:
@@ -220,6 +230,112 @@ final class TermRecallEvalTests: XCTestCase {
             ),
             scores: scores
         )
+    }
+
+    static let appleASRName = "apple"
+
+    /// Apple's DictationTranscriber in process (LVX-36): the same `say` audio
+    /// or recordings as the other engines, finals only, plus their lags.
+    private func runApple(
+        _ config: MarkerConfig,
+        cases: [TermRecallCase],
+        noiseTerms: [String]
+    ) async throws -> TermRecallRun {
+        #if canImport(Speech) && os(macOS)
+        guard #available(macOS 26.0, *) else {
+            throw EvalSpeechStage.Failure("apple: DictationTranscriber needs macOS 26")
+        }
+        let bias = config.bias ?? "none"
+        guard ["none", "session", "noise"].contains(bias) else {
+            throw EvalSpeechStage.Failure("bias=\(bias): want none, session or noise")
+        }
+        guard let pace = AppleDictationStage.Pace(rawValue: config.applePace ?? "realtime"),
+            let finalization = AppleDictationStage.Finalization(rawValue: config.appleFinalization ?? "frequent")
+        else {
+            throw EvalSpeechStage.Failure("apple: pace must be realtime|fast, finalization frequent|standard")
+        }
+        let recordings = try config.recordingDirectory.map { try loadRecordings($0, cases: cases) }
+        var englishVoice: String?
+        var frenchVoice: String?
+        if recordings == nil {
+            englishVoice = try EvalSpeechStage.resolveVoice(
+                languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
+            )
+            frenchVoice = try EvalSpeechStage.resolveVoice(
+                languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
+            )
+            progress("term-recall: voices en=\(englishVoice ?? "default") fr=\(frenchVoice ?? "none")")
+        }
+        // Both locales are checked before the first case, so a missing asset
+        // fails setup instead of every French case.
+        let allowDownload = config.appleAllowAssetDownload ?? false
+        var locales: [String: Locale] = [:]
+        for language in Set(cases.map(\.language)).sorted() {
+            let locale = try await AppleDictationStage.prepareLocale(
+                language == "fr" ? "fr-FR" : "en-US", allowDownload: allowDownload
+            )
+            locales[language] = locale
+            progress("apple: \(language) runs on installed locale \(locale.identifier)")
+        }
+
+        var scores: [TermRecallCaseScore] = []
+        var transcripts: [AppleDictationStage.Transcript] = []
+        var unscored = 0
+        for (index, evalCase) in cases.enumerated() {
+            do {
+                let pcm: Data
+                if let recordings {
+                    guard let recorded = recordings.pcmByID[evalCase.id] else {
+                        progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) no recording, skipped")
+                        continue
+                    }
+                    pcm = recorded
+                } else {
+                    let voice = evalCase.language == "fr" ? frenchVoice : englishVoice
+                    pcm = try EvalSpeechStage.synthesizedPCM16(text: evalCase.text, voice: voice)
+                }
+                let terms: [String]
+                switch bias {
+                case "session": terms = evalCase.sessionTerms
+                case "noise": terms = noiseTerms
+                default: terms = []
+                }
+                let transcript = try await AppleDictationStage.transcribe(
+                    pcm16: pcm,
+                    locale: locales[evalCase.language]!,
+                    terms: terms,
+                    pace: pace,
+                    finalization: finalization
+                )
+                transcripts.append(transcript)
+                scores.append(TermRecallScorer.score(evalCase, hypothesis: transcript.text, noiseTerms: noiseTerms))
+                progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
+            } catch {
+                // Infrastructure, not a score: the case id and the error, no
+                // case text.
+                progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) FAILED: \(error)")
+                unscored += 1
+            }
+        }
+        if pace == .realtime {
+            progress(AppleDictationStage.lagSummary(transcripts))
+        }
+        let audio = recordings?.audio ?? "say en=\(englishVoice ?? "-") fr=\(frenchVoice ?? "-")"
+        let localeNames = locales.values.map(\.identifier).sorted().joined(separator: ",")
+        return TermRecallRun(
+            header: .init(
+                label: config.label ?? "apple-\(bias)",
+                source: Self.appleASRName,
+                model: "DictationTranscriber \(localeNames) \(finalization.rawValue) \(pace.rawValue)",
+                bias: bias,
+                audio: audio,
+                unscoredCases: unscored
+            ),
+            scores: scores
+        )
+        #else
+        throw EvalSpeechStage.Failure("apple: DictationTranscriber exists on macOS only")
+        #endif
     }
 
     private func runHypotheses(

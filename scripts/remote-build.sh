@@ -104,7 +104,10 @@ set -euo pipefail
 #                  MISTRAL_API_KEY=... eval-e2e --provider mistral
 #                  `--replay EvalRecordings/replay/<set>` replays a user's
 #                  stored dictations instead, with and without the learned
-#                  terms (set from scripts/export-dictation-replay.sh)
+#                  terms (set from scripts/export-dictation-replay.sh).
+#                  `--replay /Users/Shared/lv-replay-<name>` reads a set
+#                  exported on the build host itself, which never leaves it;
+#                  `--replay-newest N` replays only the newest N dictations
 #     eval-term-recall
 #                  PRIVATE term-recall eval of the speech engine alone, on
 #                  EvalRecordings/term-recall/cases.json (made by
@@ -120,6 +123,17 @@ set -euo pipefail
 #                  score {"id","text"} rows with no speech engine;
 #                  `compare <before> <after>` pairs two runs by label, e.g.
 #                  eval-term-recall --asr nemotron
+#                  `--asr apple` runs Apple's DictationTranscriber in the
+#                  test process instead of a speech service (LVX-36; macOS 26,
+#                  no TCC grant, finals only, prints final lags and stop
+#                  tails), with `--bias none|session|noise` (contextual
+#                  strings: none, the case's session terms, the noise terms),
+#                  `--pace realtime|fast` (80 ms buffers at real time, the
+#                  default, or as fast as it takes them: text only),
+#                  `--finalization frequent|standard` and
+#                  `--allow-asset-download` (else a locale whose speech assets
+#                  are not installed fails setup), e.g.
+#                  eval-term-recall --asr apple --bias session
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -157,14 +171,17 @@ set -euo pipefail
 # Optional: LV_BUILD_DIR — remote work dir, ~-relative. Defaults to a
 # per-worktree name derived from the local checkout path, so parallel agents
 # in separate worktrees never contend on remote build state or its SwiftPM
-# lock. The full remote output of every run is also written to
+# lock. A dir another worktree owns is refused with exit 77 unless
+# LV_BUILD_DIR_SHARED=1 (scripts/lib/build-dir-claim.sh). The full remote output of every run is also written to
 # .build/last-remote.log, so a crash mid-run can never eat the failing test's
 # name (don't pipe this script straight into grep — grep the log file).
 # Optional: a lock per build host, so runs on one Mac go one at a time:
 #   git config localvoxtral.<build host>.lock /path/to/<host>.lock
 # (LV_LOCK_DIR overrides it). A run that sends work to the host waits for
-# that directory, then holds it until it exits; scripts/lib/build-host-lock.sh
-# has the recipe for taking it by hand.
+# that directory, then holds it until it exits. For heavy work outside this
+# script, take the same lock with scripts/build-host-lock.sh, never around a
+# run of this script: it takes the lock itself, and refuses one taken by hand
+# from its own worktree.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
@@ -172,7 +189,8 @@ HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost 
 TREE_SLUG="$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
 TREE_SLUG="${TREE_SLUG%-}"
 TREE_HASH="$(printf '%s' "$ROOT_DIR" | md5sum | cut -c1-8)"
-DIR="${LV_BUILD_DIR:-work/localvoxtral-${TREE_SLUG}-${TREE_HASH}}"
+DEFAULT_DIR="work/localvoxtral-${TREE_SLUG}-${TREE_HASH}"
+DIR="${LV_BUILD_DIR:-$DEFAULT_DIR}"
 
 REMOTE_LOG="${LOCALVOXTRAL_REMOTE_LOG:-$ROOT_DIR/.build/last-remote.log}"
 REMOTE_PAYLOAD_ACTIVE=0
@@ -183,6 +201,9 @@ REMOTE_REAP_ATTEMPTED=0
 LV_LOCK_DIR="${LV_LOCK_DIR:-$(git -C "$ROOT_DIR" config --get "localvoxtral.$HOST.lock" 2>/dev/null || true)}"
 # shellcheck source=lib/build-host-lock.sh
 . "$ROOT_DIR/scripts/lib/build-host-lock.sh"
+# Which worktree owns a build dir; another one never syncs into it (LVX-112).
+# shellcheck source=lib/build-dir-claim.sh
+. "$ROOT_DIR/scripts/lib/build-dir-claim.sh"
 
 # Everything that must run when the script exits, in the order added: a verb's
 # transient marker cleanup, then the lock release. One EXIT trap runs them all,
@@ -607,8 +628,12 @@ case "$CMD" in
       echo "remove: $target is not a work dir (work/localvoxtral-<id>)" >&2
       exit 1
     fi
-    run_remote "$(quote_remote_command remove "$target")"
-    exit $?
+    lv_build_dir_check "$target" "$DEFAULT_DIR" "$ROOT_DIR"
+    owner_before="$(lv_build_dir_owner "$target")"
+    status=0
+    run_remote "$(quote_remote_command remove "$target")" || status=$?
+    (( status != 0 )) || lv_build_dir_forget "$target" "$owner_before"
+    exit "$status"
     ;;
   applog|voxlog)
     if [[ $# -gt 1 ]]; then
@@ -933,9 +958,17 @@ case "$CMD" in
     TR_RECORDINGS=""
     TR_HYPOTHESES=""
     TR_COMPARE=()
+    TR_BIAS=""
+    TR_PACE=""
+    TR_FINALIZATION=""
+    TR_ASSET_DOWNLOAD=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --asr|--label|--limit|--case|--recordings|--hypotheses)
+        --allow-asset-download)
+          TR_ASSET_DOWNLOAD=1
+          shift
+          ;;
+        --asr|--label|--limit|--case|--recordings|--hypotheses|--bias|--pace|--finalization)
           if [[ $# -lt 2 ]]; then
             echo "eval-term-recall: $1 needs a value" >&2
             exit 1
@@ -947,6 +980,9 @@ case "$CMD" in
             --case) TR_CASES+=("$2") ;;
             --recordings) TR_RECORDINGS="$2" ;;
             --hypotheses) TR_HYPOTHESES="$2" ;;
+            --bias) TR_BIAS="$2" ;;
+            --pace) TR_PACE="$2" ;;
+            --finalization) TR_FINALIZATION="$2" ;;
           esac
           shift 2
           ;;
@@ -986,6 +1022,17 @@ case "$CMD" in
     if [[ ${#TR_COMPARE[@]} -eq 2 && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_LABEL$TR_LIMIT$TR_RECORDINGS$TR_HYPOTHESES" \
           || ${#TR_CASES[@]} -gt 0 ) ]]; then
       echo "eval-term-recall compare takes no other options" >&2
+      exit 1
+    fi
+    # Only the in-process Apple engine takes a list or these settings.
+    if [[ "$TR_ASR" != apple && ( -n "$TR_BIAS$TR_PACE$TR_FINALIZATION" || "$TR_ASSET_DOWNLOAD" == 1 ) ]]; then
+      echo "eval-term-recall: --bias, --pace, --finalization and --allow-asset-download need --asr apple" >&2
+      exit 1
+    fi
+    if [[ -n "$TR_BIAS" && ! "$TR_BIAS" =~ ^(none|session|noise)$ ]] \
+      || [[ -n "$TR_PACE" && ! "$TR_PACE" =~ ^(realtime|fast)$ ]] \
+      || [[ -n "$TR_FINALIZATION" && ! "$TR_FINALIZATION" =~ ^(frequent|standard)$ ]]; then
+      echo "eval-term-recall: --bias none|session|noise, --pace realtime|fast, --finalization frequent|standard" >&2
       exit 1
     fi
     if [[ -n "$TR_HYPOTHESES" && ( "$TR_ASR_GIVEN" == 1 || -n "$TR_RECORDINGS" ) ]]; then
@@ -1031,12 +1078,20 @@ case "$CMD" in
           fi
           TR_OPTIONAL+=",\"recordingDirectory\":\"$TR_RECORDINGS\""
         fi
-        speech_model_row "$TR_ASR" eval-term-recall
-        TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
-        printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
-          "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
-          "$TR_OPTIONAL" >"$TR_MARKER"
-        ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+        if [[ "$TR_ASR" == apple ]]; then
+          # In process: no speech service to start.
+          TR_LABEL="${TR_LABEL:-apple-${TR_BIAS:-none}}"
+          printf '{"mode":"audio","label":"%s","asr":"apple","bias":"%s","applePace":"%s","appleFinalization":"%s","appleAllowAssetDownload":%s%s}\n' \
+            "$TR_LABEL" "${TR_BIAS:-none}" "${TR_PACE:-realtime}" "${TR_FINALIZATION:-frequent}" \
+            "$([[ "$TR_ASSET_DOWNLOAD" == 1 ]] && echo true || echo false)" "$TR_OPTIONAL" >"$TR_MARKER"
+        else
+          speech_model_row "$TR_ASR" eval-term-recall
+          TR_LABEL="${TR_LABEL:-$TR_ASR-none}"
+          printf '{"mode":"audio","label":"%s","asr":"%s","endpoint":"%s","asrModel":"%s","bias":"none"%s}\n' \
+            "$TR_LABEL" "$TR_ASR" "ws://127.0.0.1:$SPEECH_MODEL_PORT/v1/realtime" "$SPEECH_MODEL_REPO" \
+            "$TR_OPTIONAL" >"$TR_MARKER"
+          ENSURE_SERVER="$(speech_service_name "$TR_ASR")"
+        fi
       fi
       # The run file comes back through the log: the Mac's copy is under a
       # work dir that a fresh LV_BUILD_DIR or the gc verb can drop.
@@ -1062,6 +1117,7 @@ case "$CMD" in
     # run — and it BILLS the owner's Mistral account, so it is by-hand only.
     E2E_RECORDING_DIR=""
     E2E_REPLAY_DIR=""
+    E2E_REPLAY_NEWEST=""
     E2E_PROVIDER=""
     E2E_ASR=""
     E2E_ASR_GIVEN=0
@@ -1105,6 +1161,14 @@ case "$CMD" in
           E2E_REPLAY_DIR="$2"
           shift 2
           ;;
+        --replay-newest)
+          if [[ $# -lt 2 || ! "$2" =~ ^[1-9][0-9]{0,4}$ ]]; then
+            echo "eval-e2e: --replay-newest needs a count from 1 to 99999" >&2
+            exit 1
+          fi
+          E2E_REPLAY_NEWEST="$2"
+          shift 2
+          ;;
         -*)
           echo "eval-e2e: unknown option $1" >&2
           exit 1
@@ -1123,6 +1187,10 @@ case "$CMD" in
       echo "eval-e2e: unknown provider '$E2E_PROVIDER' (only 'mistral')" >&2
       exit 1
     fi
+    if [[ -n "$E2E_REPLAY_NEWEST" && -z "$E2E_REPLAY_DIR" ]]; then
+      echo "eval-e2e: --replay-newest needs --replay" >&2
+      exit 1
+    fi
     if [[ -n "$E2E_REPLAY_DIR" ]]; then
       # A replay scores a user's stored dictations on the local services; it
       # takes no corpus recording set and never bills a hosted provider.
@@ -1130,11 +1198,14 @@ case "$CMD" in
         echo "eval-e2e: --replay takes no recording set and no --provider" >&2
         exit 1
       fi
-      if [[ ! "$E2E_REPLAY_DIR" =~ ^EvalRecordings/replay/[A-Za-z0-9._-]+$ ]]; then
-        echo "eval-e2e replay set must be EvalRecordings/replay/<set>" >&2
+      # A set under /Users/Shared/lv-replay-* was exported on the build host
+      # and stays there: only its path travels, and the harness checks it.
+      if [[ "$E2E_REPLAY_DIR" =~ ^/Users/Shared/lv-replay-[A-Za-z0-9._-]+$ ]]; then
+        :
+      elif [[ ! "$E2E_REPLAY_DIR" =~ ^EvalRecordings/replay/[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-e2e replay set must be EvalRecordings/replay/<set> or /Users/Shared/lv-replay-<name>" >&2
         exit 1
-      fi
-      if [[ ! -f "$ROOT_DIR/$E2E_REPLAY_DIR/default.store" ]]; then
+      elif [[ ! -f "$ROOT_DIR/$E2E_REPLAY_DIR/default.store" ]]; then
         echo "replay set not found: $E2E_REPLAY_DIR/default.store" >&2
         echo "Export one on the Mac that dictated with scripts/export-dictation-replay.sh" >&2
         exit 1
@@ -1205,11 +1276,12 @@ case "$CMD" in
           >"$E2E_MARKER"
       fi
     elif [[ -n "$E2E_REPLAY_DIR" ]]; then
-      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "replayDirectory": "%s"}\n' \
+      printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "replayDirectory": "%s", "replayNewest": %s}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
         "ws://127.0.0.1:$E2E_ASR_PORT/v1/realtime" \
         "$E2E_ASR_REPO" \
         "$E2E_REPLAY_DIR" \
+        "${E2E_REPLAY_NEWEST:-null}" \
         >"$E2E_MARKER"
     elif [[ -n "$E2E_RECORDING_DIR" ]]; then
       printf '{"helperPath": "%s", "voxmlxEndpoint": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
@@ -1319,6 +1391,7 @@ reject_gate_blocked_args "${REMOTE_CMD[@]}"
 # wait for the build host's lock first, and hold it until the script exits.
 on_exit lv_lock_release
 lv_lock_acquire "$CMD"
+lv_build_dir_claim "$DIR" "$DEFAULT_DIR" "$ROOT_DIR"
 
 if [[ -n "$ENSURE_SERVER" ]]; then
   ensure_remote_server "$ENSURE_SERVER"
