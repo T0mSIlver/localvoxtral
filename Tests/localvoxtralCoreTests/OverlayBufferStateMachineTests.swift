@@ -156,6 +156,27 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertNil(machine.snapshot?.polishedFrom)
     }
 
+    /// Polish runs once per stop: a second request after the reply changed
+    /// the words keeps the marks, and a failed commit keeps them too.
+    func testAPolishedSessionRefusesAnotherSweep() async {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
+        machine.updateBuffer(text: "so um run the test", anchor: nil)
+        machine.beginFinalizing(anchor: nil)
+        machine.setPolishing(true)
+        machine.setPolished(true)
+
+        machine.setPolishing(true)
+        XCTAssertEqual(machine.snapshot?.polish, .polished(from: "so um run the test"))
+
+        machine.commitFailed(error: "Insert failed", anchor: nil)
+        XCTAssertEqual(machine.snapshot?.polish, .polished(from: "so um run the test"))
+    }
+
     func testOverlayAssembler_partialAndFinalMergeWithoutDuplication() async {
         let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello world",
