@@ -21,7 +21,7 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "aaa146328bf44d032da48ab981032ef7d5655d55"
+    revision: "7e4261cdad17de101dbd8651c718a9c576e6bed7"
 )
 ```
 
@@ -29,7 +29,7 @@ Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is repr
 can't move under us.
 
 This fork commit (branch `perf/voxtral-finish-silent-tail`) is upstream's `902920c` plus one
-change: `VoxtralRealtimeStreamSession.finish(stopAfterSilentTail:)`. A stop decodes the
+change, in two commits: `VoxtralRealtimeStreamSession.finish(stopAfterSilentTail:)`. A stop decodes the
 offline right pad, `(delay + 1) + 10` tokens, one decoder step each; none of 260 term-recall
 stops ended on EOS inside it. With the option, once the decoder is past the last real audio token by
 the transcription delay, the flush ends after that many streaming-pad tokens in a row.
