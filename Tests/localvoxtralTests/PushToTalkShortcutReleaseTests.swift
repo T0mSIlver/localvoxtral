@@ -38,6 +38,29 @@ final class PushToTalkShortcutReleaseTests: XCTestCase {
         XCTAssertEqual(session.stopReasons, ["push-to-talk release", "push-to-talk release"])
     }
 
+    /// A modifier hold whose release never came (the trigger switched to the
+    /// shortcuts mid-hold, taking the modifier monitor down) left the hold
+    /// latched: the next toggle press started a session and its release
+    /// stopped it as a "modifier hold release".
+    func testAToggleStartOutlivesItsReleaseAfterAHoldLostItsOwn() {
+        let (shortcuts, session) = makeShortcuts()
+        shortcuts.settings.dictationShortcutMode = .toggle
+        let hotKeys = shortcuts.hotKeyManager
+
+        shortcuts.handleModifierOnlyHoldStart()
+        XCTAssertTrue(session.isDictating)
+        // No release: the popover's Stop ends the session, which drops
+        // the start the hold owned, as the session's stop does.
+        session.endDictation(reason: "popover stop")
+        shortcuts.clearPushToTalkShortcutSessionAttempt()
+
+        hotKeys.debugDeliverHotKeyEventForTesting(pressed: true, hotKeyID: .overlay)
+        hotKeys.debugDeliverHotKeyEventForTesting(pressed: false, hotKeyID: .overlay)
+
+        XCTAssertTrue(session.isDictating, "the toggle key's release stopped the session it started")
+        XCTAssertEqual(session.stopReasons, ["popover stop"])
+    }
+
     private func makeShortcuts() -> (ShortcutController, FakeShortcutSession) {
         let settings = makeSettings()
         settings.modifierOnlyHotKeyEnabled = false
