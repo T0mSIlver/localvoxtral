@@ -44,7 +44,7 @@ final class HotKeyManagerTests: XCTestCase {
         guard case .success = initialResult else {
             return XCTFail("Expected initial registration success, got \(initialResult)")
         }
-        XCTAssertEqual(manager.debugCurrentRegistrationKind, .single)
+        XCTAssertEqual(manager.registration, .single)
         let unregisterCountAfterInitialRegistration = HotKeyManager.debugUnregisterCallCount
 
         ModifierOnlyHotKeyManager.forcedStartOutcome = .monitorInstallationFailed
@@ -55,7 +55,7 @@ final class HotKeyManagerTests: XCTestCase {
             return XCTFail("Expected modifierOnlyHotKeyUnavailable, got \(modifierResult)")
         }
         XCTAssertEqual(HotKeyManager.debugUnregisterCallCount, unregisterCountAfterInitialRegistration)
-        XCTAssertEqual(manager.debugCurrentRegistrationKind, .single)
+        XCTAssertEqual(manager.registration, .single)
     }
 
     private func resetDebugHotKeyState() {

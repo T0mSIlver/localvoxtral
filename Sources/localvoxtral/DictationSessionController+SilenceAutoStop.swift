@@ -18,9 +18,7 @@ import os
 extension DictationSessionController {
     /// A session started while a push-to-talk key or the modifier hold is
     /// down: its release event will stop it.
-    var isHoldGestureSession: Bool {
-        shortcuts.hasActivePushToTalkShortcutSession || shortcuts.isModifierOnlyHoldActive
-    }
+    var isHoldGestureSession: Bool { shortcuts.isHoldGestureSession }
 
     /// Called when the session goes live. Decides once whether this session
     /// has a watch, and with what threshold.

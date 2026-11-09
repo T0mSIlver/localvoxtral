@@ -3642,7 +3642,7 @@ final class DictationPipelineTests: XCTestCase {
         targetClaudeDesktop(pipeline, returns: { returns.append($0) })
 
         await startAndSpeak(pipeline)
-        pipeline.viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
+        pipeline.viewModel.shortcuts.gesture = .held(.shortcut, ownsStart: true)
         await sendDelta(pipeline, "run the tests, send it.")
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask)
         pipeline.clock.advance(by: 10)

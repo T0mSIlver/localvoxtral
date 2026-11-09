@@ -139,7 +139,7 @@ final class SilenceAutoStopTests: XCTestCase {
     func testPushToTalkHoldSessionNeverArms() {
         let clock = ManualSessionClock()
         let (viewModel, _, _) = makeLiveOverlaySession(clock: clock)
-        viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
+        viewModel.shortcuts.gesture = .held(.shortcut, ownsStart: true)
         viewModel.session.armSilenceAutoStopIfEnabled()
 
         XCTAssertNil(viewModel.session.silenceAutoStopTask, "a held shortcut stops on release")
@@ -149,7 +149,7 @@ final class SilenceAutoStopTests: XCTestCase {
     func testModifierHoldSessionNeverArms() {
         let clock = ManualSessionClock()
         let (viewModel, _, _) = makeLiveOverlaySession(clock: clock)
-        viewModel.shortcuts.isModifierOnlyHoldActive = true
+        viewModel.shortcuts.gesture = .held(.modifierHold, ownsStart: false)
         viewModel.session.armSilenceAutoStopIfEnabled()
 
         XCTAssertNil(viewModel.session.silenceAutoStopTask)
