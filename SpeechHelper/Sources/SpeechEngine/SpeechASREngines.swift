@@ -57,7 +57,7 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
     /// MEASUREMENT ONLY (LVX-110): nil decodes the whole pad; a count stops the flush
     /// after that many pad tokens past the delay. Flipped by hand between packages.
-    static let measureSilentTail: Int? = nil
+    static let measureSilentTail: Int? = 2
 
     init(session: VoxtralRealtimeStreamSession, maxDecodedTokens: Int, padTokenId: Int) {
         self.session = session
