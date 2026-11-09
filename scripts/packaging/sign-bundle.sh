@@ -49,11 +49,19 @@ APPEX="$APP_DIR/Contents/PlugIns/localvoxtralWidgets.appex"
 # MLX helpers load their Metal kernels from mlx-swift_Cmlx.bundle as data and
 # compile shaders through the out-of-process Metal compiler, so they need no
 # entitlement under the hardened runtime (measured in #1430).
+#
+# Sparkle (LVX-57) inside out, as its docs sign it for Developer ID: the
+# installer tool, the updater app, then the framework. package_app.sh drops
+# its XPC services, which only a sandboxed app needs.
+SPARKLE="Contents/Frameworks/Sparkle.framework"
 NESTED=(
   "Contents/MacOS/localvoxtral-polishd|"
   "Contents/MacOS/localvoxtral-speechd|"
   "Contents/MacOS/localvoxtral-claude-hook|"
   "Contents/MacOS/localvoxtral-cli|"
+  "$SPARKLE/Versions/B/Autoupdate|"
+  "$SPARKLE/Versions/B/Updater.app|"
+  "$SPARKLE|"
 )
 
 sign_one() {
@@ -65,7 +73,13 @@ sign_one() {
 
 # Every Mach-O must be one this script signs on purpose. Bundles without code
 # (resource bundles, the metallib) are sealed as resources of the app.
-known=("Contents/MacOS/localvoxtral" "Contents/PlugIns/localvoxtralWidgets.appex/Contents/MacOS/localvoxtralWidgets")
+known=(
+  "Contents/MacOS/localvoxtral"
+  "Contents/PlugIns/localvoxtralWidgets.appex/Contents/MacOS/localvoxtralWidgets"
+  # The Mach-O inside each Sparkle bundle signed below.
+  "$SPARKLE/Versions/B/Updater.app/Contents/MacOS/Updater"
+  "$SPARKLE/Versions/B/Sparkle"
+)
 for entry in "${NESTED[@]}"; do known+=("${entry%%|*}"); done
 unknown=()
 while IFS= read -r -d '' file; do

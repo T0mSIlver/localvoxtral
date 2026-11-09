@@ -29,6 +29,8 @@ case "$command" in
   cd\ *)
     if [[ -f "$LV_TEST_LOCK/owner" ]]; then
       printf 'held: %s\n' "$(cat "$LV_TEST_LOCK/owner")" >>"$LV_TEST_PAYLOAD_LOG"
+      # Another holder's line lands while the payload runs (LVX-104).
+      [[ -z "${LV_TEST_REPLACE_OWNER:-}" ]] || printf '%s\n' "$LV_TEST_REPLACE_OWNER" >"$LV_TEST_LOCK/owner"
     else
       printf 'not held\n' >>"$LV_TEST_PAYLOAD_LOG"
     fi
@@ -170,6 +172,65 @@ env "${common_env[@]}" LV_LOCK_WAIT_SECONDS=1 "$REMOTE_BUILD" build >"$TMP_DIR/o
 grep -q 'That lock is over 3 h old' "$TMP_DIR/out" || fail "an old lock was not reported as old"
 [[ "$(cat "$LOCK/owner")" == "old-thread 2020-01-01T00:00:00Z eval" ]] \
   || fail "the script broke a lock it did not take"
+
+# --- a lock taken by hand around the run is not waited on (LVX-104) ---------
+# Twice on 2026-11-04 a thread took the lock by hand and then ran
+# remote-build.sh, which waited on that thread's own lock (55 minutes once).
+
+rm -r "$LOCK"
+HAND="$ROOT_DIR/scripts/build-host-lock.sh"
+LV_LOCK_DIR="$LOCK" LV_LOCK_OWNER=hand-test "$HAND" take fake-host "filtered test" >/dev/null \
+  || fail "the hand-lock helper did not take a free lock"
+grep -q "^hand-test [0-9T:-]*Z by-hand filtered test worktree=$ROOT_DIR\$" "$LOCK/owner" \
+  || fail "the hand lock does not name its worktree: $(cat "$LOCK/owner")"
+: >"$payload_log"
+status=0
+env "${common_env[@]}" LV_LOCK_WAIT_SECONDS=5 "$REMOTE_BUILD" build >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" == 75 ]] || fail "a run inside its own hand lock exited $status, not 75"
+grep -q 'was taken by hand from this worktree' "$TMP_DIR/out" \
+  || fail "a run inside its own hand lock waited instead of saying so: $(cat "$TMP_DIR/out")"
+! grep -q 'Waiting for the build host lock' "$TMP_DIR/out" || fail "a run polled its own hand lock"
+[[ ! -s "$payload_log" ]] || fail "the payload ran inside someone's hand lock"
+grep -q ' by-hand ' "$LOCK/owner" || fail "the run touched the hand lock"
+
+# The same worktree reached through a symlink is still this worktree.
+ln -s "$ROOT_DIR" "$TMP_DIR/linked-checkout"
+status=0
+env "${common_env[@]}" LV_LOCK_WAIT_SECONDS=5 "$TMP_DIR/linked-checkout/scripts/remote-build.sh" build \
+  >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" == 75 ]] && grep -q 'was taken by hand from this worktree' "$TMP_DIR/out" \
+  || fail "a run through a symlinked checkout waited on its own hand lock (exit $status): $(cat "$TMP_DIR/out")"
+
+# Released only while it is still this worktree's.
+echo "other-thread $(date -u +%Y-%m-%dT%H:%M:%SZ) by-hand eval worktree=/elsewhere" >"$LOCK/owner"
+status=0
+LV_LOCK_DIR="$LOCK" "$HAND" release fake-host >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" == 1 && -d "$LOCK" ]] || fail "the helper released a lock that was no longer this worktree's (exit $status)"
+rm -r "$LOCK"
+LV_LOCK_DIR="$LOCK" "$HAND" take fake-host eval >/dev/null
+LV_LOCK_DIR="$LOCK" "$HAND" release fake-host >/dev/null || fail "the helper did not release its own lock"
+[[ ! -e "$LOCK" ]] || fail "the helper left its own lock behind"
+
+# Another thread's hand lock (the round brief's raw recipe) is waited for and named.
+mkdir -p "$LOCK"
+echo "privacy $(date -u +%Y-%m-%dT%H:%M:%SZ) filtered test LVX-6 red run" >"$LOCK/owner"
+status=0
+env "${common_env[@]}" LV_LOCK_WAIT_SECONDS=1 "$REMOTE_BUILD" build >"$TMP_DIR/out" 2>&1 || status=$?
+[[ "$status" == 75 ]] || fail "another thread's hand lock was not waited for (exit $status)"
+grep -q 'That lock was taken by hand, not by a remote-build.sh' "$TMP_DIR/out" \
+  || fail "a hand-taken lock was waited on without saying so: $(cat "$TMP_DIR/out")"
+rm -r "$LOCK"
+
+# --- a release leaves a lock whose line is no longer this run's --------------
+
+: >"$payload_log"
+env "${common_env[@]}" LV_TEST_REPLACE_OWNER="thief 2026-11-04T13:00:00Z by-hand eval worktree=/elsewhere" \
+  "$REMOTE_BUILD" build >"$TMP_DIR/out" 2>&1 || fail "the run failed: $(cat "$TMP_DIR/out")"
+[[ "$(cat "$LOCK/owner" 2>/dev/null)" == thief* ]] || fail "the run removed a lock that was no longer its own"
+grep -q 'no longer holds this run' "$TMP_DIR/out" || fail "leaving another holder's lock was not said"
+rm -r "$LOCK"
+mkdir -p "$LOCK"
+echo "old-thread 2020-01-01T00:00:00Z eval" >"$LOCK/owner"
 
 # --- light verbs and an unconfigured host never wait -------------------------
 

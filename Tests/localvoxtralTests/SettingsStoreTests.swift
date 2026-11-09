@@ -53,19 +53,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(makeStore().opensWindowAtLaunch)
     }
 
-    // A stored value for the removed "Local Claude title fallback" toggle is
-    // simply IGNORED — there is no migration, because there is no longer any
-    // behaviour for it to select. Pinned so a future reader does not go looking
-    // for the migration that is deliberately absent.
-    func testAStoredTitleFallbackPreferenceIsIgnored() {
-        defaults.set(true, forKey: "settings.claude_local_title_marker_fallback_enabled")
-        XCTAssertNoThrow(makeStore())
-        XCTAssertTrue(
-            defaults.bool(forKey: "settings.claude_local_title_marker_fallback_enabled"),
-            "left where it is: nothing reads it, and rewriting a user's defaults to erase a dead key is not our business"
-        )
-    }
-
     // MARK: - User-added terminal apps
 
     /// The Settings → Terminals list persists as JSON in defaults and comes
@@ -269,38 +256,58 @@ final class SettingsStoreTests: XCTestCase {
         for (name, endpoint, expected) in cases {
             let store = makeFreshStore()
             store.realtimeAPIEndpointURL = endpoint
-            store.realtimeProvider = .realtimeAPI
             store.dictationBackendMode = .externalURL
             XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, expected, name)
         }
     }
 
-    // MARK: - realtimeProvider migration
-
-    func testRealtimeProvider_storedRawValueFallsBackToDefault() {
-        let cases: [(name: String, rawValue: String)] = [
-            // A user who previously selected the now-removed deprecated backend has
-            // its raw value persisted in UserDefaults. Decoding must fall back to the
-            // default provider instead of crashing or producing an invalid state.
-            ("legacyRawValue", "mlx_audio"),
-            ("unknownRawValue", "some_future_provider"),
+    // Keys a user's defaults still held after their settings were removed
+    // (the owner's MacBook had several in 2026-11). Literal, so a key dropped
+    // from the retired list by mistake fails here.
+    func testRetiredSettingsAreRemovedAtLaunch() {
+        let retired: [(key: String, value: Any)] = [
+            ("settings.commit_interval_seconds", 0.5),
+            ("settings.mlx_audio_endpoint_url", "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"),
+            ("settings.mlx_audio_model_name", "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"),
+            ("settings.mlx_audio_transcription_delay_ms", 900),
+            ("settings.claude_local_title_marker_fallback_enabled", true),
+            ("settings.speechd_step_cadence", "100ms"),
+            ("settings.speechd_cache_limit", "2gb"),
+            ("debug.dogfood_capture_enabled", true),
+            ("settings.realtime_provider", "mlx_audio"),
+            ("settings.backend_mode", "external_url"),
+            ("settings.dictation_shortcut_enabled", true),
+            ("settings.dictation_shortcut_key_code", 2),
+            ("settings.dictation_shortcut_carbon_modifiers", 768),
+            ("settings.quick_capture_shortcut_key_code", 41),
+            ("settings.quick_capture_shortcut_carbon_modifiers", 4096),
+            ("settings.quick_capture_shortcut_enabled", false),
+            ("settings.quick_capture_shortcut_chord", "lshift+rshift"),
+            ("settings.quick_capture_jev_enabled", true),
+            ("settings.quick_capture_router", "polishing_model"),
+            ("settings.quick_capture_project_lines", ["repo": "line"]),
+            ("settings.voice_memos_enabled", true),
+            ("settings.answer_agent_shortcut_key_code", 105),
+            ("settings.answer_agent_shortcut_carbon_modifiers", 2048),
+            ("settings.answer_agent_shortcut_enabled", true),
+            ("settings.answer_agent_shortcut_chord", "lshift+rshift"),
+            ("settings.spoken_abort_phrases", ["stop claude"]),
+            ("session_navigation.nicknames", ["opencode:ses_a": "payments"]),
         ]
-        for (name, rawValue) in cases {
-            _ = makeFreshStore()
-            defaults.set(rawValue, forKey: "settings.realtime_provider")
-
-            let store = makeStore()
-
-            XCTAssertEqual(store.realtimeProvider, .realtimeAPI, name)
+        for (key, value) in retired {
+            defaults.set(value, forKey: key)
         }
-    }
-
-    func testRemovedCommitIntervalSettingIsCleanedUp() {
-        defaults.set(0.5, forKey: "settings.commit_interval_seconds")
+        defaults.set(true, forKey: "settings.opens_window_at_launch")
 
         _ = makeStore()
 
-        XCTAssertNil(defaults.object(forKey: "settings.commit_interval_seconds"))
+        for (key, _) in retired {
+            XCTAssertNil(defaults.object(forKey: key), key)
+        }
+        XCTAssertTrue(
+            defaults.bool(forKey: "settings.opens_window_at_launch"),
+            "a live setting survives the sweep"
+        )
     }
 
     // MARK: - per-backend mode migration
@@ -356,10 +363,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.polishingBackendMode, .externalURL)
     }
 
-    func testBackendModes_legacyStoredValueSeedsBothNewModes() {
-        // An explicit stored preference beats the endpoint/env heuristic in
-        // both directions. Here a persisted endpoint would normally select
-        // external, but an explicit managed_local preference must win.
+    /// The one mode from before the split (2026-07) is no longer read: its
+    /// migration went 2026-11. An install still holding only it gets the
+    /// endpoint heuristic, and launch removes the key.
+    func testBackendModes_aStoredLegacyModeIsIgnoredAndRemoved() {
         defaults.set(
             "ws://127.0.0.1:8000/v1/realtime",
             forKey: "settings.realtime_api_endpoint_url"
@@ -368,11 +375,10 @@ final class SettingsStoreTests: XCTestCase {
 
         let store = makeStore()
 
-        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
-        XCTAssertEqual(store.polishingBackendMode, .managedLocal)
-        XCTAssertEqual(defaults.string(forKey: "settings.backend_mode"), "managed_local")
-        XCTAssertEqual(defaults.string(forKey: "settings.dictation_backend_mode"), "managed_local")
-        XCTAssertEqual(defaults.string(forKey: "settings.polishing_backend_mode"), "managed_local")
+        XCTAssertEqual(store.dictationBackendMode, .externalURL, "the stored endpoint decides, not the old mode")
+        XCTAssertEqual(store.polishingBackendMode, .externalURL)
+        XCTAssertNil(defaults.object(forKey: "settings.backend_mode"))
+        XCTAssertTrue(store.onboardingCompleted, "the endpoint still marks an existing install")
     }
 
     /// A mode this build doesn't know may be one a newer build added (#1040):
@@ -599,7 +605,6 @@ final class SettingsStoreTests: XCTestCase {
         for (name, modelName, expected) in cases {
             let store = makeFreshStore()
             store.realtimeAPIModelName = modelName
-            store.realtimeProvider = .realtimeAPI
             store.dictationBackendMode = .externalURL
             XCTAssertEqual(store.effectiveModelName, expected, name)
         }
@@ -733,58 +738,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.dictationShortcutMode, .toggle)
     }
 
-    // MARK: - dictationShortcut
-
-    func testDictationShortcut_defaultsToEnabledOptionSpace() {
-        let store = makeStore()
-        let expectedDefault = DictationShortcut(
-            keyCode: UInt32(kVK_Space),
-            carbonModifierFlags: UInt32(optionKey)
-        )
-        XCTAssertTrue(store.dictationShortcutEnabled)
-        XCTAssertEqual(SettingsStore.defaultDictationShortcut, expectedDefault)
-        XCTAssertEqual(store.dictationShortcut, expectedDefault)
-    }
-
-    func testDictationShortcut_customPersistsAcrossReload() {
-        let store = makeStore()
-        let customShortcut = DictationShortcut(
-            keyCode: UInt32(kVK_ANSI_D),
-            carbonModifierFlags: UInt32(cmdKey | shiftKey)
-        )
-
-        store.setDictationShortcut(customShortcut)
-        XCTAssertTrue(store.dictationShortcutEnabled)
-        XCTAssertEqual(store.dictationShortcut, customShortcut)
-
-        let reloadedStore = makeStore()
-        XCTAssertTrue(reloadedStore.dictationShortcutEnabled)
-        XCTAssertEqual(reloadedStore.dictationShortcut, customShortcut)
-    }
-
-    func testDictationShortcut_clearDisablesAndPersists() {
-        let store = makeStore()
-
-        store.setDictationShortcut(nil)
-        XCTAssertFalse(store.dictationShortcutEnabled)
-        XCTAssertNil(store.dictationShortcut)
-
-        let reloadedStore = makeStore()
-        XCTAssertFalse(reloadedStore.dictationShortcutEnabled)
-        XCTAssertNil(reloadedStore.dictationShortcut)
-    }
-
-    func testDictationShortcut_invalidStoredValueFallsBackToDefault() {
-        defaults.set(true, forKey: "settings.dictation_shortcut_enabled")
-        defaults.set(UInt32.max, forKey: "settings.dictation_shortcut_key_code")
-        defaults.set(0, forKey: "settings.dictation_shortcut_carbon_modifiers")
-
-        let store = makeStore()
-
-        XCTAssertTrue(store.dictationShortcutEnabled)
-        XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
-    }
-
     // MARK: - bare function key shortcuts
 
     func testOverlayBufferShortcut_bareFunctionKeyPersistsAcrossReload() {
@@ -841,54 +794,25 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - dual shortcut migration
 
-    func testLegacyDictationShortcutMigratesToOverlayBufferShortcut() {
-        let legacyShortcut = DictationShortcut(
-            keyCode: UInt32(kVK_ANSI_D),
-            carbonModifierFlags: UInt32(cmdKey | shiftKey)
-        )
-        defaults.set(true, forKey: "settings.dictation_shortcut_enabled")
-        defaults.set(legacyShortcut.keyCode, forKey: "settings.dictation_shortcut_key_code")
-        defaults.set(
-            legacyShortcut.carbonModifierFlags,
-            forKey: "settings.dictation_shortcut_carbon_modifiers"
-        )
-
-        let store = makeStore()
-
-        XCTAssertEqual(store.overlayBufferShortcut, legacyShortcut)
-        XCTAssertNil(store.livePasteShortcut)
-        XCTAssertEqual(
-            (defaults.object(forKey: "settings.overlay_buffer_shortcut_key_code") as? NSNumber)?
-                .uint32Value,
-            legacyShortcut.keyCode
-        )
-        XCTAssertEqual(
-            (
-                defaults.object(forKey: "settings.overlay_buffer_shortcut_carbon_modifiers")
-                    as? NSNumber
-            )?.uint32Value,
-            legacyShortcut.carbonModifierFlags
-        )
-        XCTAssertTrue(defaults.bool(forKey: "settings.overlay_buffer_shortcut_enabled"))
-    }
-
-    func testDisabledLegacyDictationShortcutMigratesToDisabledOverlayShortcut() {
-        let legacyShortcut = DictationShortcut(
-            keyCode: UInt32(kVK_ANSI_F),
-            carbonModifierFlags: UInt32(controlKey | optionKey)
-        )
+    /// The one dictation shortcut from before the per-mode ones (2026-03) is
+    /// no longer read: its migration went 2026-11. An install still holding
+    /// only it gets the default Overlay Buffer shortcut, and launch removes
+    /// the old keys.
+    func testAStoredLegacyDictationShortcutIsIgnoredAndRemoved() {
         defaults.set(false, forKey: "settings.dictation_shortcut_enabled")
-        defaults.set(legacyShortcut.keyCode, forKey: "settings.dictation_shortcut_key_code")
-        defaults.set(
-            legacyShortcut.carbonModifierFlags,
-            forKey: "settings.dictation_shortcut_carbon_modifiers"
-        )
+        defaults.set(UInt32(kVK_ANSI_D), forKey: "settings.dictation_shortcut_key_code")
+        defaults.set(UInt32(cmdKey | shiftKey), forKey: "settings.dictation_shortcut_carbon_modifiers")
 
         let store = makeStore()
 
-        XCTAssertNil(store.overlayBufferShortcut)
-        XCTAssertFalse(defaults.bool(forKey: "settings.overlay_buffer_shortcut_enabled"))
+        XCTAssertEqual(store.overlayBufferShortcut, SettingsStore.defaultDictationShortcut)
         XCTAssertNil(store.livePasteShortcut)
+        for key in [
+            "settings.dictation_shortcut_enabled", "settings.dictation_shortcut_key_code",
+            "settings.dictation_shortcut_carbon_modifiers",
+        ] {
+            XCTAssertNil(defaults.object(forKey: key), key)
+        }
     }
 
     // MARK: - llmPolishingConfiguration

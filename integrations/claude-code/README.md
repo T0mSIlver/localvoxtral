@@ -220,7 +220,7 @@ tty of the window it can see.
 **Set it up from the app.**
 
 1. Open **Settings → Remote hosts → Plain SSH**.
-2. Press **Set Up…** next to **Terminal setup**. It shows one consent
+2. Press **Set up…** next to **Terminal setup**. It shows one consent
    sentence naming the shell file, and links here for details.
 3. Open a NEW terminal window and a NEW ssh session. A session's environment
    is fixed when it starts.
@@ -459,7 +459,7 @@ claude plugin install localvoxtral-mod@localvoxtral \
 ### From your settings
 
 1. In the app, open **Settings → Claude Code → Status line**.
-2. Press **Set Up…**. A one-sentence consent names ~/.claude/settings.json,
+2. Press **Set up…**. A one-sentence consent names ~/.claude/settings.json,
    and **Details** opens this section.
 
 The app writes one status-line entry pointing at its bundled publisher
@@ -491,7 +491,7 @@ rather than guessing.
 ### Combine it with your own status line
 
 If you already have your own status line, the row offers **Combine…**
-instead of **Set Up…**. The app writes ~/.claude/localvoxtral-statusline.sh,
+instead of **Set up…**. The app writes ~/.claude/localvoxtral-statusline.sh,
 which runs your command and then the indicator on the same line, and points
 the status line at it.
 
@@ -580,7 +580,7 @@ wrong side fails open silently forever.
    4. the check that LC_LVX_TTY crosses
    5. the herdr agents-panel row, when herdr is installed
    6. the Mistral Vibe hooks, when Vibe is there
-   7. the final **Check Setup**
+   7. the final **Check setup**
 
 The flow stops at the first failure and gives the exact fix. The sheet shows
 no token, command or file contents, only one line per step. Its **Details**
@@ -609,7 +609,7 @@ limits, uninstalling.
 #### Manage an enrolled host
 
 The **Remote hosts** row lists each enrolled host and when it was last seen,
-with **Update Host…**, **Rotate Token**, **Revoke** and **Remove**.
+with **Update Host…**, **Rotate token**, **Revoke** and **Remove**.
 
 **Update Host…** runs the same flow as enrollment. It hides once all of these
 hold, since the run would then change nothing it can check from here:
@@ -619,7 +619,7 @@ hold, since the run would then change nothing it can check from here:
 * this Mac's ssh config and shell startup blocks are in place
 
 A finished update closes its panel. The button also hides on a revoked host,
-and **Rotate Token** brings it back.
+and **Rotate token** brings it back.
 
 #### Run the steps by hand
 
@@ -676,7 +676,7 @@ does so only when the config has no agents table and no rows key, and
 otherwise leaves the file unchanged. The row is defined in the
 [enrollment service](../../Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService.swift).
 
-**4. Check it.** The run's last step, **Check Setup**, runs two
+**4. Check it.** The run's last step, **Check setup**, runs two
 read-only checks over ssh and reports what they mean:
 
 * **Connection & tunnel.** The app sends an unauthenticated session-start hook

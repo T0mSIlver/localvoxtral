@@ -1320,8 +1320,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
             )
         }
         retainForTestProcessLifetime(viewModel)
@@ -1643,7 +1642,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
             overrideCounter.count += 1
             return vocabularyEntries.map {
-                RepoVocabularyMatcher.GroundingOutcome(entries: $0, isFallbackOnly: false)
+                RepoVocabularyMatcher.GroundingOutcome(entries: $0)
             }
         }
         var savedRecord: DictationSessionRecord?
@@ -1722,8 +1721,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     func testSessionAbstainsWhenSourcesConflictOnTheSameSpan() async {
         let result = await runCrossSourceSession(
             repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
             ),
             clipboard: "see use_auth.ts for the hook",
             transcript: "open use auth dot ts and fix the import"
@@ -1751,8 +1749,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     func testSessionAbstainsOnConflictEvenWithoutTheDictionarySlot() async {
         let result = await runCrossSourceSession(
             repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
             ),
             clipboard: "see use_auth.ts for the hook",
             transcript: "open use auth dot ts and fix the import",
@@ -1787,37 +1784,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
     }
 
-    /// A repo FALLBACK guess must yield to a clipboard exact hit on the same
-    /// span. This only works if provenance survives the real seam — the whole
-    /// point of widening it beyond `[ReplacementEntry]?`.
-    func testSessionRepoFallbackGuessYieldsToClipboardSolidHit() async {
-        let result = await runCrossSourceSession(
-            repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [
-                    ReplacementEntry(replaceWith: "useAuthHook.tsx", matches: ["use auth dot ts"]),
-                ],
-                isFallbackOnly: true
-            ),
-            clipboard: "see useAuth.ts for the hook",
-            transcript: "open use auth dot ts and fix the import"
-        )
-        XCTAssertTrue(
-            result.request?.inputText.contains("useAuth.ts") ?? false,
-            "the solid clipboard hit must win; got: \(result.request?.inputText ?? "")"
-        )
-        XCTAssertFalse(
-            result.request?.inputText.contains("useAuthHook.tsx") ?? true,
-            "the repo guess must yield rather than contest into abstention"
-        )
-    }
-
     /// Both sources agreeing on the same term is corroboration: it grounds, and
     /// the term is not duplicated across two prompt sections.
     func testSessionAgreementGroundsWithoutDuplicatingTheHint() async {
         let result = await runCrossSourceSession(
             repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])]
             ),
             clipboard: "see useAuth.ts for the hook",
             transcript: "open use auth dot ts and fix the import"

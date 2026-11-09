@@ -161,6 +161,7 @@ extension MistralBatchTranscription {
 package protocol MistralBatchTranscribing: Sendable {
     /// `onUpload` gets the upload's measurement once the request ends,
     /// whether it answered, failed or was cancelled, when it sent anything.
+    /// It may come after `transcribe` returns.
     func transcribe(
         wav: Data,
         language: String?,
@@ -213,8 +214,14 @@ package struct MistralBatchTranscriptionClient: MistralBatchTranscribing {
             timeout: Self.requestTimeout
         )
         let meter = UploadMeter()
+        // Read on the session's delegate queue, which is serial for a session
+        // made with none (SameOriginHTTP): the progress callbacks the upload
+        // queued there run first. `data(for:delegate:)` can return before
+        // they have run, and the meter read here would find nothing (LVX-20).
         defer {
-            if let measurement = meter.measurement() { onUpload(measurement) }
+            session.delegateQueue.addOperation {
+                if let measurement = meter.measurement() { onUpload(measurement) }
+            }
         }
         #if canImport(FoundationNetworking)
         let (data, response) = try await session.data(for: request)

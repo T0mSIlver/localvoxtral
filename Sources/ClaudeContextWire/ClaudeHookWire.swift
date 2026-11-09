@@ -232,6 +232,12 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
     /// desktop app shows that session in, which is what the desktop join arm
     /// compares it against.
     public var desktopSessionID: String?
+    /// `$T3CODE_THREAD_ID` — the id of the T3 Code thread that runs this
+    /// session (LVX-55): a UUID, or `mcp:launch:<hex>` for a thread an agent
+    /// launched. The same value is the last route component of the web view
+    /// T3 Code shows that thread in, which the T3 Code join arm compares it
+    /// against.
+    public var t3ThreadID: String?
     /// When the process behind `claudePID` started, in microseconds since the
     /// epoch, from the kernel's process table. A pid is reused; a pid together
     /// with its start time is not. Published by agents that have no
@@ -251,6 +257,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         cmuxSocketPath: String? = nil,
         bridgeSessionID: String? = nil,
         desktopSessionID: String? = nil,
+        t3ThreadID: String? = nil,
         agentStartMicros: Int64? = nil
     ) {
         self.hookPID = hookPID
@@ -263,6 +270,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         self.cmuxSocketPath = cmuxSocketPath
         self.bridgeSessionID = bridgeSessionID
         self.desktopSessionID = desktopSessionID
+        self.t3ThreadID = t3ThreadID
         self.agentStartMicros = agentStartMicros
     }
 
@@ -277,6 +285,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         case cmuxSocketPath = "cmux_socket_path"
         case bridgeSessionID = "bridge_session_id"
         case desktopSessionID = "desktop_session_id"
+        case t3ThreadID = "t3_thread_id"
         case agentStartMicros = "agent_start_us"
     }
 }
@@ -602,6 +611,10 @@ public enum ClaudeHookWireCodec {
             }
             process.desktopSessionID = process.desktopSessionID.map {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            // Dropped, not truncated: a join key cut short could equal another.
+            process.t3ThreadID = process.t3ThreadID.flatMap {
+                $0.utf8.count <= limits.maxPathBytes ? $0 : nil
             }
             clamped.process = process
         }

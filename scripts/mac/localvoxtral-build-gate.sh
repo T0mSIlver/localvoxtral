@@ -805,6 +805,10 @@ session_is_alive() {
   [[ -n "$state" && "$state" != Z* ]]
 }
 
+# Runs between the watcher's fork and `$!`. A no-op here; the process-cleanup
+# test, which sources this file, redefines it to land a signal there.
+gate_after_watcher_fork() { :; }
+
 start_session_watcher() {
   local session_pid pgid="$LV_GATE_PAYLOAD_PGID"
   local poll="${LOCALVOXTRAL_GATE_SESSION_POLL_SECONDS:-1}"
@@ -816,6 +820,7 @@ start_session_watcher() {
     done
     kill -TERM -- "-$pgid" 2>/dev/null || true
   ) </dev/null >/dev/null 2>&1 &
+  gate_after_watcher_fork
   LV_GATE_WATCHER_PID=$!
 }
 
@@ -833,12 +838,17 @@ process_start_time() {
 }
 
 # One record per payload, `<records dir>/<pgid>`: unit-test shards run several
-# payloads in one work dir at once.
+# payloads in one work dir at once. Written aside and renamed into place: a
+# reap that found the record before its start time was written ended nothing
+# for that group and deleted the record (LVX-103). `reap`'s glob skips the
+# dot file.
 record_payload_group() {
   [[ -n "$LV_GATE_PAYLOAD_RECORD" ]] || return 0
   mkdir -p "$LV_GATE_PAYLOAD_RECORD" 2>/dev/null || return 0
-  process_start_time "$LV_GATE_PAYLOAD_PGID" \
-    >"$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID" 2>/dev/null || true
+  local final="$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID"
+  local partial="$LV_GATE_PAYLOAD_RECORD/.$LV_GATE_PAYLOAD_PGID.partial"
+  process_start_time "$LV_GATE_PAYLOAD_PGID" >"$partial" 2>/dev/null \
+    && mv -f "$partial" "$final" 2>/dev/null || rm -f "$partial"
 }
 
 forget_payload_group() {
@@ -926,6 +936,11 @@ run_payload_with_cleanup() {
   LV_GATE_PAYLOAD_PID=$!
   LV_GATE_PAYLOAD_PGID=$LV_GATE_PAYLOAD_PID
   (( monitor_was_enabled == 1 )) || set +m
+  # Still under the recording traps: a signal handled between the watcher's
+  # fork and `$!` would exit before LV_GATE_WATCHER_PID is set, and the EXIT
+  # cleanup would leave the watcher running (LVX-107).
+  record_payload_group
+  start_session_watcher
 
   # Signal handlers exit with conventional shell statuses; EXIT owns the one
   # cleanup path. PIPE matters because stdout is `ssh | tee` on the client.
@@ -935,8 +950,6 @@ run_payload_with_cleanup() {
   trap 'exit 143' TERM
   trap 'exit 141' PIPE
   [[ -z "$pending_status" ]] || exit "$pending_status"
-  record_payload_group
-  start_session_watcher
 
   if wait "$LV_GATE_PAYLOAD_PID"; then
     status=0

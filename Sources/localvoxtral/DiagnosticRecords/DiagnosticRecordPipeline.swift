@@ -297,9 +297,11 @@ enum DiagnosticRecordBuilder {
             harvestCount: inputs.harvest.count,
             harvestTruncated: truncated,
             entries: entries(inputs.outcome.entries, inputs),
-            phoneticEntries: entries(inputs.outcome.phoneticEntries, inputs),
+            // Nothing produces either since 2026-09-18 (#342); the record
+            // keeps both fields so older records still decode (LVX-81).
+            phoneticEntries: [],
             verificationEntries: entries(inputs.outcome.verificationCandidates, inputs),
-            isFallbackOnly: inputs.outcome.isFallbackOnly,
+            isFallbackOnly: false,
             renderedExcerpt: inputs.renderedExcerpt.flatMap { $0.isEmpty ? nil : $0 }
         )
     }

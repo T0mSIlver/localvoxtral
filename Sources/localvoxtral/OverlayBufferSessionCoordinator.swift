@@ -341,7 +341,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         }
 
         if autoCopyEnabled {
-            _ = copyToPasteboard(commitText)
+            // An earlier commit's Cmd+V may still be reading the clipboard
+            // in a fast continuation: the copy waits for it too.
+            let copy = copyToPasteboard
+            keyboard.writeClipboardAfterPendingPastes { _ = copy(commitText) }
         }
 
         stateMachine.commitFailed(

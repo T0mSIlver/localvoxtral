@@ -68,6 +68,7 @@ package struct ClaudeSessionJoinResolver {
     private let focusedTerminalTTY: (String) async -> String?
     package let focusedBrowserTabURL: (String) async -> String?
     package let focusedDesktopSessionURL: (pid_t) async -> ClaudeDesktopFocusRead
+    package let focusedT3ThreadURL: (pid_t) async -> T3CodeFocusRead
     package let focusedWindowID: (pid_t) -> CGWindowID?
     private let herdrClientProbe: @Sendable (String) -> Bool
     package let herdrFederation: @Sendable () -> HerdrMachineFederation
@@ -116,6 +117,9 @@ package struct ClaudeSessionJoinResolver {
     ///     accessibility tree on, so no test may reach the live
     ///     reader by forgetting an injection. The app wires
     ///     `AXClaudeDesktopSessionURLReader` explicitly.
+    ///   - focusedT3ThreadURL: the same for T3 Code's thread composer
+    ///     (`T3CodeFocusRead`). Defaults to abstain for the same reason; the
+    ///     app wires `AXT3CodeThreadURLReader`.
     ///   - focusedWindowID: the join's window identity, from its own
     ///     PID-pinned AX read. It exists to pair a screen capture with the
     ///     join that authorized it; nil means unknown, which the authorizer
@@ -175,6 +179,9 @@ package struct ClaudeSessionJoinResolver {
         focusedDesktopSessionURL: @escaping (pid_t) async -> ClaudeDesktopFocusRead = { _ in
             .refused(.unavailable)
         },
+        focusedT3ThreadURL: @escaping (pid_t) async -> T3CodeFocusRead = { _ in
+            .refused(.unavailable)
+        },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = { _ in nil },
         herdrClientProbe: @escaping @Sendable (String) -> Bool = { _ in false },
         herdrFederation: @escaping @Sendable () -> HerdrMachineFederation = { .notFederated },
@@ -212,6 +219,7 @@ package struct ClaudeSessionJoinResolver {
         self.focusedTerminalTTY = focusedTerminalTTY
         self.focusedBrowserTabURL = focusedBrowserTabURL
         self.focusedDesktopSessionURL = focusedDesktopSessionURL
+        self.focusedT3ThreadURL = focusedT3ThreadURL
         self.focusedWindowID = focusedWindowID
         self.herdrClientProbe = herdrClientProbe
         self.herdrFederation = herdrFederation
@@ -283,6 +291,10 @@ package struct ClaudeSessionJoinResolver {
         // two (pinned by a test).
         if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
             return await resolveViaDesktopSession(target: target)
+        }
+        // T3 Code is a fourth, disjoint list with the same one-address shape.
+        if T3CodeAllowlist.isSupported(target.bundleID) {
+            return await resolveViaT3Thread(target: target)
         }
         return ClaudeJoinResolution(join: await resolveSurface(target: target))
     }
@@ -357,6 +369,13 @@ package struct ClaudeSessionJoinResolver {
             guard let address = await focusedDesktopSessionURL(target.pid).foundAddress,
                   let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address),
                   case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopSessionID)
+            else { return nil }
+            return snapshot.sessionID
+        }
+        if T3CodeAllowlist.isSupported(target.bundleID) {
+            guard let address = await focusedT3ThreadURL(target.pid).foundAddress,
+                  let threadID = T3CodeThreadURL.threadID(inWebAreaURL: address),
+                  case .resolved(let snapshot) = registry.resolve(t3ThreadID: threadID)
             else { return nil }
             return snapshot.sessionID
         }
@@ -611,6 +630,9 @@ package struct ClaudeSessionJoinResolver {
         guard registry.snapshot(sessionID: join.snapshot.sessionID) != nil else { return false }
         if join.mechanism == .desktopSession {
             return desktopSessionStillResolves(join)
+        }
+        if join.mechanism == .t3Thread {
+            return t3ThreadStillResolves(join)
         }
         guard join.mechanism == .browserTab else { return true }
         guard let binding = join.browserTab else {

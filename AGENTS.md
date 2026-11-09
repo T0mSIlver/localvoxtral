@@ -25,8 +25,9 @@ logs. Spend them only where nothing else can do the job:
   toolchain; a cloud session gets it from `scripts/linux/cloud-setup.sh`, the
   environment's setup script), and so do `scripts/ci/test-*.sh`. The app re-exports core, so a
   core declaration the app uses needs `package` access. On Linux a
-  `@MainActor` test class with no `async` test aborts the whole test
-  process at discovery; make one `async`.
+  `@MainActor` test class with no `async` test, or with more sync than
+  `async` tests, aborts the whole test process at discovery ("Could not
+  cast ... @MainActor"); make its tests `async`.
 - On the Mac, run only the suites your change touches:
   `remote-build.sh test --filter <Suite>`, the flag repeated per suite (the
   host's SSH gate refuses `|`). Never run the full suite there: the PR's

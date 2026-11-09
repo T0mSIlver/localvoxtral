@@ -1,0 +1,701 @@
+import Foundation
+import Synchronization
+import XCTest
+
+@testable import localvoxtralCore
+import localvoxtralTestSupport
+
+/// Status derivation for every Integrations row: the plugin's installed /
+/// not / update-available states, the foreign-statusline rule, opencode's
+/// listed-vs-copied split, and herdr-row visibility.
+final class IntegrationsSettingsModelTests: XCTestCase {
+    // MARK: - Harness
+
+    func testSetupSheetsRenderConsentButNoGeneratedCode() throws {
+        let source = try SettingsSourceText.load()
+        for forbidden in [
+            "plan.sshConfigSnippet",
+            "herdrPanelConfigSnippet",
+        ] {
+            XCTAssertFalse(source.contains(forbidden), "Settings must not render \(forbidden)")
+        }
+        XCTAssertTrue(source.contains("Link(\"Details\""))
+        XCTAssertTrue(source.contains("integrations.remote.setup.step."))
+        XCTAssertTrue(source.contains("integrations.remote.setup.run"))
+        XCTAssertTrue(source.contains("claude.remote.shellSetup.setUp"))
+        XCTAssertTrue(source.contains("claude.shellSetupSheet.apply"))
+        XCTAssertTrue(source.contains("integrations.statuslineSheet.apply"))
+    }
+
+    @MainActor
+    private func makeModel(
+        fetchPluginListOutput: @escaping @Sendable () async -> String? = { nil },
+        bundledPluginVersion: String? = nil,
+        bundledModVersion: String? = nil,
+        pluginService: any ClaudePluginInstalling = StubListPluginService(),
+        statusline: ClaudeStatuslineInstallService? = nil,
+        statuslineHookCommand: (@Sendable () -> String?)? = nil,
+        opencode: OpencodePluginInstallService? = nil,
+        dictationNotes: MemoryDictationNoteFileSystem? = nil,
+        herdrBinaryAvailable: @escaping @Sendable () -> Bool = { false },
+        herdrPresenceReport: @escaping @Sendable () -> Bool = { false }
+    ) -> ClaudeIntegrationSettingsModel {
+        ClaudeIntegrationSettingsModel(
+            registry: nil,
+            listener: nil,
+            pluginService: { pluginService },
+            // Synchronous: the production default hops to a detached task,
+            // which would make every assertion below a race.
+            performAsync: { body in
+                do {
+                    try body()
+                    return nil
+                } catch {
+                    return ClaudePluginActionFailure(error)
+                }
+            },
+            fetchPluginListOutput: fetchPluginListOutput,
+            bundledPluginVersion: bundledPluginVersion,
+            bundledModVersion: bundledModVersion,
+            statuslineService: { statusline },
+            statuslineHookCommand: statuslineHookCommand ?? { nil },
+            opencodeService: { opencode },
+            dictationNoteService: { agent in
+                dictationNotes.map { DictationNoteInstallService(agent: agent, fileSystem: $0) }
+            },
+            herdrBinaryAvailable: herdrBinaryAvailable,
+            herdrPresenceReport: herdrPresenceReport
+        )
+    }
+
+    // MARK: - Dictation note
+
+    /// opencode reads `~/.claude/CLAUDE.md` while its own file is absent, so
+    /// adding the note from opencode's row turns Claude Code's row to added
+    /// on the same refresh, and nothing is written before the press.
+    @MainActor
+    func testDictationNoteAddedFromOneRowRefreshesEveryRow() async {
+        let files = MemoryDictationNoteFileSystem(files: [".claude/CLAUDE.md": "mine\n"])
+        let model = makeModel(dictationNotes: files)
+        await model.refreshIntegrationsStatuses()
+        XCTAssertEqual(model.dictationNoteStatus(for: .claudeCode), .notAdded)
+        XCTAssertEqual(model.dictationNoteSentence(for: .opencode), "Not added.")
+        XCTAssertTrue(files.snapshot.writes.isEmpty)
+
+        await model.addDictationNote(for: .opencode)
+
+        XCTAssertEqual(model.dictationNoteStatus(for: .claudeCode), .added(path: ".claude/CLAUDE.md"))
+        XCTAssertEqual(model.dictationNoteSentence(for: .opencode), "In ~/.claude/CLAUDE.md.")
+        XCTAssertEqual(model.dictationNoteStatus(for: .vibe), .notAdded)
+
+        await model.removeDictationNote(for: .claudeCode)
+        XCTAssertEqual(model.dictationNoteStatus(for: .opencode), .notAdded)
+        XCTAssertEqual(files.text(".claude/CLAUDE.md"), "mine\n")
+    }
+
+    @MainActor
+    func testDictationNoteFailureShowsOneLineAndTheDetailInAnAlert() async {
+        let files = MemoryDictationNoteFileSystem()
+        files.set(".vibe/AGENTS.md", DictationNoteFile(exists: true, isSymlink: true))
+        let model = makeModel(dictationNotes: files)
+
+        await model.addDictationNote(for: .vibe)
+
+        XCTAssertEqual(model.dictationNoteSentence(for: .vibe), "Could not add.")
+        XCTAssertEqual(model.alert?.detail, "~/.vibe/AGENTS.md is a symlink; edit it by hand.")
+        XCTAssertTrue(files.snapshot.writes.isEmpty)
+    }
+
+    // MARK: - Plugin status
+
+    /// One wiring contract, every input class: the row's status and sentence
+    /// follow `claude plugin list` through `refreshIntegrationsStatuses`.
+    /// The derivation itself is `ClaudePluginStatus.derive`'s own suite
+    /// (`ClaudeMarketplaceRegistrationTests`).
+    ///
+    /// Rows that pin a decision worth a comment:
+    /// * a newer install over an older bundled one is "installed", not an
+    ///   update — offering to "update" would install the OLDER marketplace (m7);
+    /// * a failed listing is unknown, never "not installed": absence of
+    ///   evidence is not evidence of absence, and claiming "not installed"
+    ///   would invite an install over a setup we failed to read;
+    /// * only the line carrying our reference may supply a version: a CLI
+    ///   banner or another plugin's number must never read as ours.
+    @MainActor
+    func testThePluginRowStatusAndSentenceFollowTheListing() async {
+        func ours(_ version: String) -> String {
+            "{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(version)\",\"scope\":\"user\",\"enabled\":true}"
+        }
+        let cases: [(name: String, listing: String?, bundled: String, status: ClaudePluginStatus, sentence: String?)] = [
+            ("installed", "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true},\(ours("1.4.0"))]", "1.4.0", .installed(version: "1.4.0"), "Installed 1.4.0."),
+            ("older than bundled", "[\(ours("1.3.0"))]", "1.4.0", .updateAvailable(installed: "1.3.0", bundled: "1.4.0"), "Update available."),
+            ("newer than bundled", "[\(ours("1.5.0"))]", "1.4.0", .installed(version: "1.5.0"), "Installed 1.5.0."),
+            ("absent", "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true}]", "1.4.0", .notInstalled, "Not installed."),
+            ("failed listing", nil, "1.4.0", .unknown, nil),
+            ("listed without a version", "[\(ours("unknown"))]", "1.4.0", .installed(version: nil), "Installed."),
+            ("another plugin's version is never ours", "[{\"id\":\"claude-tools@other\",\"version\":\"2.1.220\",\"scope\":\"user\",\"enabled\":true},\(ours("unknown"))]", "2.1.220", .installed(version: nil), nil),
+        ]
+        for row in cases {
+            let model = makeModel(
+                fetchPluginListOutput: { row.listing },
+                bundledPluginVersion: row.bundled
+            )
+            await model.refreshIntegrationsStatuses()
+            XCTAssertEqual(model.localPluginStatus, row.status, "\(row.name)")
+            if let sentence = row.sentence {
+                XCTAssertEqual(model.localPluginSentence, sentence, "\(row.name)")
+            }
+        }
+    }
+
+    func testPluginRowButtonsFollowTheStatus() {
+        // A current plugin gets no install button, since pressing it would
+        // reinstall the same files, and a missing one gets no Remove.
+        let cases: [(ClaudePluginStatus, ClaudePluginStatus.PrimaryAction?, Bool)] = [
+            (.notInstalled, .install, false),
+            (.updateAvailable(installed: "1.0.0", bundled: "1.1.0"), .update, true),
+            (.installed(version: "1.0.0"), nil, true),
+            (.installed(version: nil), .installOrUpdate, true),
+            (.unknown, .installOrUpdate, true),
+        ]
+        for (status, action, remove) in cases {
+            XCTAssertEqual(status.primaryAction, action, "\(status)")
+            XCTAssertEqual(status.offersRemove, remove, "\(status)")
+        }
+        XCTAssertEqual(ClaudePluginStatus.PrimaryAction.install.title, "Install")
+        XCTAssertEqual(ClaudePluginStatus.PrimaryAction.update.title, "Update")
+    }
+
+    @MainActor
+    func testLaunchUpdatesAnOutdatedPluginAndNothingElse() async {
+        let listing = Mutex("1.0.0")
+        let service = RecordingPluginService { listing.withLock { $0 = "1.1.0" } }
+        let model = makeModel(
+            fetchPluginListOutput: {
+                let version = listing.withLock { $0 }
+                return "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(version)\",\"scope\":\"user\",\"enabled\":true}]"
+            },
+            bundledPluginVersion: "1.1.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+        XCTAssertEqual(model.localPluginStatus, .installed(version: "1.1.0"))
+
+        // Current now: a second launch touches nothing.
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+    }
+
+    /// A listing with the plugin at `plugin` and, when given, the mod at `mod`.
+    private static func listing(plugin: String, mod: String?) -> String {
+        var entries = ["{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(plugin)\",\"scope\":\"user\",\"enabled\":true}"]
+        if let mod {
+            entries.append("{\"id\":\"localvoxtral-mod@localvoxtral\",\"version\":\"\(mod)\",\"scope\":\"user\",\"enabled\":true}")
+        }
+        return "[" + entries.joined(separator: ",") + "]"
+    }
+
+    /// LVX-98: a mod change shipped under an unchanged plugin version must
+    /// still reach an installed mod, through the mod's own update only.
+    @MainActor
+    func testLaunchUpdatesABehindModWhenThePluginIsCurrent() async {
+        let modVersion = Mutex("1.10.0")
+        let service = RecordingPluginService(onUpdateMod: { modVersion.withLock { $0 = "1.12.0" } })
+        let model = makeModel(
+            fetchPluginListOutput: { Self.listing(plugin: "1.3.0", mod: modVersion.withLock { $0 }) },
+            bundledPluginVersion: "1.3.0",
+            bundledModVersion: "1.12.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["updateMod"])
+
+        // Current now: a second launch touches nothing.
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["updateMod"])
+    }
+
+    /// A behind plugin's update already updates the mod: one update, not two.
+    @MainActor
+    func testLaunchUpdatesBothBehindPluginsInOneUpdate() async {
+        let service = RecordingPluginService()
+        let model = makeModel(
+            fetchPluginListOutput: { Self.listing(plugin: "1.2.0", mod: "1.10.0") },
+            bundledPluginVersion: "1.3.0",
+            bundledModVersion: "1.12.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+    }
+
+    /// The mod is never installed unattended, and a newer or unreadable
+    /// version is not "behind".
+    @MainActor
+    func testLaunchLeavesAMissingOrCurrentModAlone() async {
+        for (mod, bundledMod) in [(String?.none, "1.12.0"), ("1.12.0", "1.12.0"), ("1.13.0", "1.12.0"), ("1.10.0", nil)] {
+            let service = RecordingPluginService()
+            let model = makeModel(
+                fetchPluginListOutput: { Self.listing(plugin: "1.3.0", mod: mod) },
+                bundledPluginVersion: "1.3.0",
+                bundledModVersion: bundledMod,
+                pluginService: service
+            )
+            await model.updateOutdatedPluginAtLaunch()
+            XCTAssertEqual(service.calls.withLock { $0 }, [], "mod \(String(describing: mod)), bundled \(String(describing: bundledMod))")
+        }
+    }
+
+    @MainActor
+    func testLaunchNeverInstallsAMissingPlugin() async {
+        for listing in [String?.none, "[]"] {
+            let service = RecordingPluginService()
+            let model = makeModel(
+                fetchPluginListOutput: { listing },
+                bundledPluginVersion: "1.1.0",
+                pluginService: service
+            )
+            await model.updateOutdatedPluginAtLaunch()
+            XCTAssertEqual(service.calls.withLock { $0 }, [], "\(String(describing: listing))")
+        }
+    }
+
+    @MainActor
+    func testFailedLaunchUpdateRaisesNoAlertAndKeepsTheButton() async {
+        let service = RecordingPluginService(fails: true)
+        let model = makeModel(
+            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.0.0\",\"scope\":\"user\",\"enabled\":true}]" },
+            bundledPluginVersion: "1.1.0",
+            pluginService: service
+        )
+        await model.updateOutdatedPluginAtLaunch()
+        XCTAssertEqual(service.calls.withLock { $0 }, ["update"])
+        XCTAssertNil(model.alert)
+        XCTAssertEqual(model.localPluginStatus.primaryAction, .update)
+    }
+
+    // MARK: - Status line row
+
+    @MainActor
+    func testStatuslineRowStates() {
+        let hook = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        for (state, expected): (ClaudeStatuslineState, ClaudeStatuslineInstallService.Status) in [
+            (ClaudeStatuslineState(fileExists: false), .notConfigured),
+            (ClaudeStatuslineState(
+                fileExists: true,
+                data: Data("{\"statusLine\":{\"type\":\"command\",\"command\":\"\(hook)\"}}".utf8)
+            ), .installed),
+            (ClaudeStatuslineState(
+                fileExists: true,
+                data: Data("{\"statusLine\":{\"type\":\"command\",\"command\":\"mine\"}}".utf8)
+            ), .foreign),
+            // Another copy of the app that still runs: not this install.
+            (ClaudeStatuslineState(
+                fileExists: true,
+                data: Data("{\"statusLine\":{\"type\":\"command\",\"command\":\"\(hook.replacingOccurrences(of: "/Applications/", with: "/tmp/try-pr/"))\"}}".utf8)
+            ), .otherCopy),
+        ] {
+            let model = makeModel(
+                statusline: ClaudeStatuslineInstallService(
+                    fileSystem: StubModelStatuslineFS(state: state),
+                    // No script yet, as in production before Combine.
+                    scriptFileSystem: StubModelStatuslineFS(state: ClaudeStatuslineState(fileExists: false)),
+                    isExecutableFile: { _ in true }
+                ),
+                statuslineHookCommand: { hook }
+            )
+            model.refreshStatuslineStatus()
+            XCTAssertEqual(model.statuslineStatus, expected)
+        }
+        XCTAssertEqual(
+            ClaudeStatuslineInstallService.sentence(for: .notConfigured), "Not installed."
+        )
+    }
+
+    /// The setup button on a foreign status line is Combine, and it combines;
+    /// Remove then restores the user's command.
+    @MainActor
+    func testCombineFromTheRowAndRemoveRestores() async throws {
+        let hook = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let settings = CombineMemoryFS(data: Data(#"{"statusLine":{"type":"command","command":"~/mine.sh"}}"#.utf8))
+        let script = CombineMemoryFS(data: nil)
+        let model = makeModel(
+            statusline: ClaudeStatuslineInstallService(
+                fileSystem: settings, scriptFileSystem: script, isExecutableFile: { _ in true }
+            ),
+            statuslineHookCommand: { hook }
+        )
+        model.refreshStatuslineStatus()
+        XCTAssertEqual(model.statuslineStatus, .foreign)
+
+        await model.applyStatuslineSetup()
+        XCTAssertEqual(model.statuslineResult, "Combined.")
+        XCTAssertEqual(model.statuslineStatus, .combined)
+        XCTAssertEqual(model.statuslineSentence, "Combined with your status line.")
+        XCTAssertNil(model.alert)
+
+        await model.removeStatusline()
+        XCTAssertEqual(model.statuslineStatus, .foreign)
+        let restored = try JSONSerialization.jsonObject(with: try XCTUnwrap(settings.data)) as? [String: Any]
+        XCTAssertEqual((restored?["statusLine"] as? [String: Any])?["command"] as? String, "~/mine.sh")
+        XCTAssertNil(script.data)
+    }
+
+    @MainActor
+    func testStatuslineApplyAndRemoveRefreshTheRow() async {
+        let fs = StubModelStatuslineFS(state: ClaudeStatuslineState(fileExists: false))
+        let model = makeModel(
+            statusline: ClaudeStatuslineInstallService(
+                fileSystem: fs, isExecutableFile: { _ in true }
+            ),
+            statuslineHookCommand: {
+                "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+            }
+        )
+        model.refreshStatuslineStatus()
+        XCTAssertEqual(model.statuslineSentence, "Not installed.")
+        await model.applyStatuslineSetup()
+        XCTAssertEqual(model.statuslineResult, "Installed.")
+        XCTAssertNotNil(fs.written)
+        fs.state = ClaudeStatuslineState(fileExists: true, data: fs.written?.data)
+        await model.removeStatusline()
+        XCTAssertEqual(model.statuslineResult, "Removed.")
+        XCTAssertTrue(fs.deleted)
+    }
+
+    @MainActor
+    func testStatuslineRemoveOnEditedEntryReportsEditedSentence() async {
+        // M3: removing a user-edited formerly-ours entry refuses with the
+        // one-sentence status instead of deleting.
+        let hook = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+        let existing = try? JSONSerialization.data(withJSONObject: [
+            "statusLine": ["type": "command", "command": "\(hook) --extra"],
+        ])
+        let fs = StubModelStatuslineFS(state: ClaudeStatuslineState(
+            fileExists: true, data: existing
+        ))
+        let model = makeModel(
+            statusline: ClaudeStatuslineInstallService(
+                fileSystem: fs, isExecutableFile: { _ in true }
+            ),
+            statuslineHookCommand: { hook }
+        )
+        model.refreshStatuslineStatus()
+        XCTAssertEqual(model.statuslineStatus, .edited)
+        await model.removeStatusline()
+        XCTAssertEqual(
+            model.statuslineResult, "Edited in settings.json; remove it there."
+        )
+        XCTAssertFalse(fs.deleted, "an edited entry is never deleted")
+    }
+
+    // MARK: - opencode row
+
+    @MainActor
+    func testOpencodeRowStates() {
+        let listed = try? JSONSerialization.data(withJSONObject: [
+            "plugin": [OpencodePluginInstallService.tuiPluginEntry],
+        ])
+        for (state, expected): (OpencodePluginState, OpencodePluginInstallService.Status) in [
+            (OpencodePluginState(), .notInstalled),
+            (OpencodePluginState(
+                pluginFileExists: true, pluginData: Data("js".utf8), tuiFileExists: false
+            ), .installedUnlisted),
+            (OpencodePluginState(
+                pluginFileExists: true, pluginData: Data("js".utf8),
+                tuiFileExists: true, tuiData: listed
+            ), .installed),
+        ] {
+            let model = makeModel(
+                opencode: OpencodePluginInstallService(
+                    bundledPluginData: { Data("js".utf8) },
+                    fileSystem: StubModelOpencodeFS(state: state)
+                )
+            )
+            model.refreshOpencodeStatus()
+            XCTAssertEqual(model.opencodeStatus, expected)
+        }
+    }
+
+    @MainActor
+    func testOpencodeInstallAndRemoveRefreshTheRow() async {
+        let fs = StubModelOpencodeFS(state: OpencodePluginState())
+        let model = makeModel(
+            opencode: OpencodePluginInstallService(
+                bundledPluginData: { Data("js".utf8) }, fileSystem: fs
+            )
+        )
+        await model.installOpencodePlugin()
+        XCTAssertEqual(model.opencodeResult, "Installed.")
+        XCTAssertNotNil(fs.writtenPlugin)
+        XCTAssertNotNil(fs.writtenTUI)
+        fs.state = OpencodePluginState(
+            pluginFileExists: true, pluginData: Data("js".utf8),
+            tuiFileExists: true, tuiData: fs.writtenTUI?.data
+        )
+        // Clear the install phase's writes: what follows pins the remove.
+        fs.writtenPlugin = nil
+        fs.writtenTUI = nil
+        await model.removeOpencodePlugin()
+        XCTAssertEqual(model.opencodeResult, "Removed.")
+        XCTAssertTrue(fs.deletedPlugin)
+        XCTAssertTrue(
+            fs.deletedTUI,
+            "a tui.json holding only our entry is deleted, not emptied"
+        )
+        XCTAssertNil(fs.writtenTUI)
+    }
+
+    // MARK: - herdr row
+
+    @MainActor
+    func testHerdrRowIsAbsentUntilSomethingReportsHerdrThenAppears() async {
+        let absent = makeModel(herdrPresenceReport: { false })
+        await absent.refreshIntegrationsStatuses()
+        XCTAssertFalse(
+            absent.isHerdrDetected,
+            "the view hides the row on this flag: a row that can only say 'not found' is noise"
+        )
+
+        let present = makeModel(herdrPresenceReport: { true })
+        await present.refreshIntegrationsStatuses()
+        XCTAssertTrue(present.isHerdrDetected)
+        XCTAssertEqual(
+            ClaudeIntegrationSettingsModel.herdrDetectedSentence,
+            "Found; panes join automatically."
+        )
+    }
+
+    @MainActor
+    func testHerdrRowReservedAtConstructionWhenBinaryPresent() {
+        // m8: the binary check seeds visibility synchronously — no refresh,
+        // no await — so the row paints on first paint instead of popping in.
+        let model = makeModel(herdrBinaryAvailable: { true })
+        XCTAssertTrue(
+            model.isHerdrDetected,
+            "binary on PATH reserves the row at construction"
+        )
+    }
+
+    // MARK: - Probe ordering
+
+    @MainActor
+    func testHerdrCandidatesProbePathBeforeTheKnownInstallDirectories() {
+        let candidates = ClaudeHerdrAvailability.herdrCandidates(environment: [
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/Users/someone",
+        ])
+        XCTAssertEqual(candidates, [
+            "/usr/bin/herdr", "/bin/herdr",
+            "/Users/someone/.local/bin/herdr",
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+            "/Users/someone/.nix-profile/bin/herdr",
+            "/nix/var/nix/profiles/default/bin/herdr",
+            "/run/current-system/sw/bin/herdr",
+        ])
+    }
+
+    /// Field finding 2026-09-15: the owner's Mac has herdr from Homebrew at
+    /// `/opt/homebrew/bin`, which a GUI app's PATH (`/usr/bin:/bin:/usr/sbin:
+    /// /sbin`) never contains, so the Integrations pane said "Not found." The
+    /// fixed directories are the ones herdr itself probes on a remote Mac
+    /// (`src/remote/attach.rs`, 0.9.0): Homebrew, /usr/local, Nix.
+    @MainActor
+    func testHerdrProbeFindsAHomebrewHerdrOutsideTheGUIPATHAndIsPinnedWithoutTheMachinesOwnPATH() {
+        let guiEnvironment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/Users/someone"]
+        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: guiEnvironment,
+            isExecutable: { $0 == "/opt/homebrew/bin/herdr" }
+        ))
+        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: guiEnvironment,
+            isExecutable: { $0 == "/usr/local/bin/herdr" }
+        ))
+        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"],
+            isExecutable: { $0 == "/Users/someone/.local/bin/herdr" }
+        ))
+        XCTAssertFalse(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"],
+            isExecutable: { _ in false }
+        ))
+    }
+
+    /// A directory already on PATH is probed once, in its PATH position.
+    @MainActor
+    func testHerdrCandidatesDoNotRepeatADirectoryAlreadyOnPATH() {
+        let candidates = ClaudeHerdrAvailability.herdrCandidates(environment: [
+            "PATH": "/opt/homebrew/bin:/usr/bin",
+            "HOME": "/Users/someone",
+        ])
+        XCTAssertEqual(candidates.filter { $0 == "/opt/homebrew/bin/herdr" }.count, 1)
+        XCTAssertEqual(candidates.first, "/opt/homebrew/bin/herdr")
+    }
+
+    /// No HOME: the home-relative entries are skipped, the fixed ones stay.
+    @MainActor
+    func testHerdrCandidatesWithoutHOMEKeepTheFixedDirectories() {
+        let candidates = ClaudeHerdrAvailability.herdrCandidates(environment: ["PATH": "/usr/bin"])
+        XCTAssertEqual(candidates, [
+            "/usr/bin/herdr",
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+            "/nix/var/nix/profiles/default/bin/herdr",
+            "/run/current-system/sw/bin/herdr",
+        ])
+    }
+}
+
+/// The `claude plugin list` probe on the real service: a failed listing is
+/// nil (unknown), never a throw — only the runner's own failures throw.
+///
+/// M4: every test captures the invocation the seam received and pins it to
+/// `["plugin", "list", "--json"]` — the pane's entire plugin status rests on that argv,
+/// and a stub discarding its input would let a wrong subcommand pass.
+final class ClaudePluginListProbeTests: XCTestCase {
+    func testSuccessfulListingReturnsStdout() throws {
+        let catcher = ProbeInvocationCatcher()
+        let service = ClaudePluginInstallService(
+            claudeExecutableURL: URL(fileURLWithPath: "/usr/bin/claude"),
+            marketplaceURL: URL(fileURLWithPath: "/marketplace"),
+            runner: {
+                catcher.invocations.append($0)
+                return ClaudePluginInstallService.RunResult(exitCode: 0, message: "out")
+            }
+        )
+        XCTAssertEqual(try service.pluginListOutput(), "out")
+        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list", "--json"]])
+    }
+
+    func testFailedListingIsNil() throws {
+        let catcher = ProbeInvocationCatcher()
+        let service = ClaudePluginInstallService(
+            claudeExecutableURL: URL(fileURLWithPath: "/usr/bin/claude"),
+            marketplaceURL: URL(fileURLWithPath: "/marketplace"),
+            runner: {
+                catcher.invocations.append($0)
+                return ClaudePluginInstallService.RunResult(exitCode: 1, message: "nope")
+            }
+        )
+        XCTAssertNil(try service.pluginListOutput())
+        XCTAssertEqual(catcher.invocations.map(\.arguments), [["plugin", "list", "--json"]])
+    }
+
+    func testMissingCLIIsNil() throws {
+        let catcher = ProbeInvocationCatcher()
+        let service = ClaudePluginInstallService(
+            claudeExecutableURL: nil,
+            marketplaceURL: URL(fileURLWithPath: "/marketplace"),
+            runner: {
+                catcher.invocations.append($0)
+                return ClaudePluginInstallService.RunResult(exitCode: 0, message: "out")
+            }
+        )
+        XCTAssertNil(try service.pluginListOutput())
+        XCTAssertTrue(catcher.invocations.isEmpty, "no CLI means no invocation")
+    }
+}
+
+/// Sendable box so the probe tests can record the invocation a `@Sendable`
+/// runner received without tripping Swift 6 capture rules.
+private final class ProbeInvocationCatcher: @unchecked Sendable {
+    var invocations: [ClaudePluginInstallService.Invocation] = []
+}
+
+// MARK: - Doubles
+
+/// `ClaudePluginInstalling` stub that also answers the list probe.
+private final class RecordingPluginService: ClaudePluginInstalling, Sendable {
+    struct Failure: Error {}
+    let calls = Mutex<[String]>([])
+    private let fails: Bool
+    private let onUpdate: @Sendable () -> Void
+    private let onUpdateMod: @Sendable () -> Void
+
+    init(
+        fails: Bool = false,
+        onUpdate: @escaping @Sendable () -> Void = {},
+        onUpdateMod: @escaping @Sendable () -> Void = {}
+    ) {
+        self.fails = fails
+        self.onUpdate = onUpdate
+        self.onUpdateMod = onUpdateMod
+    }
+
+    func installPlugin() throws { calls.withLock { $0.append("install") } }
+    func updatePlugin() throws { calls.withLock { $0.append("reinstall") } }
+    func updateInstalledPlugin() throws {
+        calls.withLock { $0.append("update") }
+        if fails { throw Failure() }
+        onUpdate()
+    }
+    func updateInstalledMod() throws {
+        calls.withLock { $0.append("updateMod") }
+        if fails { throw Failure() }
+        onUpdateMod()
+    }
+    func uninstallPlugin() throws { calls.withLock { $0.append("uninstall") } }
+}
+
+private final class StubListPluginService: ClaudePluginInstalling, @unchecked Sendable {
+    func installPlugin() throws {}
+    func updatePlugin() throws {}
+    func updateInstalledPlugin() throws {}
+    func uninstallPlugin() throws {}
+    func pluginListOutput() throws -> String? { nil }
+}
+
+private final class StubModelStatuslineFS: ClaudeStatuslineFileSystem, @unchecked Sendable {
+    var state: ClaudeStatuslineState
+    var written: (data: Data, permissions: UInt16)?
+    var deleted = false
+
+    init(state: ClaudeStatuslineState) { self.state = state }
+
+    func readState() throws -> ClaudeStatuslineState { state }
+    func createDirectory(permissions: UInt16) throws {}
+    func atomicWrite(_ data: Data, permissions: UInt16) throws {
+        written = (data, permissions)
+    }
+    func deleteFile() throws { deleted = true }
+}
+
+private final class StubModelOpencodeFS: OpencodePluginFileSystem, @unchecked Sendable {
+    var state: OpencodePluginState
+    var writtenPlugin: (data: Data, permissions: UInt16)?
+    var writtenTUI: (data: Data, permissions: UInt16)?
+    var deletedPlugin = false
+    /// m9: the double used to swallow TUI deletion, so the model test could
+    /// not pin that Remove drops the tui.json-only file.
+    var deletedTUI = false
+
+    init(state: OpencodePluginState) { self.state = state }
+
+    func readState() throws -> OpencodePluginState { state }
+    func createPluginsDirectory(permissions: UInt16) throws {}
+    func createConfigDirectory(permissions: UInt16) throws {}
+    func atomicWritePlugin(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
+        writtenPlugin = (data, permissions)
+    }
+    func atomicWriteTUI(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
+        writtenTUI = (data, permissions)
+    }
+    func deletePlugin() throws { deletedPlugin = true }
+    func deleteTUI(replacing _: Data) throws { deletedTUI = true }
+}
+
+/// Remembers writes, so the row's status follows its own actions.
+private final class CombineMemoryFS: ClaudeStatuslineFileSystem, @unchecked Sendable {
+    var data: Data?
+
+    init(data: Data?) { self.data = data }
+
+    func readState() throws -> ClaudeStatuslineState {
+        ClaudeStatuslineState(fileExists: data != nil, data: data)
+    }
+    func createDirectory(permissions: UInt16) throws {}
+    func atomicWrite(_ data: Data, permissions: UInt16) throws { self.data = data }
+    func deleteFile() throws { data = nil }
+}

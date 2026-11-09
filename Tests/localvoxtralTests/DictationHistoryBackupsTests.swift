@@ -102,6 +102,82 @@ final class DictationHistoryBackupsTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    /// Retention is a privacy setting: a snapshot older than a day loses the
+    /// dictations the trim deleted, and one left empty goes. The snapshot
+    /// the trim takes keeps them for a day, to undo a trim gone wrong (#1916).
+    func testRetentionDeletesExpiredDictationsFromTheBackupsAfterADay() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        let url = try XCTUnwrap(store.storeURL)
+        let backups = backups(in: directory)
+        let start = clock.now()
+        await store.save(record("old", startedAt: start)).value
+        clock.advance(86_400 * 2)
+        backups.snapshot(of: url, reason: .delete)  // holds only "old"
+        await store.save(record("recent", startedAt: clock.now())).value
+        clock.advance(86_400 * 2)
+        backups.snapshot(of: url, reason: .delete)  // holds both
+        clock.advance(86_400 * 2)
+
+        // A 5-day retention, six days in: "old" expires, "recent" stays.
+        await store.trim(olderThan: clock.now().addingTimeInterval(-86_400 * 5), expiringBackups: true).value
+
+        // An edited snapshot leaves no WAL behind: one under the old name
+        // would keep the deleted rows and lose them from the renamed file.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: backups.directoryURL.path)
+            .filter { $0.hasSuffix("-wal") || $0.hasSuffix("-shm") }
+        XCTAssertEqual(leftovers, [])
+        var days: [Double] = []
+        var texts: [[String]] = []
+        for snapshot in backups.snapshots() where snapshot.dictations > 0 {
+            let copy = try DictationSessionStore.open(url: snapshot.url).get()
+            days.append(snapshot.takenAt.timeIntervalSince(start) / 86_400)
+            texts.append(await copy.entries().map(\.rawText).sorted())
+        }
+        // The trim's own snapshot (day 6), then the day-4 one and the daily
+        // copy the day-2 save took; the day-2 snapshot that held only "old"
+        // is gone.
+        XCTAssertEqual(days, [6, 4, 2])
+        XCTAssertEqual(texts, [["old", "recent"], ["recent"], ["recent"]])
+        let entries = await store.entries()
+        XCTAssertEqual(entries.map(\.rawText), ["recent"])
+    }
+
+    /// Don't keep empties History but leaves the backups unless the user
+    /// asked for them to go too (#1574): its trim expires nothing in them.
+    func testDontKeepsTrimLeavesTheBackups() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        let url = try XCTUnwrap(store.storeURL)
+        let backups = backups(in: directory)
+        await store.save(record("kept in the copy", startedAt: clock.now())).value
+        backups.snapshot(of: url, reason: .delete)
+        clock.advance(86_400 * 2)
+
+        await store.trim(olderThan: .distantFuture).value
+
+        XCTAssertTrue(backups.snapshots().contains { $0.dictations == 1 && $0.takenAt < clock.now().addingTimeInterval(-86_400) })
+    }
+
+    /// Rotation keeps a day's snapshots that hold dictations, however many
+    /// event snapshots follow: one may be the only copy of a trim's rows.
+    func testRotationKeepsTheDaysSnapshotsThatHoldDictations() throws {
+        let directory = makeDirectory()
+        let backups = backups(in: directory)
+        try FileManager.default.createDirectory(at: backups.directoryURL, withIntermediateDirectories: true)
+        let start = clock.now()
+        for hour in 0...(DictationHistoryBackups.eventsKept + 3) {
+            let name = DictationHistoryBackups.fileName(
+                takenAt: start.addingTimeInterval(Double(hour) * 3_600), reason: .delete, dictations: 5)
+            FileManager.default.createFile(atPath: backups.directoryURL.appendingPathComponent(name).path, contents: Data())
+        }
+        clock.advance(Double(DictationHistoryBackups.eventsKept + 3) * 3_600)
+
+        backups.rotate()
+
+        XCTAssertEqual(backups.snapshots().count, DictationHistoryBackups.eventsKept + 4)
+    }
+
     /// An app left running for days still gets its daily copy: the check
     /// runs on every save, not only at launch.
     func testARunningAppTakesADailySnapshotOnTheNextSaveOfTheDay() async throws {

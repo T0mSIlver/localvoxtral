@@ -105,7 +105,6 @@ final class VerificationPromptSectionTests: XCTestCase {
             PolishContextGrounding.Candidate(
                 source: .repository,
                 entries: [preApplied],
-                isFallbackOnly: false,
                 verificationEntries: [
                     ReplacementEntry(
                         replaceWith: "stale terminal alternative",

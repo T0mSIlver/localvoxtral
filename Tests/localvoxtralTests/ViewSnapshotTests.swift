@@ -4,6 +4,7 @@ import SwiftUI
 import XCTest
 
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// Pictures of the app's views, one PNG per view and state, for an agent that
 /// has to show the owner a view: `scripts/view-snapshots.sh` renders them on a
@@ -43,6 +44,15 @@ final class ViewSnapshotTests: XCTestCase {
                     name: "settings-\(pane.rawValue)-\(setUp ? "set-up" : "not-set-up")",
                     setUp: setUp)
             }
+        }
+    }
+
+    /// About on a release copy, where the update rows show (LVX-57). A test
+    /// process is never one, so the model is connected by hand.
+    func testAboutWithUpdates() async throws {
+        try await recordSettings(pane: .about, name: "settings-about-updates", setUp: false) { viewModel in
+            viewModel.updates.connect(
+                installsAutomatically: true, setInstallsAutomatically: { _ in }, checkForUpdates: {})
         }
     }
 

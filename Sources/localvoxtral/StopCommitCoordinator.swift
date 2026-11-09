@@ -246,7 +246,8 @@ enum StopCommitCoordinator {
     /// a plain chat, where the agent profile's backticks and joined paths
     /// would be wrong, and only the join proves focus was in a Code-tab
     /// session. A Claude project's page joins nothing but is agents too
-    /// (`claudeProjectFocused`).
+    /// (`claudeProjectFocused`). A T3 Code thread joined (`.t3Thread`) is an
+    /// agent's prompt for the same reason.
     @MainActor
     static func polishProfile(
         forTargetBundleID bundleID: String?,
@@ -255,7 +256,8 @@ enum StopCommitCoordinator {
         settings: SettingsStore
     ) -> PolishPromptProfile {
         guard settings.agentPolishProfileEnabled else { return .standard }
-        if claudeJoin?.mechanism == .desktopSession || claudeProjectFocused { return .agent }
+        if claudeJoin?.mechanism == .desktopSession || claudeJoin?.mechanism == .t3Thread
+            || claudeProjectFocused { return .agent }
         guard let bundleID, !bundleID.isEmpty else { return .standard }
         if TerminalTargetDetector.isTerminalLikeBundleID(bundleID) { return .agent }
         if settings.userTerminalAppBundleIDs.contains(bundleID) { return .agent }

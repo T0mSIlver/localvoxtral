@@ -36,7 +36,8 @@ expect() {
 }
 
 ALL=(DogfoodControlSocketC DogfoodControlServiceC DogfoodControlProtocolO
-  DogfoodAudioFileSourceC dogfood_control_socket_enabled LOCALVOXTRAL_DOGFOOD_AUDIO_FILE)
+  DogfoodAudioFileSourceC dogfood_control_socket_enabled LOCALVOXTRAL_DOGFOOD_AUDIO_FILE
+  debug.log_realtime_deltas insertion_scalar_trace)
 
 clean="$(binary clean 26DictationSessionControllerC 9SomethingV)"
 expect 0 "a release binary without harness names passes" "$clean" absent
@@ -74,7 +75,7 @@ expect 1 "a file without the control type fails, rather than passing as clean" "
 expect 2 "a missing binary is a usage error" "$TMP_DIR/nope" absent
 expect 2 "an unknown mode is a usage error" "$clean" maybe
 
-grep -q "none of 6 harness names" < <("$CHECK" "$clean" absent) \
+grep -q "none of 8 harness names" < <("$CHECK" "$clean" absent) \
   || fail "the pass line names how many names it searched"
 
 echo "harness symbol check tests: PASS"

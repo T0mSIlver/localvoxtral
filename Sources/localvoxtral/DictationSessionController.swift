@@ -254,10 +254,11 @@ final class DictationSessionController {
     @ObservationIgnored
     var audioStoreWithoutHistory: DictationAudioStore?
     /// Watches the seconds after a commit for an immediate erase, and patches
-    /// that dictation's record with what it saw. `var` for the same reason as
-    /// the store: tests inject the clock and the event source.
+    /// that dictation's record with what it saw. Its window sleeps on the
+    /// session clock. `var` for the same reason as the store: tests inject
+    /// the clock and the event source.
     @ObservationIgnored
-    var editSignalWatcher = EditSignalWatcher()
+    var editSignalWatcher: EditSignalWatcher
 
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
@@ -577,9 +578,15 @@ final class DictationSessionController {
     /// or not.
     @ObservationIgnored
     var sessionHasStallBackfill = false
-    /// The stall backfills in flight, cancelled when the session resets.
+    /// The session's stall backfills, cancelled when the session resets.
     @ObservationIgnored
     var stallBackfillTasks: [Task<Void, Never>] = []
+    /// The ones still waiting on the batch model: a stop holds its commit
+    /// for them (LVX-75).
+    @ObservationIgnored
+    var stallBackfillsInFlight: Set<Int> = []
+    @ObservationIgnored
+    var nextStallBackfillID = 0
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored
@@ -619,9 +626,11 @@ final class DictationSessionController {
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// The opt-in raw-delta log (`SettingsStore.debugLogRealtimeDeltas`).
     @ObservationIgnored
     var realtimeDeltaLog = RealtimeDeltaLog()
+    #endif
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
@@ -650,6 +659,11 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        self.editSignalWatcher = EditSignalWatcher(
+            monitor: dependencies.editKeyMonitor(),
+            now: dependencies.clock.now,
+            sleepFor: dependencies.clock.sleep
+        )
         textInsertion.pasteRestoreSleep = dependencies.clock.sleep
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
         self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
@@ -1136,8 +1150,10 @@ final class DictationSessionController {
     /// record holds words already typed, so only the words its stop had
     /// not typed yet are copied (#1882).
     ///
+    /// `atQuit` copies now, not after a pending paste's restore (LVX-54).
+    ///
     /// - Returns: whether the text went on the clipboard.
-    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+    func keepUntypedDictation(atQuit: Bool = false, savedBy save: () -> Void) -> Bool {
         let generation = lastDictationGeneration
         save()
         guard lastDictationGeneration != generation, !lastDictationIsInHistory else { return false }
@@ -1146,7 +1162,7 @@ final class DictationSessionController {
             : lastDictation?.textToCopy ?? ""
         guard !text.isEmpty else { return false }
         Log.dictation.notice("text not inserted and History is off; text copied")
-        _ = copyUntypedText(text)
+        _ = copyUntypedText(text, atQuit: atQuit)
         return true
     }
 
@@ -1161,7 +1177,9 @@ final class DictationSessionController {
     /// enabled per session by the presence of the `insertion_scalar_trace`
     /// marker file in the shared config folder (same gate pattern as the
     /// eval-llm marker). Called at each dictation session start.
+    /// Debug and harness builds only: the trace is dictated text (LVX-80).
     func refreshInsertionScalarTracingForSession() {
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         let markerURL = appConfigStore.configDirectoryURL()
             .appendingPathComponent("insertion_scalar_trace", isDirectory: false)
         let enabled = FileManager.default.fileExists(atPath: markerURL.path)
@@ -1169,6 +1187,7 @@ final class DictationSessionController {
             Log.insertion.notice("scalar-trace enabled for this session (marker file present)")
         }
         textInsertion.isScalarTracingEnabled = enabled
+        #endif
     }
 
     func captureSessionTargetVerdict() {

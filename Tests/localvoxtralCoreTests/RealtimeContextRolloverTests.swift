@@ -24,7 +24,15 @@ final class RealtimeContextRolloverTests: XCTestCase {
     /// final commit queues the end of the audio, and the run answers it with
     /// one `done` naming the bytes it transcribed. Audio past the limit is
     /// never transcribed: the real server writes garbage there, then dies.
+    ///
+    /// As `.llamaServer` it follows llama.cpp's `ws_realtime` instead (#1943):
+    /// audio is transcribed as it arrives, and every commit answers with a
+    /// `completed` for its item. A non-final commit also pads the stream with
+    /// `llamaCommitPaddingBytes` of silence, which fills context too.
     private final class LimitedServer: @unchecked Sendable {
+        /// `n_delay + 11` tokens of silence, ~1.4 s for Voxtral Realtime 2602.
+        static let llamaCommitPaddingBytes = 44_800
+
         private struct Session {
             var queue: [Int?] = []
             var isRunning = false
@@ -33,6 +41,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
         }
 
         let limitBytes: Int
+        let kind: RealtimeServerModel.Kind
         private let lock = NSLock()
         private var sessions: [ObjectIdentifier: Session] = [:]
         private(set) var sessionOrder: [ObjectIdentifier] = []
@@ -41,8 +50,9 @@ final class RealtimeContextRolloverTests: XCTestCase {
         /// Audio bytes each session was sent, in session order.
         private var sessionAudio: [ObjectIdentifier: Int] = [:]
 
-        init(limitBytes: Int) {
+        init(limitBytes: Int, kind: RealtimeServerModel.Kind) {
             self.limitBytes = limitBytes
+            self.kind = kind
         }
 
         var audioPerSession: [Int] {
@@ -70,6 +80,9 @@ final class RealtimeContextRolloverTests: XCTestCase {
             }
             var session = sessions[id]!
             defer { sessions[id] = session }
+            if kind == .llamaServer {
+                return llamaReceive(json, bytes: &sessionAudio[id, default: 0], session: &session)
+            }
             switch json["type"] as? String {
             case "input_audio_buffer.append":
                 let bytes = (json["audio"] as? String).flatMap { Data(base64Encoded: $0) }?.count ?? 0
@@ -86,6 +99,34 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 return []
             }
             return drain(&session)
+        }
+
+        private func llamaReceive(
+            _ json: [String: Any], bytes sent: inout Int, session: inout Session
+        ) -> [[String: Any]] {
+            switch json["type"] as? String {
+            case "input_audio_buffer.append":
+                let bytes = (json["audio"] as? String).flatMap { Data(base64Encoded: $0) }?.count ?? 0
+                sent += bytes
+                take(bytes, transcribed: true, into: &session)
+                return []
+            case "input_audio_buffer.commit":
+                if json["final"] as? Bool != true {
+                    take(Self.llamaCommitPaddingBytes, transcribed: false, into: &session)
+                }
+                let text = "\(session.runBytes) bytes"
+                session.runBytes = 0
+                return [RealtimeServerModel.llamaCompleted(text)]
+            default:
+                return []
+            }
+        }
+
+        private func take(_ bytes: Int, transcribed: Bool, into session: inout Session) {
+            let room = max(0, limitBytes - session.contextBytes)
+            if transcribed { session.runBytes += min(bytes, room) }
+            overflowBytes += max(0, bytes - room)
+            session.contextBytes += bytes
         }
 
         private func drain(_ session: inout Session) -> [[String: Any]] {
@@ -169,9 +210,10 @@ final class RealtimeContextRolloverTests: XCTestCase {
         /// port) instead of taking one from the harness.
         init(
             budget: RealtimeContextBudget? = RealtimeContextRolloverTests.budget, dials: Bool = false,
-            nowGate: NowGate? = nil
+            nowGate: NowGate? = nil, kind: RealtimeServerModel.Kind = .vllm
         ) {
-            server = LimitedServer(limitBytes: (budget ?? RealtimeContextRolloverTests.budget).capacityBytes)
+            server = LimitedServer(
+                limitBytes: (budget ?? RealtimeContextRolloverTests.budget).capacityBytes, kind: kind)
             let manual = ManualSessionClock()
             clock = manual
             client = RealtimeAPIWebSocketClient(
@@ -205,7 +247,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
             lock.lock()
             sessionGeneration = client.connectionGeneration
             lock.unlock()
-            client.debugHandleFrameForTesting(json: ["type": "session.created"])
+            client.debugHandleFrameForTesting(json: RealtimeServerModel.sessionCreated(kind))
             pump()
         }
 
@@ -291,7 +333,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 if needsHandshake, !holdsHandshakes {
                     needsHandshake = false
                     lock.unlock()
-                    client.debugHandleFrameForTesting(json: ["type": "session.created"])
+                    client.debugHandleFrameForTesting(json: RealtimeServerModel.sessionCreated(server.kind))
                     continue
                 }
                 guard let next = outbox.first,
@@ -403,6 +445,31 @@ final class RealtimeContextRolloverTests: XCTestCase {
         for audio in harness.server.audioPerSession {
             XCTAssertLessThanOrEqual(audio, Self.budget.forceBytes + Self.chunkBytes)
         }
+    }
+
+    /// The same take on llama-server, with the session's periodic commit
+    /// every 0.9 s: the client sends none, so no silence padding fills the
+    /// context it does not count, and each socket ends on one final commit.
+    func testALlamaServerTakeLongerThanTheContextLimitIsTranscribedWhole() {
+        let harness = Harness(kind: .llamaServer)
+        for _ in 0 ..< 22 {
+            harness.speak(seconds: 0.9)
+            harness.client.sendCommit(final: false)
+            harness.pump()
+        }
+        harness.speak(seconds: 0.2)
+
+        harness.client.sendCommit(final: true)
+        harness.pump()
+
+        let total = 200 * Self.chunkBytes
+        XCTAssertEqual(harness.server.overflowed, 0, "a session ran past n_ctx")
+        XCTAssertEqual(harness.transcribedBytes, total, "finals: \(harness.finals)")
+        XCTAssertEqual(harness.finalizedCount, 1)
+        XCTAssertGreaterThanOrEqual(harness.rollovers, 2)
+        XCTAssertEqual(Set(harness.sentCommits), [true], "commits: \(harness.sentCommits)")
+        XCTAssertEqual(harness.sentCommits.count, harness.rollovers + 1, "one final commit per socket")
+        XCTAssertTrue(harness.errorsOrDrops.isEmpty, "\(harness.errorsOrDrops)")
     }
 
     /// Without a budget (speechd, Mistral, a server that lists no models)
@@ -853,6 +920,18 @@ final class RealtimeContextRolloverTests: XCTestCase {
             fromModelsResponse: body, model: "mistralai/Voxtral-Mini-4B-Realtime-2602")
         XCTAssertEqual(budget, RealtimeContextBudget(maxModelLen: 2048, source: .reported))
         XCTAssertEqual(budget?.forceSeconds ?? 0, 139.264, accuracy: 0.001)
+    }
+
+    /// llama-server lists no `max_model_len`; its per-slot context is
+    /// `meta.n_ctx`, and `n_ctx_train` is the model's, not the server's.
+    func testTheLimitIsLlamaServersSlotContext() {
+        let body = Data("""
+            {"object":"list","data":[{"id":"Voxtral-Mini-4B-Realtime-2602-Q8_0.gguf","object":"model",
+              "meta":{"vocab_type":2,"n_vocab":131072,"n_ctx_train":131072,"n_ctx":4096}}]}
+            """.utf8)
+        XCTAssertEqual(
+            RealtimeContextLimitProbe.budget(fromModelsResponse: body, model: "voxtral"),
+            RealtimeContextBudget(maxModelLen: 4096, source: .reported))
     }
 
     func testAListedModelWithoutALimitGetsTheDefault() {

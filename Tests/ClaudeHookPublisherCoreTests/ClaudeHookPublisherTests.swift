@@ -138,6 +138,16 @@ final class ClaudeHookPublisherTests: XCTestCase {
         XCTAssertNil(publisher(variables: ["HOME": "/h"]).processInfo().desktopSessionID)
     }
 
+    // T3 Code exports the thread id into every session it runs (measured on
+    // the dev box 2026-11-03: T3CODE_THREAD_ID=<uuid> or mcp:launch:<hex>).
+    // The T3 Code join arm matches it against the focused thread's address.
+    func testT3ThreadIDIsPublished() {
+        let info = publisher(variables: ["T3CODE_THREAD_ID": "mcp:launch:abc"]).processInfo()
+        XCTAssertEqual(info.t3ThreadID, "mcp:launch:abc")
+        XCTAssertNil(info.desktopSessionID)
+        XCTAssertNil(publisher(variables: ["T3CODE_THREAD_ID": ""]).processInfo().t3ThreadID)
+    }
+
     func testEmptyOrAbsentCmuxAndBridgeValuesAreTreatedAsAbsent() {
         // An exported-but-empty variable is how a shell says "not in one of
         // these". Publishing `""` would let a later join arm match two empty

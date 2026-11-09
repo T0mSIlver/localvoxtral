@@ -53,6 +53,9 @@ cask "localvoxtral" do
     strategy :github_latest
   end
 
+  # The app updates itself (Sparkle, LVX-57): brew upgrade leaves it alone
+  # unless --greedy, so the two never install over each other.
+  auto_updates true
   depends_on arch: :arm64
   depends_on macos: :sequoia
 

@@ -20,7 +20,7 @@ Voxtral Realtime 3 (`voxtral-mini-transcribe-realtime-3-0`, the default since #1
 - `mistral realtime server silent: no server event for 5.0s; ... (loudest -NN dBFS); N sends awaiting completion; last ping answered|unanswered for Xs; request_id=...`. Sends piling up or an unanswered ping point to the network, and completed sends with an answered ping point to Mistral.
 - `mistral realtime server resumed after Xs of silence`
 - `mistral realtime final commit: flush + end; Xs of audio since the last server event (loudest -NN dBFS), ...`. Speech reads around -40 to -20 dBFS and a quiet room below -50. This line settles symptom C.
-- `mistral realtime closing before transcription.done: ...` is symptom A at stop.
+- `mistral realtime closing before transcription.done: ...` is symptom A at stop. Healthy Voxtral Realtime 3 stops go quiet for up to 1.2 s before `done`, so a Mistral stop waits 1.5 s of silence before it closes (0.7 s on other servers; `MistralRealtimeWebSocketClient.finalizationInactivityThreshold`). Builds before that change logged this line on some healthy stops too.
 
 ## Reading the owner's Mac log
 

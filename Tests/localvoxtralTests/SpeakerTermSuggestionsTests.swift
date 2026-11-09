@@ -212,6 +212,29 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertTrue(service.requests.isEmpty, "no request, no API credits")
     }
 
+    /// LVX-11: what became of each chip is counted by where it came from,
+    /// in the app's defaults, and no term is saved there.
+    func testChipOutcomesAreCountedBySource() async throws {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service, learned: ["Voxtral", "polishd"])
+
+        await model.refreshLearnedSuggestions()
+        await model.suggest()
+        model.accept("Voxtral")
+        model.dismiss("polishd")
+        model.accept("Qwen")
+
+        let data = try XCTUnwrap(settings.defaults.data(forKey: SpeakerTermSuggestionModel.outcomesDefaultsKey))
+        let outcomes = try JSONDecoder().decode(TermSuggestionOutcomes.self, from: data)
+        XCTAssertEqual(outcomes.weeks.count, 1)
+        XCTAssertEqual(outcomes.weeks[0].learned, .init(shown: 2, accepted: 1, refused: 1))
+        XCTAssertEqual(outcomes.weeks[0].model, .init(shown: 1, accepted: 1, refused: 0))
+        let saved = String(decoding: data, as: UTF8.self)
+        for term in ["Voxtral", "polishd", "Qwen"] { XCTAssertFalse(saved.contains(term), term) }
+    }
+
     func testLearnedTermAlreadyKnownOrRefusedIsNotOffered() async {
         let settings = makePolishingSettings()
         settings.polishSpeakerTerms = ["Voxtral"]
@@ -429,6 +452,26 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(model.suggestions, ["Qwen"])
         XCTAssertEqual(model.phase, .failed("Terms list is full."))
         XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
+    }
+
+    /// LVX-93: another copy of the app filled the list since this one read
+    /// it. The merge on save drops this copy's addition, so the chip stays
+    /// and the row says why.
+    func testAListAnotherCopyFilledKeepsTheChipAndSaysWhy() async {
+        let settings = makePolishingSettings()
+        settings.polishSpeakerTerms = (0..<(SpeakerTerms.maxTerms - 1)).map { "Known\($0)x" }
+        settings.defaults.set(
+            settings.polishSpeakerTerms + ["Elsewhere"], forKey: "settings.polish_speaker_terms")
+        let service = Service()
+        service.reply = .success(#"["Qwen"]"#)
+        let model = makeModel(settings: settings, service: service)
+
+        await model.suggest()
+        model.accept("Qwen")
+
+        XCTAssertFalse(settings.polishSpeakerTerms.contains("Qwen"))
+        XCTAssertEqual(model.suggestions, ["Qwen"])
+        XCTAssertEqual(model.phase, .failed("Terms list is full."))
     }
 
     func testTheOldestRefusalIsTheOneTheCapDrops() {

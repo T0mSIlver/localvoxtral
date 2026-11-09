@@ -596,6 +596,16 @@ public final class ClaudeSessionRegistry: Sendable {
         resolveUnique(reporting: desktopSessionID, via: \.desktopSessionID, label: "Claude Desktop")
     }
 
+    /// Look up by T3 Code thread id — the T3 Code window join (LVX-55).
+    ///
+    /// Spans LOCAL and REMOTE sessions for the reason `resolve(desktopSessionID:)`
+    /// does: T3 Code allocates the thread id and shows it in the address of the
+    /// web view that displays the thread, whichever machine runs it. Exact
+    /// equality; zero or several matches abstain.
+    public func resolve(t3ThreadID: String) -> ClaudeSessionResolution {
+        resolveUnique(reporting: t3ThreadID, via: \.t3ThreadID, label: "T3 Code thread")
+    }
+
     /// The one fresh session whose `key` equals `value`, across both origins.
     /// Shared by the two globally-unique-id arms so they cannot drift apart on
     /// the stale/ambiguous rules.
@@ -957,7 +967,7 @@ public final class ClaudeSessionRegistry: Sendable {
         if snapshot.origin.isLocalAuthenticated, snapshot.process?.claudePID == nil {
             return min(limits.sessionTTL, limits.pidlessLocalSessionTTL)
         }
-        if snapshot.desktopSessionID != nil {
+        if snapshot.reportsAppViewID {
             return max(limits.sessionTTL, limits.desktopSessionTTL)
         }
         return limits.sessionTTL
@@ -1088,7 +1098,7 @@ public final class ClaudeSessionRegistry: Sendable {
         func evict(_ snapshot: ClaudeSessionSnapshot) {
             removeLocked(&state, sessionID: snapshot.sessionID)
             evictions.count += 1
-            if snapshot.desktopSessionID != nil { evictions.desktopCount += 1 }
+            if snapshot.reportsAppViewID { evictions.desktopCount += 1 }
         }
         let grouped = Dictionary(grouping: state.sessions.values, by: \.origin)
         if grouped.count > 1 {
@@ -1102,8 +1112,8 @@ public final class ClaudeSessionRegistry: Sendable {
             for sessions in grouped.values {
                 // A desktop id is whatever the host sent, so it buys room only
                 // in its own origin's Desktop quota, never in another origin's.
-                let desktop = sessions.filter { $0.desktopSessionID != nil }
-                let others = sessions.filter { $0.desktopSessionID == nil }
+                let desktop = sessions.filter(\.reportsAppViewID)
+                let others = sessions.filter { !$0.reportsAppViewID }
                 // The pin never relaxes a quota: with the pinned session
                 // excluded there are still at least `count - quota` evictable
                 // siblings whenever quota >= 1.
@@ -1114,7 +1124,7 @@ public final class ClaudeSessionRegistry: Sendable {
                         .prefix(group.count - groupQuota)
                     for snapshot in evictable {
                         evict(snapshot)
-                        if snapshot.desktopSessionID == nil {
+                        if !snapshot.reportsAppViewID {
                             evictions.originQuotaCount += 1
                         } else {
                             evictions.desktopQuotaCount += 1
@@ -1441,8 +1451,8 @@ public final class ClaudeSessionRegistry: Sendable {
         _ lhs: ClaudeSessionSnapshot,
         _ rhs: ClaudeSessionSnapshot
     ) -> Bool {
-        let lhsDesktop = lhs.desktopSessionID != nil
-        let rhsDesktop = rhs.desktopSessionID != nil
+        let lhsDesktop = lhs.reportsAppViewID
+        let rhsDesktop = rhs.reportsAppViewID
         if lhsDesktop != rhsDesktop { return rhsDesktop }
         if lhs.lastActivity != rhs.lastActivity {
             return lhs.lastActivity < rhs.lastActivity
