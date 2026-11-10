@@ -164,7 +164,7 @@ channels that share every gate:
 ./scripts/release.sh            # patch bump, stable channel
 ./scripts/release.sh minor      # or major, or an explicit X.Y.Z
 ./scripts/release.sh daily      # the 03:15 UTC daily release, on demand
-./scripts/release.sh nightly    # a nightly prerelease of main, on demand
+./scripts/release.sh rc [ref]   # a release candidate (next daily's rc), any ref, on demand
 ./scripts/release.sh rehearse [target] [ref]   # all gates, no tag, no release
 ./scripts/release.sh publish <tag>             # finish a tagged release that did not publish
 ```
@@ -207,23 +207,27 @@ run on main already succeeded or is running in the last 20 hours, or the Mac
 is on battery power (`scripts/ci/scheduled-run-guard.sh`). It fails red when it cannot read the UI
 Smoke runs.
 
-**Nightly** runs only on demand with `release.sh nightly`: `main`'s head,
-without the e2e gate, from `main` only. Its version is the
-latest stable tag with the patch bumped and a `-nightly.YYYYMMDD` suffix,
-with `.2`, `.3` and so on for a second build the same day
-(`scripts/ci/nightly-version.sh`, tested by `test-nightly-version.sh`).
-Nightlies publish with `prerelease: true`, so `/releases/latest` keeps
-pointing at the newest stable release, and the stable bump base excludes
-every `v*-*` tag so a nightly can never become the base for the next stable
-version. Users opt in with `LOCALVOXTRAL_CHANNEL=nightly` (see
-[docs/install.md](../../docs/install.md)).
+**RC** (release candidate) runs only on demand with `release.sh rc [ref]`:
+the head of any ref (default `main`, or a branch, to try a PR before it
+merges), without the e2e gate. Its version is the latest stable tag with the
+minor bumped and an `-rc.N` suffix, so it is a candidate for the next daily
+(v0.17.2 gives `v0.18.0-rc.1`). N is one more than the highest `-rc.N` that
+exists for that version, hand-cut ones included
+(`scripts/ci/rc-version.sh`, tested by `test-rc-version.sh`). The daily
+channel still publishes from `main` only.
+RCs publish with `prerelease: true`, so `/releases/latest` keeps pointing at
+the newest stable release, and the stable bump base excludes every `v*-*`
+tag so an rc can never become the base for the next stable version. Users
+opt in with `LOCALVOXTRAL_CHANNEL=rc` (see the
+[install page](https://t0msilver.github.io/localvoxtral/install)).
 
-After publishing, a nightly deletes the nightly releases beyond the newest
-7, tags included. The selection is
-`scripts/ci/prune-nightly-releases.sh`: it takes tags on stdin, prints only
-tags matching the nightly shape exactly, and touches no network, so
-`test-prune-nightly-releases.sh` can hold it to the cases that matter (a
-stable or rc tag is invisible to it). The workflow re-checks the shape
+After publishing, an rc deletes the rc and leftover `-nightly` releases
+beyond the newest 7 of that pool by publication time, tags included, so old
+nightlies age out one per new rc. The tag just published is never selected.
+The selection is `scripts/ci/prune-rc-releases.sh`: it takes tag and
+`published_at` lines on stdin, prints only tags matching the rc or old
+nightly shape exactly, and touches no network, so `test-prune-rc-releases.sh` can hold it to the cases that
+matter (a stable tag is invisible to it). The workflow re-checks both shapes
 before each delete.
 
 **Rehearsal** (`publish=false`, or `release.sh rehearse`) runs every gate and
@@ -247,9 +251,9 @@ the release body and the generated changelog is appended below it;
 `scripts/ci/resolve-release-notes.sh` decides, and its self-test runs in CI's
 shell-test step. The file is optional — with none, the release publishes with
 generated notes exactly as before — but a file that exists and is empty is a
-hard failure rather than a release with a blank human section. A nightly body
-also opens with a fixed header saying which commit it is, how to install it,
-and that it is not a stable release; a hand-written nightly file lands under
+hard failure rather than a release with a blank human section. An rc body
+also opens with a fixed header saying which ref and commit it is, how to install it,
+and that it is not a stable release; a hand-written rc file lands under
 that header.
 
 The tag is created only after every gate passes, so a failed release leaves
@@ -280,7 +284,7 @@ which macOS makes unreadable while the screen is locked, and fails with "No
 Keychain password item found" although the profile is still there. The job
 names both credentials in its `env`. The
 "Check the signing credentials" step fails a stable or daily release when
-either is missing or does not authenticate; a nightly falls back to ad-hoc
+either is missing or does not authenticate; an rc falls back to ad-hoc
 signing with a warning in its summary and its release notes.
 `scripts/ci/notarize.sh` submits the app, then the DMG, and prints Apple's log
 on a rejection. It prints each submission id as soon as Apple assigns it and

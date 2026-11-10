@@ -6,11 +6,14 @@ APP_NAME="localvoxtral.app"
 INSTALL_PATH="/Applications/${APP_NAME}"
 VERSION="${LOCALVOXTRAL_VERSION:-latest}"
 # stable follows GitHub's /releases/latest pointer, which never points at a
-# prerelease. nightly follows the newest build of main: a nightly prerelease
-# or a stable release, whichever is newer (main ships a stable release every
-# day, and nightlies are cut only on demand).
+# prerelease. rc follows the newest release candidate or stable release,
+# whichever is newer (main ships a stable release every day, and rcs are cut
+# only on demand). nightly is the old name of rc and still works.
 # LOCALVOXTRAL_VERSION=<tag> overrides both and installs exactly that tag.
 CHANNEL="${LOCALVOXTRAL_CHANNEL:-stable}"
+if [ "$CHANNEL" = "nightly" ]; then
+  CHANNEL="rc"
+fi
 DRYRUN="${LOCALVOXTRAL_INSTALL_DRYRUN:-0}"
 INSTALL_TMP_DIR=""
 
@@ -50,9 +53,9 @@ cleanup() {
 resolve_release_api_url() {
   if [ "$VERSION" != "latest" ]; then
     printf 'https://api.github.com/repos/%s/releases/tags/%s\n' "$REPO" "$VERSION"
-  elif [ "$CHANNEL" = "nightly" ]; then
-    # /releases/latest never returns a prerelease, and every nightly is one,
-    # so the nightly channel reads the release list instead. The API returns
+  elif [ "$CHANNEL" = "rc" ]; then
+    # /releases/latest never returns a prerelease, and every rc is one, so
+    # the rc channel reads the release list instead. The API returns
     # it newest first, and the newest stable release is always near the top.
     printf 'https://api.github.com/repos/%s/releases?per_page=30\n' "$REPO"
   else
@@ -88,13 +91,13 @@ else:
   fi
 }
 
-# Index and tag ("<index> <tag>") of the newest nightly or stable release in a
+# Index and tag ("<index> <tag>") of the newest rc or stable release in a
 # releases-list response, or nothing. The first published release that is
-# either a prerelease with the nightly tag shape or a non-prerelease with the
-# plain vX.Y.Z shape wins, which is the newest one because the API orders the
-# list by creation date. An X.Y.Z-rc.N prerelease (a branch build) and a draft
-# are skipped.
-select_newest_nightly_release() {
+# either a prerelease with the rc tag shape (the old -nightly shape counts
+# too, so leftover nightlies still resolve) or a non-prerelease with the plain
+# vX.Y.Z shape wins, which is the newest one because the API orders the list
+# by creation date. A draft is skipped.
+select_newest_rc_release() {
   local index tag draft prerelease
   for ((index = 0; ; index++)); do
     tag="$(json_value "$index.tag_name" <<<"$1")" || return 0
@@ -102,7 +105,7 @@ select_newest_nightly_release() {
     prerelease="$(json_value "$index.prerelease" <<<"$1")" || prerelease=""
     [ "$draft" != "true" ] || continue
     if { [ "$prerelease" = "true" ] &&
-      [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}(\.[0-9]+)?$ ]]; } ||
+      [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rc\.[0-9]+|nightly\.[0-9]{8}(\.[0-9]+)?)$ ]]; } ||
       { [ "$prerelease" = "false" ] && [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }; then
       printf '%s %s\n' "$index" "$tag"
       return 0
@@ -138,9 +141,9 @@ resolve_zip_url() {
   # debug symbols (issue #131); exact-name selection is immune to new assets
   # appearing in any order. The tag comes from the metadata itself so
   # VERSION=latest resolves correctly too.
-  if [ "$VERSION" = "latest" ] && [ "$CHANNEL" = "nightly" ]; then
-    selected="$(select_newest_nightly_release "$release_json")"
-    [ -n "$selected" ] || die "No nightly or stable release found among the 30 most recent releases of ${REPO}; see https://github.com/${REPO}/releases"
+  if [ "$VERSION" = "latest" ] && [ "$CHANNEL" = "rc" ]; then
+    selected="$(select_newest_rc_release "$release_json")"
+    [ -n "$selected" ] || die "No rc or stable release found among the 30 most recent releases of ${REPO}; see https://github.com/${REPO}/releases"
     release="${selected%% *}."
     tag="${selected#* }"
   else
@@ -232,14 +235,14 @@ main() {
   require_command curl
 
   case "$CHANNEL" in
-    stable|nightly) ;;
-    *) die "Unknown LOCALVOXTRAL_CHANNEL: ${CHANNEL} (expected stable or nightly)" ;;
+    stable|rc) ;;
+    *) die "Unknown LOCALVOXTRAL_CHANNEL: ${CHANNEL} (expected stable or rc)" ;;
   esac
 
   [ "$DRYRUN" = "1" ] || check_platform
 
-  if [ "$CHANNEL" = "nightly" ] && [ "$VERSION" = "latest" ]; then
-    step "Resolving the newest localvoxtral build of main (nightly or stable)"
+  if [ "$CHANNEL" = "rc" ] && [ "$VERSION" = "latest" ]; then
+    step "Resolving the newest localvoxtral release candidate or stable release"
   else
     step "Resolving localvoxtral release zip"
   fi
@@ -279,7 +282,7 @@ main() {
 
   # Releases since #1430 are notarized, and curl sets no quarantine flag, so
   # a Developer ID download installs as is. An ad-hoc one (an older release
-  # pinned with LOCALVOXTRAL_VERSION, or a nightly built while signing was
+  # pinned with LOCALVOXTRAL_VERSION, or an rc built while signing was
   # unavailable) can stall forever at _dyld_start on macOS 26 while
   # Gatekeeper scans the foreign ad-hoc signature; re-signing it locally
   # outside /Applications avoids that scan path.

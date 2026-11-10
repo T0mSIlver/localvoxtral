@@ -314,8 +314,8 @@ jobs:
             ./scripts/ci/test-json-value.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
             ./scripts/ci/test-resolve-release-notes.sh \
-            ./scripts/ci/test-nightly-version.sh \
-            ./scripts/ci/test-prune-nightly-releases.sh \
+            ./scripts/ci/test-rc-version.sh \
+            ./scripts/ci/test-prune-rc-releases.sh \
             ./scripts/ci/test-render-cask.sh \
             ./scripts/ci/test-restore-mtimes.sh \
             ./scripts/ci/test-watch-checks.sh \
@@ -733,7 +733,7 @@ jobs:
   # not the commit message, because a job-level `if:` sees only the event.
   #
   # Skips a push to main. Every PR that merged ran this job when it went
-  # ready, and the nightly release (release.yml) runs the unit suite, the live
+  # ready, and the daily release (release.yml) runs the unit suite, the live
   # STT lane, packaging and the launch smoke on main every night, so a
   # push-time rerun only took the Mac for about five minutes per merge. A
   # dispatch still runs it: `gh workflow run CI --ref main -f herdr=false`

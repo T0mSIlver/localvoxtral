@@ -13,7 +13,7 @@
 #   2. uploads each asset the release lacks or holds at another size;
 #   3. checks that every asset is there at its size, then publishes the draft.
 # The release stays a draft until step 3, so nobody sees it half uploaded. A
-# tag with a '-' (rc, nightly) is a prerelease and never marked Latest.
+# tag with a '-' (rc) is a prerelease and never marked Latest.
 #
 # Every GitHub call is retried: release run 37128200212 lost the zip to
 # `getaddrinfo ENOTFOUND uploads.github.com`. gh exits 1 for a network error

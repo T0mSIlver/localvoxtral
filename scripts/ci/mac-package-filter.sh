@@ -41,7 +41,7 @@
 # eval data) or is Markdown the bundle never ships (is_skippable). Anything
 # else, including a path nobody classified, packages, so a new input can only
 # cost Mac time, never ship an unsmoked bundle. build-test
-# still packages and launch-smokes a bundle for fork PRs only, and the nightly
+# still packages and launch-smokes a bundle for fork PRs only, and the daily
 # release packages main every night.
 set -euo pipefail
 
