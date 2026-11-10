@@ -88,18 +88,12 @@ final class VoxtralASRSession: SpeechASRStreamingSession, @unchecked Sendable {
 
 final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
     private let model: NemotronASRModel
-    private let hotwordsConfig: NemotronASRHotwordsConfig
+    private let hotwordsAlpha: Float
 
-    // Measurement only: `--term-boost a,b,c` reads as alpha, context score, depth scaling.
+    // Measurement only: `--term-boost a,b,c` reads its first value as the hotwords alpha.
     init(model: NemotronASRModel, termBoost: TermBoostSettings?) {
         self.model = model
-        self.hotwordsConfig = termBoost.map {
-            NemotronASRHotwordsConfig(
-                alpha: $0.firstTokenBoost,
-                contextScore: $0.continuationBoost,
-                depthScaling: $0.margin
-            )
-        } ?? NemotronASRHotwordsConfig()
+        self.hotwordsAlpha = termBoost?.firstTokenBoost ?? nemotronASRDefaultHotwordsAlpha
     }
 
     func makeSession(
@@ -119,12 +113,12 @@ final class NemotronASREngine: SpeechASREngine, @unchecked Sendable {
             session = model.makeStreamSession(
                 language: promptKey,
                 bufferedContext: NemotronASRBufferedContext(left: frames[0], chunk: frames[1], right: frames[2]),
-                hotwords: terms.terms, hotwordsConfig: hotwordsConfig
+                hotwords: terms.terms, hotwordsAlpha: hotwordsAlpha
             )
         } else {
             let rung = NemotronChunkLadder.chunkMilliseconds(forTranscriptionDelayMs: transcriptionDelayMs)
             session = model.makeStreamSession(
-                language: promptKey, chunkMs: rung, hotwords: terms.terms, hotwordsConfig: hotwordsConfig)
+                language: promptKey, chunkMs: rung, hotwords: terms.terms, hotwordsAlpha: hotwordsAlpha)
         }
         return NemotronASRSession(session: session, utteranceLimit: utteranceLimit)
     }
