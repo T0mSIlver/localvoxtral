@@ -114,8 +114,7 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         XCTAssertEqual(state.error, AudioCaptureHealthMonitor.noAudioFramesYetMessage)
 
         microphone.isSilent = false
-        clock.advance(by: 1)
-        for _ in 0..<10 { await Task.yield() }
+        await wakeHealthPollAndEvaluation(clock)
 
         XCTAssertNil(state.error)
     }
@@ -126,12 +125,14 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         state.error = "Mic disconnected."
 
         microphone.isSilent = false
-        clock.advance(by: 1)
-        for _ in 0..<10 { await Task.yield() }
+        await wakeHealthPollAndEvaluation(clock)
 
         XCTAssertEqual(state.error, "Mic disconnected.")
     }
 
+    /// Runs the silent mic through every restart until the monitor raises
+    /// its error, and returns with its three timers armed: the health poll,
+    /// the pending evaluation and the silent-input stop.
     private func startSilentMonitor() async throws
         -> (ManualSessionClock, FakeMicrophoneCaptureService, FakeAudioState)
     {
@@ -150,10 +151,25 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         for _ in 0..<200 where state.restartedAt.count < attempts {
             guard await advanceToNextTimer(clock) else { break }
         }
+        XCTAssertEqual(state.restartedAt.count, attempts)
+        // The last restart armed the stop timer beside the other two, so two
+        // armed timers no longer mean the woken task has run.
+        await clock.waitForSleepers(3)
         for _ in 0..<40 where state.error == nil {
-            guard await advanceToNextTimer(clock) else { break }
+            guard await advanceToNextTimer(clock, armed: 3) else { break }
         }
         return (clock, microphone, state)
+    }
+
+    /// Wakes the health poll and the pending evaluation, the two earliest
+    /// timers (the stop timer is seconds later), and returns once the poll
+    /// has run its check and slept again.
+    private func wakeHealthPollAndEvaluation(_ clock: ManualSessionClock) async {
+        let deadlines = clock.pendingDeadlines
+        XCTAssertEqual(deadlines.count, 3, "the health poll, the evaluation and the stop timer")
+        guard deadlines.count == 3 else { return }
+        clock.advance(by: deadlines[1].timeIntervalSince(clock.now))
+        await clock.waitForSleeper(dueIn: 0.6)
     }
 
     private func makeMonitor(state: FakeAudioState) -> AudioCaptureHealthMonitor {
@@ -166,15 +182,16 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
     }
 
     /// Wakes the earliest timer and waits until the monitor has re-armed
-    /// both of its own: the health poll and the pending evaluation, which a
-    /// silent mic keeps scheduling.
-    private func advanceToNextTimer(_ clock: ManualSessionClock) async -> Bool {
+    /// all `armed` of its own: the health poll and the pending evaluation,
+    /// which a silent mic keeps scheduling, plus the stop timer once the last
+    /// restart armed it.
+    private func advanceToNextTimer(_ clock: ManualSessionClock, armed: Int = 2) async -> Bool {
         guard let next = clock.pendingDeadlines.first else {
             XCTFail("the monitor armed no timer on the session clock")
             return false
         }
         clock.advance(by: next.timeIntervalSince(clock.now))
-        await clock.waitForSleepers(2)
+        await clock.waitForSleepers(armed)
         return true
     }
 }
