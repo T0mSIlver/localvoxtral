@@ -174,8 +174,17 @@ public final class ClaudeRemoteForwardCoordinator {
                 let hostID = host.id
                 Task { @MainActor [weak self, weak supervisor] in
                     await draining.task.value
-                    guard let self, self.pendingTeardowns[hostID]?.id == draining.id else { return }
-                    self.pendingTeardowns[hostID] = nil
+                    guard let self else { return }
+                    // Clear only the entry this waiter waited on. Several
+                    // waiters can share one entry (a forward stopped before it
+                    // ever started records no teardown of its own), and the
+                    // first to resume clears it for the rest.
+                    if self.pendingTeardowns[hostID]?.id == draining.id {
+                        self.pendingTeardowns[hostID] = nil
+                    }
+                    // A different entry is a newer ssh still dying; its own
+                    // waiter starts the supervisor.
+                    guard self.pendingTeardowns[hostID] == nil else { return }
                     // Still the current supervisor for this host? A reconcile
                     // during the wait may have retired it already.
                     guard let supervisor, self.supervisors[hostID] === supervisor else { return }
