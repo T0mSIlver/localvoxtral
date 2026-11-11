@@ -85,12 +85,17 @@ extension LearnedTerms {
         let localNames = Dictionary(
             grouping: projects.filter { !$0.isRepositoryRecord }, by: \.name
         ).mapValues(\.count)
+        // A local project the file holds under its own key is that project,
+        // never another same-named folder's stand-in.
+        let incomingKeys = Set(incoming.map(\.key.trimmed))
         var imported: [(projectKey: String, term: String)] = []
 
         for project in incoming {
             let key = project.key.trimmed
             guard !key.isEmpty else { continue }
-            let index = importTarget(for: project, key: key, localNames: localNames)
+            let index = importTarget(
+                for: project, key: key, localNames: localNames, incomingKeys: incomingKeys
+            )
             projects[index].lastSeen = max(projects[index].lastSeen, project.lastSeen)
             // A checkout the file links to its repository (#971) keeps the
             // link, or its terms, already on the `repo:` record, would be
@@ -211,12 +216,14 @@ extension LearnedTerms {
     }
 
     /// The same key; else the one local project with the same name — the
-    /// same checkout at another path on the new machine; else a new project
-    /// under the file's key.
+    /// same checkout at another path on the new machine, unless the file
+    /// holds that project under its own key; else a new project under the
+    /// file's key.
     private mutating func importTarget(
         for project: LearnedTermProject,
         key: String,
-        localNames: [String: Int]
+        localNames: [String: Int],
+        incomingKeys: Set<String>
     ) -> Int {
         if let index = projects.firstIndex(where: { $0.key == key }) { return index }
         if project.isRepositoryRecord {
@@ -226,7 +233,8 @@ extension LearnedTerms {
                 return repositoryRecordIndex(for: remote, lastSeen: project.lastSeen)
             }
         } else if localNames[project.name] == 1,
-                  let index = projects.firstIndex(where: { !$0.isRepositoryRecord && $0.name == project.name })
+                  let index = projects.firstIndex(where: { !$0.isRepositoryRecord && $0.name == project.name }),
+                  !incomingKeys.contains(projects[index].key)
         {
             return index
         }
