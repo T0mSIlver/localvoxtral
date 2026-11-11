@@ -133,6 +133,13 @@ struct HistorySettingsPane: View {
                     .disabled(!settings.dictationHistoryRetention.savesDictations)
                     .accessibilityIdentifier("history.storage.audio")
             }
+            SettingsFieldRow(title: "Keep audio at full quality") {
+                Toggle("", isOn: fullQualityBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(!audioBinding.wrappedValue)
+                    .accessibilityIdentifier("history.storage.audioFullQuality")
+            }
             SettingsFieldRow(
                 title: "Keep diagnostic records on this Mac",
                 status: recordsStatus
@@ -169,6 +176,15 @@ struct HistorySettingsPane: View {
                     turnAudioOff(removingBackups: false)
                 }
             }
+        )
+    }
+
+    /// Off whenever the audio is: it is a second copy of that audio. Turning
+    /// it off deletes nothing; the files go with their dictations.
+    private var fullQualityBinding: Binding<Bool> {
+        Binding(
+            get: { settings.dictationAudioFullQualityEnabled && audioBinding.wrappedValue },
+            set: { settings.dictationAudioFullQualityEnabled = $0 }
         )
     }
 
@@ -213,6 +229,7 @@ struct HistorySettingsPane: View {
         // A dictation in progress keeps nothing either, even if the switch
         // goes back on before it stops.
         viewModel.session.audio.sessionRecording.begin(enabled: false)
+        viewModel.session.audio.fullQualityRecording.begin(enabled: false)
         let deleting = viewModel.session.deleteAllAudio(removingBackups: removingBackups)
         Task {
             await deleting?.value

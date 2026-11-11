@@ -295,6 +295,21 @@ Each file goes when its dictation goes:
 A minute of audio takes about 2 MB. The app saves a dictation longer than 20
 minutes without audio.
 
+**Keep audio at full quality**, off by default, also saves each dictation at
+the rate the microphone runs at, usually 48 kHz, in mono, 16-bit. The app
+resamples to 16 kHz for speech recognition; this copy comes from the same
+audio before that step. It goes to
+`~/Library/Application Support/localvoxtral/dictation-audio-full-quality`,
+under the same file name as the 16 kHz file, and goes with its dictation in
+the same way. A minute at 48 kHz takes about 6 MB, and the 20-minute limit
+applies too. A dictation during which the microphone changed rate keeps only
+the 16 kHz file. Turning the option off deletes nothing: the files already
+saved stay until their dictations go, or until you turn the audio off.
+
+The app turns on none of macOS's voice processing (echo cancellation, noise
+suppression, automatic gain) when it opens the microphone, so neither file
+goes through it.
+
 ### Diagnostic records
 
 **Keep diagnostic records on this Mac**, on by default, saves one file per

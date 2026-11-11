@@ -602,6 +602,9 @@ final class DictationSessionController: DictationPhaseReading {
     /// Latched at start: the session's audio goes to the audio store.
     @ObservationIgnored
     var sessionStoresAudio = false
+    /// Latched at start: and a full-quality copy with it.
+    @ObservationIgnored
+    var sessionKeepsFullQualityAudio = false
     /// Latched at start: an Overlay Buffer dictation in Mistral API mode,
     /// which is transcribed again on stop (#317).
     @ObservationIgnored

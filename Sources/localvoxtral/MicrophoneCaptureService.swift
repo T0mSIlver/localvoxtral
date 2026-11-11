@@ -63,6 +63,9 @@ private final class RenderContext: @unchecked Sendable {
     var captureChannel: Int
     let outputFormat: AVAudioFormat
     let chunkHandler: MicrophoneCaptureService.ChunkHandler
+    /// Nil unless the session keeps full-quality audio: no second
+    /// conversion runs then.
+    let fullQualityChunkHandler: MicrophoneCaptureService.FullQualityChunkHandler?
     let converterState: MicrophoneCaptureService.ConverterState
     let processingQueue: DispatchQueue
     let hasLoggedFirstChunk = Mutex(false)
@@ -77,6 +80,7 @@ private final class RenderContext: @unchecked Sendable {
         captureChannel: Int,
         outputFormat: AVAudioFormat,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler,
+        fullQualityChunkHandler: MicrophoneCaptureService.FullQualityChunkHandler?,
         processingQueue: DispatchQueue,
         debugLoggingEnabled: Bool
     ) {
@@ -88,6 +92,7 @@ private final class RenderContext: @unchecked Sendable {
         self.captureChannel = captureChannel
         self.outputFormat = outputFormat
         self.chunkHandler = chunkHandler
+        self.fullQualityChunkHandler = fullQualityChunkHandler
         self.converterState = MicrophoneCaptureService.ConverterState()
         self.processingQueue = processingQueue
         self.debugLoggingEnabled = debugLoggingEnabled
@@ -105,6 +110,7 @@ private final class RenderContext: @unchecked Sendable {
         deviceFormatDescriptor = deviceDescriptor
         captureChannel = newChannel
         converterState.converter = nil
+        converterState.fullQualityConverter = nil
         converterState.inputFormatDescriptor = nil
     }
 }
@@ -170,11 +176,26 @@ private func auhalInputCallback(
         converterState.converter = converter
         converterState.inputFormatDescriptor = inputFormatDescriptor
         converterState.consecutiveFailureCount = 0
+        converterState.fullQualityConverter = context.fullQualityChunkHandler == nil
+            ? nil
+            : MicrophoneCaptureService.makeFullQualityConverter(
+                from: inputFormat, channel: context.captureChannel)
         if context.debugLoggingEnabled {
             context.service?.debugLog(
                 "converter configured sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount) interleaved=\(inputFormat.isInterleaved)"
             )
         }
+    }
+
+    // Before the 16 kHz conversion, which can yield nothing for a buffer
+    // while its resampler fills: this copy has no resampler to wait on.
+    if let fullQualityHandler = context.fullQualityChunkHandler,
+       let fullQuality = converterState.fullQualityConverter,
+       let chunk = MicrophoneCaptureService.convertToPCM16Mono(
+           buffer: pcmBuffer, converter: fullQuality.converter, outputFormat: fullQuality.outputFormat)
+    {
+        let sampleRate = fullQuality.sampleRate
+        context.processingQueue.async { fullQualityHandler(chunk, sampleRate) }
     }
 
     guard let converter = converterState.converter,
@@ -216,6 +237,17 @@ private func auhalInputCallback(
 
 final class MicrophoneCaptureService: @unchecked Sendable {
     typealias ChunkHandler = @Sendable (Data) -> Void
+    /// Mono PCM16 at the input device's own rate, cut from the same buffer
+    /// as the 16 kHz chunk, before any resampling.
+    typealias FullQualityChunkHandler = @Sendable (_ pcm16: Data, _ sampleRate: Int) -> Void
+
+    /// The converter for full-quality chunks: to mono PCM16 at the input's
+    /// own rate, so it resamples nothing.
+    struct FullQualityConverter {
+        let converter: AVAudioConverter
+        let outputFormat: AVAudioFormat
+        let sampleRate: Int
+    }
 
     fileprivate struct InputFormatDescriptor: Equatable {
         let sampleRate: Double
@@ -227,6 +259,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     fileprivate final class ConverterState {
         var inputFormatDescriptor: InputFormatDescriptor?
         var converter: AVAudioConverter?
+        var fullQualityConverter: FullQualityConverter?
         var consecutiveFailureCount = 0
     }
 
@@ -453,6 +486,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     func start(
         preferredDeviceID: String?,
         preferredInputChannel: Int = 0,
+        fullQualityChunkHandler: FullQualityChunkHandler? = nil,
         chunkHandler: @escaping ChunkHandler
     ) throws {
         debugLog(
@@ -575,6 +609,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
                 captureChannel: captureChannel,
                 outputFormat: targetOutputFormat,
                 chunkHandler: chunkHandler,
+                fullQualityChunkHandler: fullQualityChunkHandler,
                 processingQueue: processingQueue,
                 debugLoggingEnabled: debugLoggingEnabled
             )
@@ -625,7 +660,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
             installDevicePropertyListener(deviceID: deviceID)
             debugLog(
-                "AUHAL started device=\(deviceID) sampleRate=\(deviceASBD.mSampleRate) channels=\(deviceASBD.mChannelsPerFrame)"
+                "AUHAL started device=\(deviceID) sampleRate=\(deviceASBD.mSampleRate) channels=\(deviceASBD.mChannelsPerFrame) fullQuality=\(fullQualityChunkHandler != nil)"
             )
         } catch {
             AudioComponentInstanceDispose(auHAL)
@@ -954,6 +989,27 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         return converter
     }
 
+    /// The full-quality converter for one client format: the same channel
+    /// choice as the transcription converter, at the input's own rate.
+    /// Internal (not fileprivate) for the regression tests.
+    static func makeFullQualityConverter(
+        from inputFormat: AVAudioFormat,
+        channel: Int = 0
+    ) -> FullQualityConverter? {
+        guard inputFormat.sampleRate > 0,
+              let outputFormat = AVAudioFormat(
+                  commonFormat: .pcmFormatInt16,
+                  sampleRate: inputFormat.sampleRate,
+                  channels: 1,
+                  interleaved: true),
+              let converter = makeTranscriptionConverter(
+                  from: inputFormat, to: outputFormat, channel: channel)
+        else { return nil }
+        return FullQualityConverter(
+            converter: converter, outputFormat: outputFormat,
+            sampleRate: Int(inputFormat.sampleRate.rounded()))
+    }
+
     /// Clamps a stored channel index to what the device actually offers. The
     /// selection persists across launches while devices come and go, so an
     /// index left over from a 16-in interface must not address channel 9 of a
@@ -1101,7 +1157,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         )
     }
 
-    fileprivate static func convertToPCM16Mono(buffer: AVAudioPCMBuffer, converter: AVAudioConverter, outputFormat: AVAudioFormat) -> Data? {
+    static func convertToPCM16Mono(buffer: AVAudioPCMBuffer, converter: AVAudioConverter, outputFormat: AVAudioFormat) -> Data? {
         guard buffer.frameLength > 0 else { return nil }
 
         let inputFrameCount = Double(buffer.frameLength)

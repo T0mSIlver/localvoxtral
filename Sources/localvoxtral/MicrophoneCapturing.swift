@@ -15,9 +15,12 @@ protocol MicrophoneCapturing: AnyObject, Sendable {
     func availableInputDevices() -> [MicrophoneInputDevice]
     func defaultInputDeviceID() -> String?
 
+    /// `fullQualityChunkHandler`, when given, also receives each buffer at
+    /// the device's own rate, before the 16 kHz conversion.
     func start(
         preferredDeviceID: String?,
         preferredInputChannel: Int,
+        fullQualityChunkHandler: MicrophoneCaptureService.FullQualityChunkHandler?,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
     ) throws
     /// Returns once every chunk captured before it has reached the handler;

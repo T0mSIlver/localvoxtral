@@ -1012,21 +1012,29 @@ final class DictationPipelineTests: XCTestCase {
     }
 
     /// A new dictation while the stopped one waits on its polish: the one
-    /// saved as not inserted keeps its audio in History (#1090).
+    /// saved as not inserted keeps its audio in History (#1090), the
+    /// full-quality copy too: both are taken at the stop, before the new
+    /// dictation begins its own.
     func testANewDictationDuringThePolishKeepsTheOldDictationsAudio() async throws {
         let polish = FakePolishingService { "<\($0.inputText)>" }
         let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
         pipeline.viewModel.settings.dictationAudioEnabled = true
+        pipeline.viewModel.settings.dictationAudioFullQualityEnabled = true
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let audioStore = DictationAudioStore(directoryURL: directory)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: audioStore.fullQualityDirectoryURL)
+        }
         let store = try XCTUnwrap(DictationSessionStore.inMemory())
         store.audioStore = audioStore
         pipeline.viewModel.sessionStore = store
         await polish.holdNextRequest()
+        let fullQuality = Data((0..<9_600).map { UInt8(truncatingIfNeeded: $0 &* 5) })
 
         await startAndSpeak(pipeline)
+        XCTAssertTrue(pipeline.microphone.deliverFullQuality(fullQuality, sampleRate: 48_000))
         pipeline.viewModel.stopDictation(reason: "test")
         await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
         pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
@@ -1035,6 +1043,7 @@ final class DictationPipelineTests: XCTestCase {
 
         pipeline.server.forgetFrames()
         await startAndSpeak(pipeline)
+        XCTAssertTrue(pipeline.microphone.deliverFullQuality(Data([9, 9]), sampleRate: 48_000))
         await polish.releaseHeldRequest()
         _ = await store.count()
 
@@ -1044,6 +1053,9 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(
             try Data(contentsOf: audioStore.fileURL(for: interrupted.id)),
             DictationAudioRecording.wav(fromPCM16: Self.speech(seed: 1)))
+        XCTAssertEqual(
+            try Data(contentsOf: audioStore.fullQualityFileURL(for: interrupted.id)),
+            DictationAudioRecording.wav(fromPCM16: fullQuality, sampleRate: 48_000))
 
         await stopAndFinalize(pipeline)
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
@@ -1196,6 +1208,36 @@ final class DictationPipelineTests: XCTestCase {
             DictationAudioRecording.wav(fromPCM16: Self.speech(seed: 1)))
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted at quit")
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
+    }
+
+    /// Full quality off, the default: the capture is asked for no second
+    /// copy, so it runs no second conversion, and nothing lands beside the
+    /// 16 kHz file.
+    func testWithFullQualityOffTheCaptureMakesNoSecondCopy() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationAudioEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
+        let audioStore = DictationAudioStore(directoryURL: directory)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: audioStore.fullQualityDirectoryURL)
+        }
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.audioStore = audioStore
+        pipeline.viewModel.sessionStore = store
+
+        await startAndSpeak(pipeline)
+        XCTAssertFalse(
+            pipeline.microphone.deliverFullQuality(Self.speech(seed: 4), sampleRate: 48_000),
+            "the capture was given a full-quality handler with the option off")
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        pipeline.viewModel.saveStoppedDictationForQuit()
+        await awaitEnd(store.pendingWrites)
+
+        let saved = try XCTUnwrap(pipeline.records.all.first)
+        XCTAssertEqual(audioStore.storedIDs(), [saved.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioStore.fullQualityDirectoryURL.path))
     }
 
     /// Quit while still dictating: the stop the terminate observer schedules

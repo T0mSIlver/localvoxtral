@@ -206,13 +206,16 @@ final class DictationSessionStore {
 
     /// The returned task finishes once the record is on disk; production
     /// callers drop it.
-    /// `audio` is the dictation's 16 kHz mono PCM16, written beside the
-    /// record in the same step, so no trim can run between the two. The
-    /// record is saved first: a save that fails leaves no file behind.
+    /// `audio` is the dictation's 16 kHz mono PCM16 and `fullQualityAudio`
+    /// the same at the device's rate, both written beside the record in the
+    /// same step, so no trim can run between them. The record is saved
+    /// first: a save that fails leaves no file behind.
     @discardableResult
-    func save(_ record: DictationSessionRecord, audio: Data? = nil) -> Task<Void, Never> {
+    func save(
+        _ record: DictationSessionRecord, audio: Data? = nil, fullQualityAudio: FullQualityAudio? = nil
+    ) -> Task<Void, Never> {
         let entry = DictationHistoryEntry(record)
-        let audioStore = audio == nil ? nil : audioStore
+        let audioStore = audio == nil && fullQualityAudio == nil ? nil : audioStore
         let backups = backups
         let storeURL = storeURL
         return enqueueWrite("save dictation \(entry.id)") { context in
@@ -230,6 +233,18 @@ final class DictationSessionStore {
                 } catch {
                     Log.persistence.error(
                         "History: audio write failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            if let fullQualityAudio, let audioStore {
+                do {
+                    try audioStore.write(fullQuality: fullQualityAudio, for: entry.id)
+                    Log.persistence.info(
+                        "History: saved \(Int(fullQualityAudio.seconds), privacy: .public) s of full-quality audio at \(fullQualityAudio.sampleRate, privacy: .public) Hz for dictation \(entry.id, privacy: .public)"
+                    )
+                } catch {
+                    Log.persistence.error(
+                        "History: full-quality audio write failed: \(error.localizedDescription, privacy: .public)"
                     )
                 }
             }

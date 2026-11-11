@@ -52,6 +52,9 @@ final class SessionAudioPipeline {
     /// The whole session's audio, for the opt-in audio store. Begun at session
     /// start, taken at stop.
     let sessionRecording = DictationAudioRecording()
+    /// The same at the input device's own rate, with "Keep audio at full
+    /// quality" on. Begun and taken with `sessionRecording`.
+    let fullQualityRecording = FullQualityAudioRecording()
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
     @ObservationIgnored
@@ -117,9 +120,11 @@ final class SessionAudioPipeline {
         #endif
     }
 
-    /// Starts whatever feeds this session's audio.
+    /// Starts whatever feeds this session's audio. A file source has no
+    /// full-quality audio: it hands over 16 kHz already.
     func startSessionAudioCapture(
         preferredDeviceID: String?,
+        fullQualityChunkHandler: MicrophoneCaptureService.FullQualityChunkHandler? = nil,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
     ) throws {
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
@@ -131,6 +136,7 @@ final class SessionAudioPipeline {
         try microphone.start(
             preferredDeviceID: preferredDeviceID,
             preferredInputChannel: selectedInputChannel,
+            fullQualityChunkHandler: fullQualityChunkHandler,
             chunkHandler: chunkHandler
         )
         captureDeviceID = preferredDeviceID ?? ""

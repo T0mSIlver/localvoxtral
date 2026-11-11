@@ -61,7 +61,7 @@ extension DictationSessionController {
         finalizationWatchdogTask = nil
         _ = promotePendingRealtimeTextToLatestSegment()
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
-        let sessionAudio = audio.sessionRecording.finish()
+        let keptAudio = finishSessionRecordings().kept
         // With History off the record is dropped: the clipboard keeps the
         // text, as for every other dictation that was not inserted (#1915),
         // at once: no paste's restore runs after the quit (LVX-54).
@@ -76,7 +76,7 @@ extension DictationSessionController {
             targetAppBundleID: nil,
             status: .sttCompleted,
             commitSucceeded: false,
-            audio: sessionStoresAudio ? sessionAudio : nil,
+            audio: keptAudio,
             joined: context.claudeSessionJoin.map(AgentCLIJoin.init)
         ) }
         completeStoppedSessionCleanup(

@@ -57,6 +57,7 @@ extension DictationSessionController {
         sessionRealtimeConfiguration = nil
         sessionUsesManagedSpeechHelper = false
         sessionStoresAudio = false
+        sessionKeepsFullQualityAudio = false
         sessionHasStopSecondPass = false
         sessionStopSecondPassTurnedOff = false
         sessionHasStallBackfill = false
@@ -621,7 +622,10 @@ extension DictationSessionController {
         let timeline = sessionCaptureTimeline
         let micLevel = micLevelFeed()
         do {
-            try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
+            try audio.startSessionAudioCapture(
+                preferredDeviceID: preferredInputID,
+                fullQualityChunkHandler: fullQualityChunkHandler()
+            ) { chunk in
                 timeline?.markFirstBuffer()
                 chunkBuffer.append(chunk)
                 recording.append(chunk)
@@ -647,6 +651,14 @@ extension DictationSessionController {
         Log.dictation.info("restarting the microphone while connecting: \(reason, privacy: .public)")
         audio.stopSessionAudioCapture()
         startSessionMicrophone()
+    }
+
+    /// Feeds the full-quality recording, or nil when this session keeps no
+    /// full-quality audio: the capture then runs no second conversion.
+    func fullQualityChunkHandler() -> MicrophoneCaptureService.FullQualityChunkHandler? {
+        guard sessionKeepsFullQualityAudio else { return nil }
+        let recording = audio.fullQualityRecording
+        return { pcm, sampleRate in recording.append(pcm, sampleRate: sampleRate) }
     }
 
     /// Feeds the overlay's level bars (#1074) from the capture queue: the
@@ -758,6 +770,8 @@ extension DictationSessionController {
     func latchSessionAudio(outputMode: DictationOutputMode) {
         sessionStoresAudio = settings.dictationAudioEnabled
             && settings.dictationHistoryRetention.savesDictations
+        sessionKeepsFullQualityAudio = sessionStoresAudio && settings.dictationAudioFullQualityEnabled
+        audio.fullQualityRecording.begin(enabled: sessionKeepsFullQualityAudio)
         let secondPassApplies = settings.dictationBackendMode == .mistralAPI
             && outputMode == .overlayBuffer
         sessionHasStopSecondPass = secondPassApplies && settings.mistralStopSecondPassEnabled
@@ -839,6 +853,7 @@ extension DictationSessionController {
     func makeHealthMonitorCallbacks() -> AudioCaptureHealthMonitor.Callbacks {
         let chunkBuffer = audio.audioChunkBuffer
         let recording = audio.sessionRecording
+        let fullQuality = fullQualityChunkHandler()
         let mic = audio.microphone
         let audio = audio
         let micLevel = micLevelFeed()
@@ -870,7 +885,8 @@ extension DictationSessionController {
             restartMicrophone: { [weak self] preferredInputID in
                 try mic.start(
                     preferredDeviceID: preferredInputID,
-                    preferredInputChannel: self?.selectedInputChannel ?? 0
+                    preferredInputChannel: self?.selectedInputChannel ?? 0,
+                    fullQualityChunkHandler: fullQuality
                 ) { chunk in
                     // The same destinations as the first start: a
                     // recovered microphone keeps feeding the kept audio.
