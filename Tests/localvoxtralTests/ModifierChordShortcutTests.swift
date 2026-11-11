@@ -1,3 +1,4 @@
+import AppKit
 import Carbon.HIToolbox
 import Foundation
 import XCTest
@@ -30,6 +31,21 @@ final class ModifierChordShortcutTests: XCTestCase {
         chords.debugHandleFlagsChangedForTesting(held: [.rightShift], timestamp: 200.0)
         chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 200.03125)
         chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 200.125)
+        XCTAssertEqual(session.copyLastDictationCalls, 1)
+    }
+
+    /// Caps Lock stays latched in every flagsChanged event while its light is
+    /// on; it is not a key held down with the chord.
+    func testTheChordFiresWhileCapsLockIsOn() {
+        let (shortcuts, session) = makeShortcuts()
+        XCTAssertNil(shortcuts.requestCopyLastDictationShortcut(bothShifts))
+        let chords = shortcuts.hotKeyManager.chordMonitor
+        let capsLock: NSEvent.ModifierFlags = .capsLock
+
+        chords.debugHandleFlagsChangedForTesting(held: [.rightShift], otherFlags: capsLock, timestamp: 300.0)
+        chords.debugHandleFlagsChangedForTesting(
+            held: [.leftShift, .rightShift], otherFlags: capsLock, timestamp: 300.03125)
+        chords.debugHandleFlagsChangedForTesting(held: [], otherFlags: capsLock, timestamp: 300.125)
         XCTAssertEqual(session.copyLastDictationCalls, 1)
     }
 

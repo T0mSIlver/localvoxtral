@@ -137,7 +137,7 @@ package struct ModifierChordDetector: Sendable {
     /// A modifier went down or up.
     /// - Parameters:
     ///   - held: the sided modifiers down after the change.
-    ///   - otherModifierHeld: a modifier with no side is down, Fn or Caps Lock.
+    ///   - otherModifierHeld: Fn is down. Caps Lock is a latched state, not a held key.
     ///   - time: the event's timestamp, in seconds.
     package mutating func modifiersChanged(
         held: Set<SidedModifier>,

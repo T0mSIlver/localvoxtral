@@ -231,7 +231,7 @@ final class ChordRecorderControl: RecorderControl {
         let flags = event.modifierFlags
         let outcome = chordRecorder.modifiersChanged(
             held: SidedModifier.held(inDeviceFlags: flags.rawValue),
-            otherModifierHeld: flags.contains(.function) || flags.contains(.capsLock),
+            otherModifierHeld: flags.contains(.function),
             at: event.timestamp)
         switch outcome {
         case .none:
