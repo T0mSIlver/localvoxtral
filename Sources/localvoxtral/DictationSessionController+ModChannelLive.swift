@@ -34,7 +34,7 @@ extension DictationSessionController {
     /// route settled: what the mod did not fill was typed or kept by then.
     func finishLiveAutoPasteSessionAfterModAck(
         sessionMode: DictationOutputMode,
-        finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
+        finish: @escaping @MainActor (_ keptAudio: KeptDictationAudio?) -> Void
     ) -> Bool {
         guard let sink = unsettledModRouteSink else { return false }
         // A cancel types nothing more (#1222): what the mod did not fill is
@@ -49,8 +49,7 @@ extension DictationSessionController {
         // ack counts.
         textInsertion.flushFinalLiveReplacementCorrections()
         sink.finish()
-        let sessionAudio = audio.sessionRecording.finish()
-        let storedAudio = sessionStoresAudio ? sessionAudio : nil
+        let storedAudio = finishSessionRecordings().kept
         let startedAt = sessionStartedAt ?? Date()
         let provider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let model = sessionModelName ?? settings.effectiveModelName
@@ -76,7 +75,7 @@ extension DictationSessionController {
             await sink.waitUntilIdle()
             guard let self, !Task.isCancelled else { return }
             self.saveInterruptedPolishCommit = nil
-            finish(sessionAudio)
+            finish(storedAudio)
         }
         return true
     }

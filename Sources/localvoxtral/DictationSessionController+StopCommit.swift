@@ -52,7 +52,7 @@ extension DictationSessionController {
 
         // Cancelled overlay — dismiss immediately, no commit
         if shouldCommitOverlay, wasCancelled {
-            _ = audio.sessionRecording.finish()
+            _ = finishSessionRecordings()
             overlayBufferCoordinator.reset()
             completeStoppedSessionCleanup(
                 sessionMode: sessionMode,
@@ -74,12 +74,12 @@ extension DictationSessionController {
         }
         // A spoken send still reading its pane back, or text waiting behind
         // a paste: the segments behind it land before the session ends.
-        guard !finishLiveAutoPasteSessionAfterPendingText(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
-            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
+        guard !finishLiveAutoPasteSessionAfterPendingText(sessionMode: sessionMode, finish: { [weak self] keptAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: keptAudio)
         }) else { return }
         // Deltas the session's mod took unanswered: its ack first (#1645).
-        guard !finishLiveAutoPasteSessionAfterModAck(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
-            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
+        guard !finishLiveAutoPasteSessionAfterModAck(sessionMode: sessionMode, finish: { [weak self] keptAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: keptAudio)
         }) else { return }
         finishLiveAutoPasteSession(sessionMode: sessionMode)
     }
@@ -93,7 +93,7 @@ extension DictationSessionController {
         let targetAppBundleID: String?
         /// Taken at stop, before a polish that can outlast the next session's
         /// start.
-        let audio: Data?
+        let audio: KeptDictationAudio?
         var stoppedAt: Date? = nil
     }
 
@@ -114,7 +114,7 @@ extension DictationSessionController {
     /// An Overlay Buffer session that was not cancelled: transcribed again
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
-        let sessionAudio = audio.sessionRecording.finish()
+        let (sessionAudio, keptAudio) = finishSessionRecordings()
         // The stop's own from here: the session cleanup no longer reaches it.
         let earlyPolish = earlyPolishRun
         earlyPolishRun = nil
@@ -133,7 +133,7 @@ extension DictationSessionController {
                 model: sessionModelName ?? settings.effectiveModelName,
                 outputMode: sessionMode.rawValue,
                 targetAppBundleID: resolveTargetAppBundleID(),
-                audio: sessionStoresAudio ? sessionAudio : nil,
+                audio: keptAudio,
                 stoppedAt: sessionStoppedAt
             ),
             polishingConfig: polishingConfig,
@@ -679,14 +679,15 @@ extension DictationSessionController {
     /// is the final flush and the record.
     /// - Parameter finishedAudio: the recording, when the stop already
     ///   finished it.
-    private func finishLiveAutoPasteSession(sessionMode: DictationOutputMode, finishedAudio: Data?? = nil) {
+    private func finishLiveAutoPasteSession(
+        sessionMode: DictationOutputMode, finishedAudio: KeptDictationAudio?? = nil
+    ) {
         // Non-overlay path (live auto-paste)
         let capturedSessionStartedAt = sessionStartedAt ?? Date()
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
-        let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
-        let capturedAudio = sessionStoresAudio ? sessionAudio : nil
+        let capturedAudio = finishedAudio ?? finishSessionRecordings().kept
         // A cancel types nothing more; the cleanup drops what is held (#1222).
         if !wasCancelled {
             textInsertion.flushFinalLiveReplacementCorrections()
@@ -924,7 +925,7 @@ extension DictationSessionController {
         stoppedAt: Date? = nil,
         polish: LLMPolishingConfiguration? = nil,
         clipboardPayload: String? = nil,
-        audio: Data? = nil,
+        audio: KeptDictationAudio? = nil,
         joined: AgentCLIJoin?
     ) -> UUID? {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -982,12 +983,39 @@ extension DictationSessionController {
         }
         // Checked again here: the setting was latched at start, and turning
         // it off since has deleted the folder this would write into.
-        sessionStore?.save(record, audio: settings.dictationAudioEnabled ? audio : nil)
+        let keptAudio = settings.dictationAudioEnabled ? audio : nil
+        sessionStore?.save(record, audio: keptAudio?.pcm16, fullQualityAudio: keptAudio?.fullQuality)
         if let cutoff = retention.cutoff(now: record.finishedAt) {
             sessionStore?.trim(olderThan: cutoff, expiringBackups: retention.days != nil)
         }
         termSuggestionCadence?.dictationSaved()
         return record.id
+    }
+
+    /// Ends the session's recordings at a stop, both at once: a polish can
+    /// outlast the next session's start, which begins them again. `pcm16` is
+    /// the 16 kHz audio the second pass reads; `kept` is what History saves
+    /// with the dictation, nil when this session keeps no audio.
+    func finishSessionRecordings() -> (pcm16: Data?, kept: KeptDictationAudio?) {
+        let pcm16 = audio.sessionRecording.finish()
+        let fullQuality = audio.fullQualityRecording.finish()
+        guard sessionStoresAudio else { return (pcm16, nil) }
+        if sessionKeepsFullQualityAudio {
+            switch fullQuality {
+            case .kept:
+                break
+            case .empty:
+                if pcm16 != nil {
+                    Log.persistence.error("History: no full-quality audio reached this dictation; keeping the 16 kHz audio only")
+                }
+            case .tooLong:
+                Log.persistence.notice("History: the dictation is too long to keep its full-quality audio")
+            case .sampleRateChanged:
+                Log.persistence.notice(
+                    "History: the input changed sample rate mid-dictation; keeping the 16 kHz audio only")
+            }
+        }
+        return (pcm16, KeptDictationAudio(pcm16: pcm16, fullQuality: fullQuality.audio))
     }
 
     /// Deletes every recording, through History's write queue. When History

@@ -93,6 +93,7 @@ final class SettingsStore {
         static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
         static let dictationHistoryRetention = "settings.dictation_history_retention"
         static let dictationAudioEnabled = "settings.dictation_audio_enabled"
+        static let dictationAudioFullQualityEnabled = "settings.dictation_audio_full_quality_enabled"
         static let diagnosticRecordsEnabled = "settings.diagnostic_records_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
@@ -609,6 +610,16 @@ final class SettingsStore {
     /// Off by default: audio is the most sensitive thing the app could keep.
     var dictationAudioEnabled: Bool {
         didSet { defaults.set(dictationAudioEnabled, forKey: Keys.dictationAudioEnabled) }
+    }
+
+    /// With the audio kept, also keep each dictation's audio at the input
+    /// device's own rate, before the 16 kHz resampling (`FullQualityAudio`).
+    /// Off by default. Turning it off keeps the files already saved: they
+    /// go with their dictations, or when the audio is turned off.
+    var dictationAudioFullQualityEnabled: Bool {
+        didSet {
+            defaults.set(dictationAudioFullQualityEnabled, forKey: Keys.dictationAudioFullQualityEnabled)
+        }
     }
 
     /// Keeps a diagnostic record of each polished dictation beside its History
@@ -1239,6 +1250,8 @@ final class SettingsStore {
             .flatMap(DictationHistoryRetention.init(rawValue:)) ?? .forever
         dictationAudioEnabled = Self.loadBool(
             defaults: defaults, key: Keys.dictationAudioEnabled, fallback: false)
+        dictationAudioFullQualityEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.dictationAudioFullQualityEnabled, fallback: false)
         termSuggestionRetryAt = max(0, defaults.integer(forKey: Keys.termSuggestionRetryAt))
         termSuggestionDictationsSinceRun = max(
             0, defaults.integer(forKey: Keys.termSuggestionDictationsSinceRun))

@@ -11,7 +11,7 @@ extension DictationSessionController {
     /// not inserted.
     func finishLiveAutoPasteSessionAfterPendingText(
         sessionMode: DictationOutputMode,
-        finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
+        finish: @escaping @MainActor (_ keptAudio: KeptDictationAudio?) -> Void
     ) -> Bool {
         // The hold-back's tail first: released behind a paste, it waits too.
         if spokenCommandGate.action == nil, !wasCancelled {
@@ -20,8 +20,7 @@ extension DictationSessionController {
         guard spokenCommandGate.action != nil || (!wasCancelled && textInsertion.pendingTextWaitsOnPaste) else { return false }
         phase = .finalizing
         statusText = StatusStrings.finalizing
-        let sessionAudio = audio.sessionRecording.finish()
-        let storedAudio = sessionStoresAudio ? sessionAudio : nil
+        let storedAudio = finishSessionRecordings().kept
         let startedAt = sessionStartedAt ?? Date()
         let provider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let model = sessionModelName ?? settings.effectiveModelName
@@ -66,7 +65,7 @@ extension DictationSessionController {
             }
             guard let self, !Task.isCancelled else { return }
             self.saveInterruptedPolishCommit = nil
-            finish(sessionAudio)
+            finish(storedAudio)
         }
         return true
     }

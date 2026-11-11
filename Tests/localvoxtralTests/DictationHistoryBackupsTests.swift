@@ -235,8 +235,9 @@ final class DictationHistoryBackupsTests: XCTestCase {
 
     // MARK: - Quarantine
 
-    /// An orphan found by a sweep moves to the quarantine folder; the
-    /// recording whose dictation is saved stays.
+    /// An orphan found by a sweep moves to the quarantine folder, its
+    /// full-quality file beside it under its own name; the recording whose
+    /// dictation is saved stays.
     func testTheSweepMovesOrphansToQuarantine() async throws {
         let directory = makeDirectory()
         let store = try openStore(in: directory)
@@ -245,13 +246,15 @@ final class DictationHistoryBackupsTests: XCTestCase {
         await store.save(kept, audio: pcm).value
         let orphan = UUID()
         try audio.write(pcm16: pcm, for: orphan)
+        try audio.write(fullQuality: FullQualityAudio(pcm16: pcm, sampleRate: 48_000), for: orphan)
 
         await store.removeOrphanedAudio().value
 
         XCTAssertEqual(audio.storedIDs(), [kept.id])
-        let quarantined = try XCTUnwrap(store.quarantine).folder(for: "dictation-audio")
-            .appendingPathComponent("\(orphan.uuidString).wav")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantined.path))
+        let folder = try XCTUnwrap(store.quarantine).folder(for: "dictation-audio")
+        XCTAssertEqual(
+            Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
+            ["\(orphan.uuidString).wav", "\(orphan.uuidString).full-quality.wav"])
     }
 
     /// A recording already in quarantine is never overwritten: two running

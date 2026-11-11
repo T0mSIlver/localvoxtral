@@ -333,6 +333,21 @@ final class ViewSnapshotTests: XCTestCase {
             width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
     }
 
+    /// The Storage group with the audio kept at full quality.
+    func testHistoryFullQualityAudio() async throws {
+        let (settings, viewModel) = makeViewModel()
+        settings.dictationAudioEnabled = true
+        settings.dictationAudioFullQualityEnabled = true
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        viewModel.sessionStore = store
+        let model = DictationHistoryModel(store: { store })
+        await model.reload()
+        try record(
+            HistorySettingsPane(settings: settings, viewModel: viewModel, model: model),
+            name: "settings-history-full-quality-audio",
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+    }
+
     /// A dictation that went to the clipboard instead of the app, listed under
     /// the Not inserted filter with its label (#1872). Made-up words.
     func testHistoryNotInsertedRow() async throws {

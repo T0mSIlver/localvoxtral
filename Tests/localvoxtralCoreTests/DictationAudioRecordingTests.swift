@@ -63,6 +63,63 @@ final class DictationAudioRecordingTests: XCTestCase {
         XCTAssertEqual(wav[44...], pcm)
     }
 
+    func testAFullQualityWAVNamesItsOwnRate() {
+        let pcm = Data([0x10, 0x00, 0xF0, 0xFF])
+        let wav = DictationAudioRecording.wav(fromPCM16: pcm, sampleRate: 48_000)
+
+        XCTAssertEqual(uint16(wav, 22), 1)  // mono
+        XCTAssertEqual(uint32(wav, 24), 48_000)
+        XCTAssertEqual(uint32(wav, 28), 96_000)
+        XCTAssertEqual(wav[44...], pcm)
+    }
+
+    // MARK: - Full quality
+
+    func testAFullQualityRecordingKeepsEveryChunkAtItsRate() {
+        let recording = FullQualityAudioRecording()
+        recording.begin(enabled: true)
+        recording.append(Data([1, 2]), sampleRate: 48_000)
+        recording.append(Data([3, 4]), sampleRate: 48_000)
+
+        XCTAssertEqual(
+            recording.finish(), .kept(FullQualityAudio(pcm16: Data([1, 2, 3, 4]), sampleRate: 48_000)))
+        recording.append(Data([5, 6]), sampleRate: 48_000)
+        XCTAssertEqual(recording.finish(), .empty, "finished: nothing more until the next begin")
+    }
+
+    func testAFullQualityRecordingThatIsOffKeepsNothing() {
+        let recording = FullQualityAudioRecording()
+        recording.begin(enabled: false)
+        recording.append(Data([1, 2]), sampleRate: 48_000)
+
+        XCTAssertEqual(recording.finish(), .empty)
+    }
+
+    /// The same cap in seconds as the 16 kHz recording, so the two keep or
+    /// drop the same dictations whatever the device's rate.
+    func testTheFullQualityCapIsInSecondsAtTheDevicesRate() {
+        let recording = FullQualityAudioRecording(maxSeconds: 1)
+        recording.begin(enabled: true)
+        recording.append(Data(count: 96_000), sampleRate: 48_000)
+        XCTAssertEqual(recording.finish().audio?.seconds, 1)
+
+        recording.begin(enabled: true)
+        recording.append(Data(count: 96_000), sampleRate: 48_000)
+        recording.append(Data([1, 2]), sampleRate: 48_000)
+        XCTAssertEqual(recording.finish(), .tooLong)
+    }
+
+    /// A WAV names one rate: audio at two would play back at the wrong speed.
+    func testARateChangeMidDictationDropsTheFullQualityRecording() {
+        let recording = FullQualityAudioRecording()
+        recording.begin(enabled: true)
+        recording.append(Data([1, 2]), sampleRate: 48_000)
+        recording.append(Data([3, 4]), sampleRate: 44_100)
+        recording.append(Data([5, 6]), sampleRate: 48_000)
+
+        XCTAssertEqual(recording.finish(), .sampleRateChanged)
+    }
+
     private func uint16(_ data: Data, _ offset: Int) -> UInt16 {
         UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
     }
