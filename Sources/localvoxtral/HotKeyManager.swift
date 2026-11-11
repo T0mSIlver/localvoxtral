@@ -249,6 +249,7 @@ final class HotKeyManager {
 
         var overlayRegistered = false
         var livePasteRegistered = false
+        var overlayFailed = false
 
         if let overlay {
             var ref: EventHotKeyRef?
@@ -261,14 +262,14 @@ final class HotKeyManager {
                 0,
                 &ref
             )
-            if status != noErr {
-                unregister()
-                return .failure(.shortcutUnavailable)
-            }
-            overlayRegistered = true
-            if let ref {
-                hotKeyRefs[Self.overlayHotKeyID] = ref
-                hotKeyIDToMode[Self.overlayHotKeyID] = .overlayBuffer
+            if status == noErr {
+                overlayRegistered = true
+                if let ref {
+                    hotKeyRefs[Self.overlayHotKeyID] = ref
+                    hotKeyIDToMode[Self.overlayHotKeyID] = .overlayBuffer
+                }
+            } else {
+                overlayFailed = true
             }
         }
 
@@ -299,6 +300,18 @@ final class HotKeyManager {
                 hotKeyRefs[Self.livePasteHotKeyID] = ref
                 hotKeyIDToMode[Self.livePasteHotKeyID] = .liveAutoPaste
             }
+        }
+
+        if overlayFailed {
+            if !livePasteRegistered {
+                unregister()
+                return .failure(.shortcutUnavailable)
+            }
+            Log.modifierKeys.error(
+                "Overlay Buffer hotkey registration failed; preserving the Live Auto-Paste hotkey and surfacing failure."
+            )
+            registration = .dual(overlay: false, livePaste: true)
+            return .failure(.shortcutUnavailable)
         }
 
         registration = .dual(overlay: overlayRegistered, livePaste: livePasteRegistered)

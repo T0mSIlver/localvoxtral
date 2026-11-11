@@ -29,6 +29,58 @@ final class HotKeyManagerTests: XCTestCase {
         }
     }
 
+    func testDualRegistrationKeepsLivePasteWhenOverlayIsUnavailable() {
+        resetDebugHotKeyState()
+        defer { resetDebugHotKeyState() }
+
+        let manager = HotKeyManager()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: OSStatus(eventHotKeyExistsErr))
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .livePaste, status: noErr)
+
+        let result = manager.registerDual(
+            overlay: DictationShortcut(
+                keyCode: UInt32(kVK_ANSI_D),
+                carbonModifierFlags: UInt32(controlKey | optionKey)
+            ),
+            livePaste: DictationShortcut(
+                keyCode: UInt32(kVK_ANSI_F),
+                carbonModifierFlags: UInt32(controlKey | optionKey)
+            )
+        )
+
+        guard case .failure(.shortcutUnavailable) = result else {
+            return XCTFail("Expected shortcutUnavailable, got \(result)")
+        }
+        XCTAssertEqual(manager.registration, .dual(overlay: false, livePaste: true))
+    }
+
+    func testDualRegistrationRegistersNothingWhenBothAreUnavailable() {
+        resetDebugHotKeyState()
+        defer { resetDebugHotKeyState() }
+
+        let manager = HotKeyManager()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: OSStatus(eventHotKeyExistsErr))
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .livePaste, status: OSStatus(eventHotKeyExistsErr))
+
+        let result = manager.registerDual(
+            overlay: DictationShortcut(
+                keyCode: UInt32(kVK_ANSI_D),
+                carbonModifierFlags: UInt32(controlKey | optionKey)
+            ),
+            livePaste: DictationShortcut(
+                keyCode: UInt32(kVK_ANSI_F),
+                carbonModifierFlags: UInt32(controlKey | optionKey)
+            )
+        )
+
+        guard case .failure(.shortcutUnavailable) = result else {
+            return XCTFail("Expected shortcutUnavailable, got \(result)")
+        }
+        XCTAssertEqual(manager.registration, .none)
+    }
+
     func testModifierOnlyStartupFailurePreservesPreviousRegistration() {
         resetDebugHotKeyState()
         defer { resetDebugHotKeyState() }
