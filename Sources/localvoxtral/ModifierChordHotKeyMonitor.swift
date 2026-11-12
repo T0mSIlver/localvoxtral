@@ -147,7 +147,7 @@ final class ModifierChordHotKeyMonitor {
         }
         let held = SidedModifier.held(inDeviceFlags: rawFlags)
         let flags = NSEvent.ModifierFlags(rawValue: rawFlags)
-        let otherHeld = flags.contains(.function) || flags.contains(.capsLock)
+        let otherHeld = flags.contains(.function)
         for action in Array(detectors.keys) {
             let outcome = detectors[action]!.modifiersChanged(
                 held: held, otherModifierHeld: otherHeld, at: timestamp)
@@ -210,8 +210,13 @@ final class ModifierChordHotKeyMonitor {
     /// Stands in for a missing Accessibility grant.
     static var debugForceInstallFailure = false
 
-    func debugHandleFlagsChangedForTesting(held: Set<SidedModifier>, timestamp: TimeInterval) {
-        let raw = held.reduce(UInt(0)) { $0 | $1.deviceFlag }
+    /// `otherFlags` carries the bits with no side, such as the latched Caps Lock.
+    func debugHandleFlagsChangedForTesting(
+        held: Set<SidedModifier>,
+        otherFlags: NSEvent.ModifierFlags = [],
+        timestamp: TimeInterval
+    ) {
+        let raw = held.reduce(otherFlags.rawValue) { $0 | $1.deviceFlag }
         handleFlagsChanged(rawFlags: raw, timestamp: timestamp)
     }
 
