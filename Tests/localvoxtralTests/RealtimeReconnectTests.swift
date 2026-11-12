@@ -318,6 +318,51 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
+    /// #2065: with polishing on, the commit runs in a task, and its end put
+    /// the status back to Ready and the icon to idle.
+    func testAnExhaustedReconnectKeepsItsStatusAndRedIconThroughThePolish() async {
+        let clock = ManualSessionClock()
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer, clock: clock)
+        enablePolishing(viewModel)
+        viewModel.transcript.currentDictationEventText = "hello"
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            viewModel.session.handle(event: .error("WebSocket failed: refused"))
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+        let commit = viewModel.session.polishAndCommitTask
+        XCTAssertNotNil(commit, "the polish runs after the teardown returns")
+        await commit?.value
+
+        XCTAssertFalse(viewModel.session.isCompletingStoppedSession)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.connectionLostMessage)
+        XCTAssertEqual(viewModel.lastError, DictationViewModel.connectionLostMessage)
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    /// #2065: the same for a dictation the lost network path stopped.
+    func testANetworkLossKeepsItsStatusThroughThePolish() async {
+        let clock = ManualSessionClock()
+        let (viewModel, _) = makeDictatingViewModel(outputMode: .overlayBuffer, clock: clock)
+        enablePolishing(viewModel)
+        viewModel.session.sessionRealtimeConfiguration = RealtimeSessionConfiguration(
+            endpoint: URL(string: "wss://example.com/v1/realtime")!,
+            apiKey: "session-key",
+            model: "session-model"
+        )
+        viewModel.transcript.currentDictationEventText = "hello"
+
+        viewModel.session.handleNetworkChange(connected: false)
+        let commit = viewModel.session.polishAndCommitTask
+        XCTAssertNotNil(commit, "the polish runs after the stop returns")
+        await commit?.value
+
+        XCTAssertFalse(viewModel.session.isCompletingStoppedSession)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.networkLostDictationStopped)
+    }
+
     func testDropWithNoLatchedConfigurationStopsImmediately() {
         // Nothing to dial: this drop is not recoverable, so the session takes
         // the pre-#380 path in one step.
@@ -900,6 +945,13 @@ final class RealtimeReconnectTests: XCTestCase {
             modifierStateReader: { false },
             accessibilityInserter: { _, _ in false }
         )
+    }
+
+    private func enablePolishing(_ viewModel: DictationViewModel) {
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+        viewModel.settings.polishContextTrustedEndpointEnabled = false
+        viewModel.llmPolishingService = FakePolishingService(returning: "Hello.")
     }
 
     private func makeDictatingViewModel(

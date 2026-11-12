@@ -744,11 +744,14 @@ final class DictationSessionController: DictationPhaseReading {
                 abortConnectingSession()
                 handleConnectFailure(reason: .networkLost)
             } else if isDictating {
+                // The stop's end keeps saying why, after a polish too (#2065).
+                stoppedOnItsOwnStatus = StatusStrings.networkLostDictationStopped
                 stopDictation(reason: "network lost", finalizeRemainingAudio: false)
                 statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
             } else if isFinalizingStop {
                 activeRealtimeClient.disconnect()
+                stoppedOnItsOwnStatus = StatusStrings.networkLostDictationStopped
                 finishStoppedSession(promotePendingSegment: true)
                 statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
