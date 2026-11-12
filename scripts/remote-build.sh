@@ -67,7 +67,12 @@ set -euo pipefail
 #                  models the app's sends instead: a timer every cadence that
 #                  drains whole mic buffers, and the helper holding an append
 #                  under its minimum step (10667 = 512 frames at 48 kHz);
-#                  requires a prior `package`
+#                  requires a prior `package`. Env, repo-relative paths in the
+#                  synced tree: LV_SPEECHD_BENCH_MODEL_DIR (a checkpoint
+#                  directory instead of a catalog repo), LV_SPEECHD_BENCH_WAV (a
+#                  recorded WAV), LV_SPEECHD_BENCH_TRANSCRIBE (an agent-dictation
+#                  manifest: print one TRANSCRIBE line per recording instead of
+#                  timing), and LV_SPEECHD_BENCH_DELAY_MS.
 #     polishd-bench
 #                  time the packaged polishing helper on the polish eval
 #                  corpora, one arm after another per round: greedy, greedy
@@ -933,6 +938,52 @@ case "$CMD" in
     fi
     if [[ "$SPEECHD_BENCH_MIC_BUFFER" != 0 ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"micBufferMicroseconds\":$SPEECHD_BENCH_MIC_BUFFER"
+    fi
+    # Repo-relative paths in the synced tree: an unpublished checkpoint, a recorded
+    # WAV instead of `say`, an agent-dictation manifest to transcribe instead of
+    # timing (TRANSCRIBE lines), and the helper's transcription delay.
+    for spec in LV_SPEECHD_BENCH_MODEL_DIR:modelDirectory LV_SPEECHD_BENCH_WAV:wavPath \
+        LV_SPEECHD_BENCH_TRANSCRIBE:transcribeManifest; do
+      var="${spec%%:*}"
+      field="${spec#*:}"
+      value="${!var:-}"
+      [[ -z "$value" ]] && continue
+      if [[ ! "$value" =~ ^[A-Za-z0-9._/-]+$ || "$value" == /* || "$value" == *..* || ! -e "$ROOT_DIR/$value" ]]; then
+        echo "speechd-bench: $var must be an existing repo-relative path" >&2
+        exit 1
+      fi
+      SPEECHD_BENCH_OPTIONAL+=",\"$field\":\"$value\""
+    done
+    # KEY=VALUE[,KEY=VALUE] added to the helper's environment (engine diagnostics).
+    if [[ -n "${LV_SPEECHD_BENCH_HELPER_ENV:-}" ]]; then
+      if [[ ! "$LV_SPEECHD_BENCH_HELPER_ENV" =~ ^[A-Z0-9_]+=[A-Za-z0-9._-]+(,[A-Z0-9_]+=[A-Za-z0-9._-]+)*$ ]]; then
+        echo "speechd-bench: LV_SPEECHD_BENCH_HELPER_ENV must be KEY=VALUE[,KEY=VALUE]" >&2
+        exit 1
+      fi
+      env_json=""
+      IFS=, read -r -a env_pairs <<<"$LV_SPEECHD_BENCH_HELPER_ENV"
+      for pair in "${env_pairs[@]}"; do
+        env_json+="${env_json:+,}\"${pair%%=*}\":\"${pair#*=}\""
+      done
+      SPEECHD_BENCH_OPTIONAL+=",\"environment\":{$env_json}"
+    fi
+    if [[ -n "${LV_SPEECHD_BENCH_TRANSCRIBE:-}" && -n "${LV_SPEECHD_BENCH_WAV:-}" ]]; then
+      echo "speechd-bench: LV_SPEECHD_BENCH_TRANSCRIBE reads its own WAVs; drop LV_SPEECHD_BENCH_WAV" >&2
+      exit 1
+    fi
+    if [[ -n "${LV_SPEECHD_BENCH_STEP_MS:-}" ]]; then
+      if [[ ! "$LV_SPEECHD_BENCH_STEP_MS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "speechd-bench: LV_SPEECHD_BENCH_STEP_MS must be a positive integer" >&2
+        exit 1
+      fi
+      SPEECHD_BENCH_OPTIONAL+=",\"stepMilliseconds\":$LV_SPEECHD_BENCH_STEP_MS"
+    fi
+    if [[ -n "${LV_SPEECHD_BENCH_DELAY_MS:-}" ]]; then
+      if [[ ! "$LV_SPEECHD_BENCH_DELAY_MS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "speechd-bench: LV_SPEECHD_BENCH_DELAY_MS must be a positive integer" >&2
+        exit 1
+      fi
+      SPEECHD_BENCH_OPTIONAL+=",\"transcriptionDelayMs\":$LV_SPEECHD_BENCH_DELAY_MS"
     fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \

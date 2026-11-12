@@ -299,7 +299,7 @@ public enum StreamingSpeechBenchmark {
     }
 }
 
-private enum BenchmarkAudio {
+enum BenchmarkAudio {
     enum Error: Swift.Error, CustomStringConvertible {
         case invalidWAV(String)
 
@@ -324,7 +324,7 @@ private enum BenchmarkAudio {
         return looped
     }
 
-    private static func loadWAV(path: String) throws -> [Float] {
+    static func loadWAV(path: String) throws -> [Float] {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         guard data.count >= 12,
               String(data: data[0..<4], encoding: .ascii) == "RIFF",

@@ -18,6 +18,9 @@ public struct SpeechdLaunchOptions: Equatable {
     /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
     public var utteranceLimit = UtteranceLimit()
     public var benchmark: SpeechdBenchmarkOptions?
+    /// `--transcribe <manifest.json>`: transcribe each recording of an
+    /// agent-dictation manifest in its own session, print the texts, and exit.
+    public var transcribeManifest: String?
 
     public init() {}
 }
@@ -135,6 +138,10 @@ public enum SpeechdOptionParser {
                 options.utteranceLimit = UtteranceLimit(seconds: seconds)
             case "--bench":
                 benchmarkEnabled = true
+            case "--transcribe":
+                let path = try value(flag)
+                guard !path.isEmpty else { throw SpeechdOptionError.invalidValue(flag) }
+                options.transcribeManifest = path
             case "--seconds":
                 guard let seconds = Int(try value(flag)), seconds > 0,
                       !16_000.multipliedReportingOverflow(by: seconds).overflow
@@ -192,6 +199,9 @@ public enum SpeechdOptionParser {
             throw SpeechdOptionError.invalidValue(sawBenchmarkOnlyFlag)
         }
 
+        if benchmarkEnabled, options.transcribeManifest != nil {
+            throw SpeechdOptionError.mutuallyExclusive("--bench", "--transcribe")
+        }
         if options.modelID != nil, options.modelDirectory != nil {
             throw SpeechdOptionError.mutuallyExclusive("--model", "--model-dir")
         }
