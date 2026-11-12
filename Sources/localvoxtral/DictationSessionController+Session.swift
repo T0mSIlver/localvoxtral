@@ -882,6 +882,9 @@ extension DictationSessionController {
             setError: { [weak self] error in
                 self?.lastError = error
             },
+            clearError: { [weak self] error in
+                if self?.lastError == error { self?.lastError = nil }
+            },
             restartMicrophone: { [weak self] preferredInputID in
                 try mic.start(
                     preferredDeviceID: preferredInputID,

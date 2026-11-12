@@ -12,6 +12,8 @@ final class AudioCaptureHealthMonitor {
         var availableInputDevices: () -> [MicrophoneInputDevice]
         var setStatus: (String) -> Void
         var setError: (String?) -> Void
+        /// Clears the session's error only if it still reads exactly this text.
+        var clearError: (String) -> Void
         var restartMicrophone: (String?) throws -> Void
     }
 
@@ -34,6 +36,8 @@ final class AudioCaptureHealthMonitor {
     private var startupTapRefreshAttempted = false
     private var captureRecoveryAttemptCount = 0
     private var lastNoAudioDiagnosticAt: Date?
+    /// The error this monitor last raised and has not cleared.
+    private var raisedError: String?
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     static let captureInterruptionConfirmationSeconds: TimeInterval = 4.0
@@ -113,7 +117,15 @@ final class AudioCaptureHealthMonitor {
     }
     #endif
 
+    /// Audio is back: take down the error this monitor raised, never another's.
+    private func clearRaisedError() {
+        guard let raisedError, let callbacks else { return }
+        callbacks.clearError(raisedError)
+        self.raisedError = nil
+    }
+
     func resetState() {
+        raisedError = nil
         captureInterruptionDetectedAt = nil
         startupCaptureGraceUntil = nil
         startupConfigurationChangeDetected = false
@@ -153,6 +165,7 @@ final class AudioCaptureHealthMonitor {
                     self.captureInterruptionDetectedAt = nil
                     self.captureRecoveryAttemptCount = 0
                     self.disarmSilentInputStop()
+                    self.clearRaisedError()
                     continue
                 }
 
@@ -203,6 +216,7 @@ final class AudioCaptureHealthMonitor {
             captureRecoveryAttemptCount = 0
             disarmSilentInputStop()
             lastNoAudioDiagnosticAt = nil
+            clearRaisedError()
         } else {
             if startupConfigurationChangeDetected, !hasCapturedAnyAudio {
                 if !startupTapRefreshAttempted, microphone.refreshInputTapIfNeeded() {
@@ -322,6 +336,7 @@ final class AudioCaptureHealthMonitor {
                 )
             }
             callbacks.setStatus("Listening... (waiting for microphone audio)")
+            raisedError = Self.noAudioFramesYetMessage
             callbacks.setError(Self.noAudioFramesYetMessage)
             scheduleAudioChangeEvaluation(
                 delayMilliseconds: startupConfigurationChangeDetected
@@ -376,7 +391,9 @@ final class AudioCaptureHealthMonitor {
             debugLog("microphone recovery succeeded")
             return true
         } catch {
-            callbacks.setError("Failed to recover microphone capture: \(error.localizedDescription)")
+            let message = "Failed to recover microphone capture: \(error.localizedDescription)"
+            raisedError = message
+            callbacks.setError(message)
             debugLog("microphone recovery failed error=\(error.localizedDescription)")
             return false
         }

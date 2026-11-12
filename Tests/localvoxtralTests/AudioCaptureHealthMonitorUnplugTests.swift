@@ -107,6 +107,71 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         XCTAssertEqual(state.restartedAt.count, attempts)
     }
 
+    /// The "no audio" error the monitor raised while the mic was silent goes
+    /// once audio is back, instead of staying until the next dictation.
+    func testErrorTheMonitorRaisedClearsWhenAudioReturns() async throws {
+        let (clock, microphone, state) = try await startSilentMonitor()
+        XCTAssertEqual(state.error, AudioCaptureHealthMonitor.noAudioFramesYetMessage)
+
+        microphone.isSilent = false
+        await wakeHealthPollAndEvaluation(clock)
+
+        XCTAssertNil(state.error)
+    }
+
+    /// An error another component raised is not the monitor's to clear.
+    func testAnotherComponentsErrorSurvivesAudioReturning() async throws {
+        let (clock, microphone, state) = try await startSilentMonitor()
+        state.error = "Mic disconnected."
+
+        microphone.isSilent = false
+        await wakeHealthPollAndEvaluation(clock)
+
+        XCTAssertEqual(state.error, "Mic disconnected.")
+    }
+
+    /// Runs the silent mic through every restart until the monitor raises
+    /// its error, and returns with its three timers armed: the health poll,
+    /// the pending evaluation and the silent-input stop.
+    private func startSilentMonitor() async throws
+        -> (ManualSessionClock, FakeMicrophoneCaptureService, FakeAudioState)
+    {
+        let clock = ManualSessionClock()
+        let microphone = FakeMicrophoneCaptureService()
+        try microphone.start(preferredDeviceID: nil, preferredInputChannel: 0) { _ in }
+        microphone.isSilent = true
+        let state = FakeAudioState(selected: "usb-mic", available: ["usb-mic"])
+        state.now = { clock.now }
+        let monitor = AudioCaptureHealthMonitor()
+        monitor.start(microphone: microphone, callbacks: state.callbacks(), clock: clock.clock)
+        addTeardownBlock { @MainActor in monitor.stop() }
+
+        await clock.waitForSleepers(1)
+        let attempts = AudioCaptureHealthMonitor.maxCaptureRecoveryAttempts
+        for _ in 0..<200 where state.restartedAt.count < attempts {
+            guard await advanceToNextTimer(clock) else { break }
+        }
+        XCTAssertEqual(state.restartedAt.count, attempts)
+        // The last restart armed the stop timer beside the other two, so two
+        // armed timers no longer mean the woken task has run.
+        await clock.waitForSleepers(3)
+        for _ in 0..<40 where state.error == nil {
+            guard await advanceToNextTimer(clock, armed: 3) else { break }
+        }
+        return (clock, microphone, state)
+    }
+
+    /// Wakes the health poll and the pending evaluation, the two earliest
+    /// timers (the stop timer is seconds later), and returns once the poll
+    /// has run its check and slept again.
+    private func wakeHealthPollAndEvaluation(_ clock: ManualSessionClock) async {
+        let deadlines = clock.pendingDeadlines
+        XCTAssertEqual(deadlines.count, 3, "the health poll, the evaluation and the stop timer")
+        guard deadlines.count == 3 else { return }
+        clock.advance(by: deadlines[1].timeIntervalSince(clock.now))
+        await clock.waitForSleeper(dueIn: 0.6)
+    }
+
     private func makeMonitor(state: FakeAudioState) -> AudioCaptureHealthMonitor {
         let microphone = MicrophoneCaptureService()
         Self.retainedMicrophones.append(microphone)
@@ -117,15 +182,16 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
     }
 
     /// Wakes the earliest timer and waits until the monitor has re-armed
-    /// both of its own: the health poll and the pending evaluation, which a
-    /// silent mic keeps scheduling.
-    private func advanceToNextTimer(_ clock: ManualSessionClock) async -> Bool {
+    /// all `armed` of its own: the health poll and the pending evaluation,
+    /// which a silent mic keeps scheduling, plus the stop timer once the last
+    /// restart armed it.
+    private func advanceToNextTimer(_ clock: ManualSessionClock, armed: Int = 2) async -> Bool {
         guard let next = clock.pendingDeadlines.first else {
             XCTFail("the monitor armed no timer on the session clock")
             return false
         }
         clock.advance(by: next.timeIntervalSince(clock.now))
-        await clock.waitForSleepers(2)
+        await clock.waitForSleepers(armed)
         return true
     }
 }
@@ -141,6 +207,7 @@ private final class FakeAudioState {
     private(set) var restartedAt: [Date] = []
     var now: () -> Date = { .distantPast }
     var onStop: () -> Void = {}
+    var error: String?
 
     init(selected: String, available: [String]) {
         self.selected = selected
@@ -165,7 +232,8 @@ private final class FakeAudioState {
                 available.map { MicrophoneInputDevice(id: $0, name: $0, channelCount: 1) }
             },
             setStatus: { _ in },
-            setError: { _ in },
+            setError: { [unowned self] in error = $0 },
+            clearError: { [unowned self] in if error == $0 { error = nil } },
             restartMicrophone: { [unowned self] inputID in
                 restartedInputs.append(inputID)
                 restartedAt.append(now())
