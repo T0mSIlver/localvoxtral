@@ -780,21 +780,32 @@ if ! command -v herdr >/dev/null 2>&1; then
   exit 0
 fi
 lv_config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
-if [ -f "$lv_config" ] && grep -Eq '^[[:space:]]*\[ui\.sidebar\.agents\][[:space:]]*(#.*)?$|^[[:space:]]*rows[[:space:]]*=' "$lv_config"; then
+lv_snippet='[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]'
+if [ -f "$lv_config" ] \
+  && LV_SNIPPET="$lv_snippet" awk '{ sub(/\r$/, ""); text = text $0 "\n" } END { exit !index(text, ENVIRON["LV_SNIPPET"]) }' "$lv_config"; then
+  :
+elif [ -f "$lv_config" ] \
+  && sed -e 's/#.*//' "$lv_config" | tr -d " \t\r\"'" | grep -Eq '^(\[ui\.sidebar\.agents(]|\.)|ui=|(ui\.)?sidebar=|(ui\.)?(sidebar\.)?agents=|([A-Za-z0-9_-]+\.)*rows=)'; then
   printf '%s\n' LVX_HERDR_CUSTOMIZED
   exit 42
+else
+  mkdir -p "$(dirname "$lv_config")"
+  touch "$lv_config"
+  if [ -n "$(tail -c 1 "$lv_config")" ]; then printf '\n' >> "$lv_config"; fi
+  if [ -s "$lv_config" ]; then printf '\n' >> "$lv_config"; fi
+  printf '%s\n' "$lv_snippet" >> "$lv_config"
 fi
-mkdir -p "$(dirname "$lv_config")"
-touch "$lv_config"
-cat >> "$lv_config" <<'LOCALVOXTRAL_HERDR_PANEL'
-[ui.sidebar.agents]
-rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
-LOCALVOXTRAL_HERDR_PANEL
-herdr server reload-config
+if ! herdr server reload-config >/dev/null 2>&1; then
+  printf '%s\n' LVX_HERDR_RELOAD_FAILED
+fi
 printf '%s\n' LVX_HERDR_CONFIGURED
 ```
 
-When the grep matches, the step stops without changing the file.
+When the file already holds this block, from an earlier run, the step leaves
+it as it is. When the grep matches, the step stops without changing the file.
+A failed reload, as on a host where no herdr server runs, does not fail the
+step: herdr reads the file when it next starts.
 
 ### The Check setup step
 
@@ -825,7 +836,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applicat
 printf 'LVX_HTTP:%s\n' "$code"
 ```
 
-The plugin check uses the first SSH command above and runs `claude plugin list`.
+The plugin check uses the first SSH command above and runs `claude plugin list
+--json`. It fails when the plugin is missing, disabled, or its marketplace
+failed to load.
 It finds claude on PATH, then in `~/.claude/local`, `~/.local/bin`, `~/bin`,
 `/opt/homebrew/bin`, `/usr/local/bin` and `~/.nvm/versions/node/*/bin`. Last,
 it tries the newest Claude Desktop CLI in `~/.claude/remote/ccd-cli/<version>`.

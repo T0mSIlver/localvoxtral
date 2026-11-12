@@ -16,7 +16,7 @@ extension ClaudeRemoteEnrollmentService {
     /// Read-only by construction: it writes nothing locally (no filesystem seam
     /// is touched) and runs nothing on the host that changes state — one or two
     /// curls against the forwarded port (`tunnelVerdict`) and one `claude
-    /// plugin list`.
+    /// plugin list --json`.
     ///
     /// **No probe output ever leaves this method.** Not in `summary`, not in
     /// `hint`, not in `detail` — every string returned is composed here from
@@ -88,7 +88,7 @@ extension ClaudeRemoteEnrollmentService {
                 "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
                 sshHostAlias, "/bin/sh", "-s",
             ],
-            standardInput: Self.remoteScript(command: "claude plugin list")
+            standardInput: Data(Self.remotePluginListingScript.utf8)
         ) { Self.pluginCheck(result: $0, sshHostAlias: sshHostAlias) }
 
         Log.claudeContext.info(
@@ -497,13 +497,45 @@ extension ClaudeRemoteEnrollmentService {
                 detail: "`claude plugin list` exited with code \(result.exitCode)."
             )
         }
-        guard result.message.contains(ClaudePluginAssets.remotePluginName) else {
+        // Decoded, not text-matched: the listing names a disabled plugin, and
+        // one whose marketplace failed to load, like a working one (#2067).
+        let entry: ClaudePluginListEntry?
+        do {
+            entry = try Self.remotePluginEntry(inFramedOutput: result.message, reference: Self.remotePluginReference)
+        } catch {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "Could not list plugins on \(sshHostAlias).",
+                hint: "Run `ssh \(sshHostAlias) true` in a terminal to see whether the host is reachable.",
+                detail: "The host's plugin listing could not be decoded."
+            )
+        }
+        guard let entry else {
             return VerificationCheck(
                 kind: .plugin,
                 passed: false,
                 summary: "The plugin is not installed on \(sshHostAlias).",
                 hint: "Run step 2 on the host.",
                 detail: "`claude plugin list` did not name \(ClaudePluginAssets.remotePluginName)."
+            )
+        }
+        if entry.enabled == false {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: ClaudePluginStatus.failedToLoad(version: nil).sentence,
+                hint: "Run `claude plugin enable \(Self.remotePluginReference)` on \(sshHostAlias).",
+                detail: "`claude plugin list` lists \(ClaudePluginAssets.remotePluginName) as disabled."
+            )
+        }
+        if entry.marketplaceFailedToLoad {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: ClaudePluginStatus.failedToLoad(version: nil).sentence,
+                hint: "Run step 2 on the host.",
+                detail: "`claude plugin list` reports that the localvoxtral marketplace failed to load."
             )
         }
         return VerificationCheck(
