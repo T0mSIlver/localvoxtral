@@ -381,6 +381,8 @@ localvoxtral logs --join --since 3h
 - `--since` takes `today`, `yesterday`, `3d`, `12h`, `30m`, `2w` or a date.
 
 Under **History → Don't keep**, `history` answers with nothing.
+When History keeps dictations but its file did not open or cannot be read,
+`history` prints what the History pane says and exits with status 1.
 
 The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach

@@ -2851,7 +2851,10 @@ there is not.
   keeps the clipboard placeholder, never the clipboard, and so does the
   command. Under History's **Don't keep**, `history` answers an empty list
   with `historyKept: false`, not an error: nothing is kept, so nothing is
-  found, and the flag says why. `terms propose` writes only unconfirmed proposals
+  found, and the flag says why. When History keeps dictations but its store
+  did not open or cannot be read, `historyUnavailable` carries the History
+  pane's reason and `history` exits 1 (#2059). `terms propose` writes only
+  unconfirmed proposals
   (`LearnedTerms.recordCommandProposal`), under the same rules as #609's:
   term-shaped only, never a term the user listed or refused, confirmed only
   by three dictations or a pin. The caller's name (`agent:<name>`) is read

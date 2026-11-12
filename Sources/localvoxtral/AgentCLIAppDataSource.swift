@@ -23,6 +23,11 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         return viewModel.settings.dictationHistoryRetention.savesDictations && viewModel.sessionStore != nil
     }
 
+    func historyUnavailable() async -> String? {
+        guard let viewModel, viewModel.settings.dictationHistoryRetention.savesDictations else { return nil }
+        return viewModel.historyUnavailableText
+    }
+
     func dictations(matching text: String, since: Date?, limit: Int) async -> [AgentCLIDictation] {
         guard let store = viewModel?.sessionStore else { return [] }
         var query = DictationHistoryQuery()
@@ -74,6 +79,7 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
             dictating: viewModel.isDictating,
             historyKept: await historyKept(),
+            historyUnavailable: await historyUnavailable(),
             dictation: AgentCLIEngine(
                 backend: settings.dictationBackendMode.rawValue,
                 model: settings.effectiveModelName,

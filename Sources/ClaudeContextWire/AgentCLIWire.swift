@@ -235,10 +235,15 @@ public struct AgentCLIHistory: Sendable, Equatable, Codable {
     public var historyKept: Bool
     /// Newest first.
     public var dictations: [AgentCLIDictation]
+    /// What the app's History pane says when History keeps dictations but
+    /// its file did not open or its last read or write failed; nil
+    /// otherwise. `historyKept` is false then, and `history` exits 1.
+    public var historyUnavailable: String?
 
-    public init(historyKept: Bool, dictations: [AgentCLIDictation]) {
+    public init(historyKept: Bool, dictations: [AgentCLIDictation], historyUnavailable: String? = nil) {
         self.historyKept = historyKept
         self.dictations = dictations
+        self.historyUnavailable = historyUnavailable
     }
 }
 
@@ -357,6 +362,8 @@ public struct AgentCLIStatus: Sendable, Equatable, Codable {
     public var version: String?
     public var dictating: Bool
     public var historyKept: Bool
+    /// As `AgentCLIHistory.historyUnavailable`.
+    public var historyUnavailable: String?
     public var dictation: AgentCLIEngine?
     public var polish: AgentCLIEngine?
     /// The session the last dictation joined; nil when it joined none or
@@ -368,6 +375,7 @@ public struct AgentCLIStatus: Sendable, Equatable, Codable {
         version: String? = nil,
         dictating: Bool = false,
         historyKept: Bool = false,
+        historyUnavailable: String? = nil,
         dictation: AgentCLIEngine? = nil,
         polish: AgentCLIEngine? = nil,
         lastJoin: AgentCLIJoin? = nil
@@ -376,6 +384,7 @@ public struct AgentCLIStatus: Sendable, Equatable, Codable {
         self.version = version
         self.dictating = dictating
         self.historyKept = historyKept
+        self.historyUnavailable = historyUnavailable
         self.dictation = dictation
         self.polish = polish
         self.lastJoin = lastJoin

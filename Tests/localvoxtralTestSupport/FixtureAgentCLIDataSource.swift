@@ -9,6 +9,7 @@ import localvoxtralCore
 package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Sendable {
     package struct State: Sendable {
         package var historyKept = true
+        package var historyUnavailable: String?
         package var dictations: [AgentCLIDictation] = []
         package var last: AgentCLIDictation?
         package var userTerms: [String] = []
@@ -37,6 +38,7 @@ package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Se
     }
 
     package func historyKept() async -> Bool { state.withLock { $0.historyKept } }
+    package func historyUnavailable() async -> String? { state.withLock { $0.historyUnavailable } }
 
     package func dictations(matching text: String, since: Date?, limit: Int) async -> [AgentCLIDictation] {
         state.withLock { state in
