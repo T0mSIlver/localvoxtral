@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 @MainActor
 final class WidgetSnapshotWriterTests: XCTestCase {
@@ -56,6 +57,47 @@ final class WidgetSnapshotWriterTests: XCTestCase {
         let snapshot = try JSONDecoder().decode(WidgetSnapshot.self, from: Data(contentsOf: fileURL))
         XCTAssertFalse(snapshot.historyKept)
         XCTAssertNil(snapshot.lastDictation)
+    }
+
+    /// The heartbeat (#2058): a write with nothing new still moves
+    /// `writtenAt` on disk, so the Engines widget can tell a running app from
+    /// a crashed one, and spends no WidgetKit reload. A heartbeat so late the
+    /// widget already shows the app as quit (the Mac slept) reloads it.
+    func testAnUnchangedWriteRefreshesTheHeartbeatAndReloadsOnlyOnceStale() async throws {
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        let clock = LockedBox(start)
+        let reloads = LockedBox(0)
+        let viewModel = DictationViewModel(
+            settings: makeSettings(outputMode: .overlayBuffer),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        retainForTestProcessLifetime(viewModel)
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("widget-snapshot-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: fileURL) }
+        let writer = WidgetSnapshotWriter(
+            viewModel: viewModel, fileURL: fileURL, reloadTimelines: { reloads.mutate { $0 += 1 } },
+            sleep: { _ in }, now: { clock.value })
+        func written() throws -> Date {
+            try JSONDecoder().decode(WidgetSnapshot.self, from: Data(contentsOf: fileURL)).writtenAt
+        }
+
+        await writer.write()
+        XCTAssertEqual(reloads.value, 1)
+
+        let heartbeat = start.addingTimeInterval(WidgetSnapshot.heartbeatInterval)
+        clock.set(heartbeat)
+        await writer.write()
+        XCTAssertEqual(try written(), heartbeat)
+        XCTAssertEqual(reloads.value, 1, "an unchanged snapshot spends no reload")
+
+        let afterSleep = heartbeat.addingTimeInterval(WidgetSnapshot.staleAfter)
+        clock.set(afterSleep)
+        await writer.write()
+        XCTAssertEqual(try written(), afterSleep)
+        XCTAssertEqual(reloads.value, 2, "the widget already shows the app as quit")
     }
 
     /// Quit inside the coalesce wait after History went off: the quit

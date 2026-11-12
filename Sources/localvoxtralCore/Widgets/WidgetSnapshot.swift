@@ -39,6 +39,33 @@ package struct WidgetSnapshot: Codable, Equatable, Sendable {
         self.lastDictation = historyKept ? lastDictation : nil
     }
 
+    // MARK: Heartbeat
+
+    /// While it runs, the app rewrites the snapshot at least this often,
+    /// even when nothing it shows changed (#2058).
+    package static let heartbeatInterval: TimeInterval = 600
+    /// A snapshot this old was left by an app that crashed or was
+    /// force-quit before it could write its quit snapshot. Six heartbeats,
+    /// so App Nap or a busy Mac does not show a running app as quit.
+    package static let staleAfter: TimeInterval = 6 * heartbeatInterval
+
+    package var staleDate: Date { writtenAt.addingTimeInterval(Self.staleAfter) }
+
+    package func isStale(at now: Date) -> Bool {
+        now >= staleDate
+    }
+
+    /// When the Engines widget rereads the file for a newer heartbeat: one
+    /// heartbeat before the snapshot goes stale, so a punctual reload never
+    /// shows a running app as quit. Nil after a quit or once stale: nothing
+    /// rewrites the file until the app launches, and the launch reloads the
+    /// widgets.
+    package func heartbeatCheckDate(now: Date) -> Date? {
+        guard engines.appRunning, !isStale(at: now) else { return nil }
+        let early = staleDate.addingTimeInterval(-Self.heartbeatInterval)
+        return early > now ? early : staleDate
+    }
+
     // MARK: Engines
 
     package enum EngineRole: String, Codable, Sendable, CaseIterable {

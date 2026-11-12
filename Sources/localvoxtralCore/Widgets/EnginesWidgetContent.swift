@@ -105,6 +105,14 @@ package struct EnginesWidgetContent: Equatable, Sendable {
         self = mapper.content()
     }
 
+    /// At `now`, the time the widget renders: a snapshot past its heartbeat
+    /// shows the app as quit (#2058).
+    package init(_ snapshot: WidgetSnapshot, size: WidgetSize, now: Date, locale: Locale = .current) {
+        var engines = snapshot.engines
+        if snapshot.isStale(at: now) { engines.appRunning = false }
+        self.init(engines, size: size, locale: locale)
+    }
+
     private struct Mapper {
         let engines: WidgetSnapshot.Engines
         let size: WidgetSize
