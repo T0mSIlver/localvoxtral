@@ -195,6 +195,42 @@ final class TranscriptAccumulatorTests: XCTestCase {
         XCTAssertEqual(transcript, before)
     }
 
+    // A reconnect promotes the partial, and the new socket's text opens on a
+    // space. A word before the boundary that is a prefix of the word after it
+    // ("be | better") is not an overlap.
+    func testAWordThatPrefixesTheNextSocketsFirstWordIsKept() {
+        let specimens: [(before: String, after: [String], final: String, expected: String)] = [
+            ("I think it would be", [" better", " to wait."], "better to wait.",
+             "I think it would be better to wait."),
+            ("We can do this on", [" one", " machine."], "one machine.",
+             "We can do this on one machine."),
+            ("Let's go back to the", [" the", " plan."], "the plan.",
+             "Let's go back to the plan."),
+        ]
+        for specimen in specimens {
+            var transcript = TranscriptAccumulator()
+            transcript.appendPartial(specimen.before)
+            _ = transcript.promotePendingToLatestSegment()
+            for delta in specimen.after {
+                transcript.appendPartial(delta)
+            }
+            _ = transcript.applyFinal(specimen.final)
+            XCTAssertEqual(transcript.currentDictationEventText, specimen.expected)
+        }
+    }
+
+    func testASecondReconnectKeepsAWordThatPrefixesTheNextOne() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("I think it would be")
+        _ = transcript.promotePendingToLatestSegment()
+        transcript.appendPartial(" better")
+        transcript.appendPartial(" to")
+        _ = transcript.promotePendingToLatestSegment()
+        transcript.appendPartial(" today.")
+        _ = transcript.promotePendingToLatestSegment()
+        XCTAssertEqual(transcript.currentDictationEventText, "I think it would be better to today.")
+    }
+
     // MARK: - Resets and the popover transcript
 
     func testNewSessionEmptiesTheDictationEventButKeepsTheTranscript() {

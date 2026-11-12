@@ -213,9 +213,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     package mutating func applyFinal(_ processedText: String) -> FinalizedSegment? {
         let before = snapshotBeforeClose
         let finalizedSegment = resolvedFinalizedSegment(from: processedText)
-        let segmentStartsMidWord = startsMidWord(
-            bufferedRawText.trimmed.isEmpty ? processedText : bufferedRawText
-        )
+        let rawSegment = bufferedRawText.trimmed.isEmpty ? processedText : bufferedRawText
+        let segmentStartsMidWord = startsMidWord(rawSegment)
         let hadLiveDelta = !pendingSegmentText.trimmed.isEmpty
             || !livePartialText.trimmed.isEmpty
         // Text already typed into the field by the live partial path. Derived
@@ -237,7 +236,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
             segment: finalizedSegment,
             existingText: currentDictationEventText,
-            segmentStartsMidWord: segmentStartsMidWord
+            segmentStartsMidWord: segmentStartsMidWord,
+            segmentHadLeadingSpace: rawSegment.first?.isWhitespace == true
         )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
@@ -282,13 +282,15 @@ package struct TranscriptAccumulator: Equatable, Sendable {
         let pendingSegment = resolvedFinalizedSegment(from: "")
         guard !pendingSegment.isEmpty else { return nil }
         let before = snapshotBeforeClose
+        let hadLeadingSpace = bufferedRawText.first?.isWhitespace == true
 
         currentDictationEventText = keepingOverlayMerge
             ? overlayCommitText.trimmed
             : TextMergingAlgorithms.appendToCurrentDictationEvent(
                 segment: pendingSegment,
                 existingText: currentDictationEventText,
-                segmentStartsMidWord: pendingStartsMidWord
+                segmentStartsMidWord: pendingStartsMidWord,
+                segmentHadLeadingSpace: hadLeadingSpace
             )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""

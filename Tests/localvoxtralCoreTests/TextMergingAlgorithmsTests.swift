@@ -64,6 +64,23 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         }
     }
 
+    func testAppendEventKeepsAWholeWordAfterASegmentsLeadingSpace() {
+        let cases: [(name: String, segment: String, existingText: String, expected: String)] = [
+            ("wordPrefixesTheNextWord", "better to wait.", "it would be", "it would be better to wait."),
+            ("wordPrefixesTheNextWordBeforePunctuation", "one.", "do this on", "do this on one."),
+            ("replayedWholeWordCollapses", "the plan", "back to the", "back to the plan"),
+            ("replayedWordBeforePunctuationCollapses", "the.", "back to the", "back to the."),
+        ]
+        for (name, segment, existingText, expected) in cases {
+            XCTAssertEqual(
+                TextMergingAlgorithms.appendToCurrentDictationEvent(
+                    segment: segment, existingText: existingText, segmentHadLeadingSpace: true),
+                expected,
+                name
+            )
+        }
+    }
+
     func testStartsMidWord() {
         XCTAssertTrue(TextMergingAlgorithms.startsMidWord("e help"))
         XCTAssertTrue(TextMergingAlgorithms.startsMidWord("ng"))

@@ -26,7 +26,14 @@ package enum TextMergingAlgorithms {
     /// `longestSuffixPrefixOverlap`, counting only an overlap that starts a
     /// word in `lhs`. A shared letter inside a word is a coincidence, not an
     /// alignment: "I need" + "doing" is not "I needoing" (#516).
-    package static func wordAlignedSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
+    /// `rhsStartsAWord`: `rhs` opened on a space, so its first word is whole
+    /// and the overlap must also end a word in it: "be" + " better" keeps
+    /// both words, "the" + " the plan" still drops the repeat.
+    package static func wordAlignedSuffixPrefixOverlap(
+        lhs: String,
+        rhs: String,
+        rhsStartsAWord: Bool = false
+    ) -> Int {
         let maxOverlap = min(lhs.count, rhs.count)
         guard maxOverlap > 0 else { return 0 }
 
@@ -36,6 +43,9 @@ package enum TextMergingAlgorithms {
                 continue
             }
             let rhsEnd = rhs.index(rhs.startIndex, offsetBy: overlap)
+            if rhsStartsAWord, rhsEnd < rhs.endIndex, isWordCharacter(rhs[rhsEnd]) {
+                continue
+            }
             if lhs[lhsStart...] == rhs[..<rhsEnd] {
                 return overlap
             }
@@ -56,9 +66,16 @@ package enum TextMergingAlgorithms {
     /// The overlap to drop when joining `incoming` onto `existing`. Text that
     /// starts mid-word may repeat the end of the word it continues
     /// ("information" + "ation overload"), so it also aligns inside a word,
-    /// on two letters or more.
-    package static func joinOverlap(existing: String, incoming: String, incomingStartsMidWord: Bool) -> Int {
-        let aligned = wordAlignedSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+    /// on two letters or more. Text that `incomingHadLeadingSpace` starts a
+    /// whole word, so the overlap must end on a word boundary in it.
+    package static func joinOverlap(
+        existing: String,
+        incoming: String,
+        incomingStartsMidWord: Bool,
+        incomingHadLeadingSpace: Bool = false
+    ) -> Int {
+        let aligned = wordAlignedSuffixPrefixOverlap(
+            lhs: existing, rhs: incoming, rhsStartsAWord: incomingHadLeadingSpace)
         guard aligned == 0, incomingStartsMidWord else { return aligned }
         let unaligned = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
         return unaligned >= 2 ? unaligned : 0
@@ -76,11 +93,13 @@ package enum TextMergingAlgorithms {
     /// Joins a finalized segment onto the dictation event. A segment boundary
     /// is where the backend ended a generation or the socket reconnected, not
     /// where the speaker paused, so it joins with a space, or with nothing
-    /// when the segment `startsMidWord` (#516).
+    /// when the segment `startsMidWord` (#516). `segmentHadLeadingSpace`: the
+    /// raw segment opened on whitespace, which trimming removed.
     package static func appendToCurrentDictationEvent(
         segment: String,
         existingText: String,
-        segmentStartsMidWord: Bool = false
+        segmentStartsMidWord: Bool = false,
+        segmentHadLeadingSpace: Bool = false
     ) -> String {
         let normalizedSegment = segment.trimmed
         guard !normalizedSegment.isEmpty else { return existingText }
@@ -103,7 +122,8 @@ package enum TextMergingAlgorithms {
         let overlap = joinOverlap(
             existing: normalizedExisting,
             incoming: normalizedSegment,
-            incomingStartsMidWord: segmentStartsMidWord
+            incomingStartsMidWord: segmentStartsMidWord,
+            incomingHadLeadingSpace: segmentHadLeadingSpace
         )
         if overlap > 0 {
             let overlapIndex = normalizedSegment.index(normalizedSegment.startIndex, offsetBy: overlap)
