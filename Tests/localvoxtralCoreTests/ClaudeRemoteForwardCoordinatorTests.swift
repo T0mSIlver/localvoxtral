@@ -314,6 +314,43 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(spy.started, [host.id, host.id])
     }
 
+    func testTogglingOffAndOnTwiceWhileTheOldForwardDiesStartsTheLastOne() async throws {
+        // Off, on, off, on inside one teardown. The middle forward never
+        // started, so stopping it records no teardown of its own and the old
+        // entry stays. Both waiters then see the same entry. The first one to
+        // resume clears it but holds a retired forward; the second must still
+        // start the current one instead of finding the entry gone and giving up.
+        let registry = try makeRegistry()
+        let spy = ForwardSpy()
+        let coordinator = makeCoordinator(registry: registry, spy: spy)
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        coordinator.reconcile()
+        XCTAssertEqual(spy.started, [host.id])
+
+        let release = TeardownGate()
+        try XCTUnwrap(spy.forwards[host.id]).teardown = Task { await release.wait() }
+        try registry.setPersistentForwardEnabled(false, hostID: host.id)
+        coordinator.reconcile()
+
+        // On, then off again before the old ssh is gone, then on.
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        coordinator.reconcile()
+        try registry.setPersistentForwardEnabled(false, hostID: host.id)
+        coordinator.reconcile()
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        coordinator.reconcile()
+        await release.waitUntilHeld()
+        XCTAssertEqual(spy.started, [host.id], "nothing starts while the old ssh is dying")
+
+        release.open()
+        let last = try XCTUnwrap(spy.forwards[host.id])
+        XCTAssertEqual(spy.configurations.count, 3)
+        await spy.starts.waitFor(2, failAfter: 2)
+        XCTAssertEqual(spy.started, [host.id, host.id], "exactly one start after the old ssh is gone")
+        XCTAssertEqual(last.state, .connecting, "the forward that runs is the last one, not the retired one")
+    }
+
     func testForwardsWaitForTheOrphanReapBeforeStarting() async throws {
         // The regression behind this gate (field report, 2026-08-05): an app
         // run that ended without a clean quit left its `ssh -N -R` alive and
