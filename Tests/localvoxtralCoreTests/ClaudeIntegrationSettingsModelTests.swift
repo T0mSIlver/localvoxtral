@@ -139,7 +139,6 @@ private struct SetupFlowScript: Sendable {
         exitCode: 0, message: "LVX_HERDR_ABSENT"
     )
     var tunnelMessage = "LVX_HTTP:401"
-    var pluginListMessage = "localvoxtral-remote 1.10.0\n"
     /// Whether the host has Claude Desktop's session daemon directory.
     var claudeDesktop = false
 }
@@ -2462,9 +2461,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             if stdin.contains("SessionStart") {
                 return .init(exitCode: 0, message: script.tunnelMessage)
             }
-            if stdin.contains("claude plugin list") {
-                return .init(exitCode: 0, message: script.pluginListMessage)
-            }
             return .init(exitCode: 1, message: "unexpected invocation")
         }
     }
@@ -2708,14 +2704,14 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             if script.contains("LC_LVX_TTY") { return "environment crossing" }
             if script.contains("LVX_HERDR") { return "remote herdr" }
             if script.contains("SessionStart") { return "tunnel check" }
-            if script.contains("claude plugin list") { return "plugin check" }
             return "unexpected"
         }
+        // The plugin check reads the same listing as the plugin step (#2067).
         XCTAssertEqual(
             invocationOrder,
             [
                 "claude desktop", "plugin listing", "remote plugin", "plugin listing",
-                "environment crossing", "remote herdr", "tunnel check", "plugin check",
+                "environment crossing", "remote herdr", "tunnel check", "plugin listing",
             ],
             "each step must finish before the next one starts"
         )
@@ -2914,7 +2910,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let scripts = recorder.all.map { String(decoding: $0.standardInput, as: UTF8.self) }
         XCTAssertFalse(scripts.contains { $0.contains("claude plugin install") }, "nothing to install into")
         XCTAssertFalse(
-            scripts.contains { $0.contains("claude plugin list") && !$0.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) },
+            scripts.drop { !$0.contains(ClaudeRemoteEnrollmentService.httpFramePrefix) }
+                .contains { $0.contains(ClaudeRemoteEnrollmentService.pluginListFrameBegin) },
             "the final check has no plugin to look for"
         )
         XCTAssertNil(registry.host(id: hostID)?.reportedPluginVersion, "no version was verified")

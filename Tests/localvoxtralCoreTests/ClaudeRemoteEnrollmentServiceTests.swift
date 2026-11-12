@@ -960,7 +960,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "herdr server reload-config",
             "command -v curl",
             "/v1/hook/SessionStart",
-            "claude plugin list`",
+            "claude plugin list --json`",
         ] {
             XCTAssertTrue(documentation.contains(command), "missing command documentation: \(command)")
         }
@@ -1359,7 +1359,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                     seconds: 20, message: "stalled"
                 )
             }
-            return .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral")
+            return ClaudeRemoteEnrollmentServiceTests.listedPlugin
         })
 
         let checks = try service.executeVerification(
@@ -1506,7 +1506,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 results: [
                     .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
                     .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
-                    .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                    Self.listedPlugin,
                 ],
                 passed: false,
                 summary: "The SSH config did not open a tunnel.",
@@ -1579,7 +1579,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let present = try verify(
             results: [
                 .init(exitCode: 0, message: "LVX_HTTP:401"),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral  enabled"),
+                Self.listedPlugin,
             ]
         ).checks
         XCTAssertTrue(try XCTUnwrap(present.first { $0.kind == .plugin }).passed)
@@ -1587,13 +1587,44 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let absent = try verify(
             results: [
                 .init(exitCode: 0, message: "LVX_HTTP:401"),
-                .init(exitCode: 0, message: "some-other-plugin@elsewhere  enabled"),
+                .init(exitCode: 0, message: Self.framedListing(nil, "user")),
             ]
         ).checks
         let check = try XCTUnwrap(absent.first { $0.kind == .plugin })
         XCTAssertFalse(check.passed)
         XCTAssertTrue(check.summary.contains("not installed"))
         XCTAssertTrue(check.hint?.contains("step 2") ?? false)
+    }
+
+    /// #2067: the listing names a disabled plugin, and one whose marketplace
+    /// failed to load, like a working one. Neither runs a hook, so neither
+    /// passes, and a listing the app cannot decode is not a pass either.
+    func testThePluginCheckFailsAPluginThatIsDisabledOrNotLoading() throws {
+        let version = ClaudeRemoteEnrollmentService.remotePluginVersion
+        for listing in [
+            Self.framedListing(version, "user", enabled: false),
+            Self.framedListing(
+                version, "user",
+                errorDetails: #","errorDetails":[{"type":"marketplace-load-failed","marketplace":"localvoxtral"}]"#
+            ),
+        ] {
+            let checks = try verify(
+                results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: listing)]
+            ).checks
+            let plugin = try XCTUnwrap(checks.first { $0.kind == .plugin })
+            XCTAssertFalse(plugin.passed, listing)
+            XCTAssertEqual(plugin.summary, ClaudePluginStatus.failedToLoad(version: nil).sentence, listing)
+        }
+
+        let unreadable = try verify(
+            results: [
+                .init(exitCode: 0, message: "LVX_HTTP:401"),
+                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral  enabled"),
+            ]
+        ).checks
+        let plugin = try XCTUnwrap(unreadable.first { $0.kind == .plugin })
+        XCTAssertFalse(plugin.passed, "a human listing is not one the check can read")
+        XCTAssertTrue(plugin.summary.contains("Could not list plugins"), plugin.summary)
     }
 
     /// MINOR 4 (review round 3). 127 is the shell's generic "command not
@@ -1657,7 +1688,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         ).invocations
         let script = String(decoding: recorded[1].standardInput, as: UTF8.self)
         XCTAssertTrue(script.contains("command -v claude"))
-        XCTAssertTrue(script.hasSuffix("claude plugin list\n"))
+        XCTAssertTrue(script.contains("claude plugin list --json\n"))
     }
 
     /// Review finding, round 1, and the reason no probe output travels at all:
@@ -1672,7 +1703,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 .init(exitCode: 0, message: "LVX_HTTP:401\nbanner: \(leaked)"),
                 .init(
                     exitCode: 0,
-                    message: "localvoxtral-remote@localvoxtral  enabled  config: token=\(leaked)"
+                    message: Self.framedListing(ClaudeRemoteEnrollmentService.remotePluginVersion, "user")
+                        + "config: token=\(leaked)\n"
                 ),
             ]
         )
@@ -1708,7 +1740,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                     exitCode: 0,
                     message: "Welcome to builder\nLast login: 401\nLVX_HTTP:401"
                 ),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                Self.listedPlugin,
             ]
         ).checks
         XCTAssertTrue(try XCTUnwrap(noisy.first { $0.kind == .tunnel }).passed)
@@ -1719,7 +1751,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             results: [
                 .init(exitCode: 0, message: "Welcome to builder\n401"),
                 .init(exitCode: 0, message: "Welcome to builder\n401"),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                Self.listedPlugin,
             ]
         ).checks
         let tunnel = try XCTUnwrap(unframed.first { $0.kind == .tunnel })
@@ -1735,7 +1767,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             remoteForwardPort: 28511,
             results: [
                 .init(exitCode: 0, message: "LVX_HTTP:401"),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                Self.listedPlugin,
             ]
         ).checks
         XCTAssertEqual(checks.map(\.passed), [true, true])
@@ -1769,7 +1801,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             listenerIsBound: false,
             results: [
                 .init(exitCode: 0, message: "LVX_HTTP:401"),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                Self.listedPlugin,
             ]
         ).checks
         let launched = try XCTUnwrap(checks.first { $0.kind == .tunnel })
@@ -1796,7 +1828,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 listenerIsBound: false,
                 results: [
                     .init(exitCode: 0, message: hostAnswer),
-                    .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                    Self.listedPlugin,
                 ]
             ).checks
             let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
@@ -1818,7 +1850,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let checks = try verify(
             results: [
                 .init(exitCode: 0, message: ClaudeRemoteEnrollmentService.missingCurlSentinel),
-                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+                Self.listedPlugin,
             ]
         ).checks
         let reconciled = ClaudeRemoteEnrollmentService.reconciled(
@@ -1941,8 +1973,60 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
 
         let second = try runShellScript(invocation.standardInput, environment: environment)
-        XCTAssertEqual(second.status, 42)
+        XCTAssertEqual(second.status, 0, second.output)
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), configured)
+    }
+
+    /// #2067: a rerun finds the app's own row and reports it configured,
+    /// not customized. And with no herdr server running, `reload-config`
+    /// exits 1: the row is in the file and herdr reads it when it next
+    /// starts, so the step still succeeds.
+    func testRemoteHerdrSetupRecognisesItsOwnRowAndSurvivesAFailedReload() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let capture = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "captured")
+        })
+        _ = try? capture.setupRemoteHerdr(sshHostAlias: "builder")
+        let invocation = try XCTUnwrap(calls.withLock { $0.first })
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-herdr-rerun-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let original = "[theme]\nname = \"dark\"\n"
+        try Data(original.utf8).write(to: configURL)
+        let herdr = directory.appendingPathComponent("herdr")
+        try Data("#!/bin/sh\necho 'no herdr server is running' >&2\nexit 1\n".utf8).write(to: herdr)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: herdr.path)
+        let environment = [
+            "HERDR_CONFIG_PATH": configURL.path,
+            "PATH": "\(directory.path):/usr/bin:/bin",
+        ]
+        func outcome(_ result: (status: Int32, output: String)) throws -> ClaudeRemoteEnrollmentService.HerdrSetupOutcome {
+            try ClaudeRemoteEnrollmentService(runner: { _ in
+                .init(exitCode: result.status, message: result.output)
+            }).setupRemoteHerdr(sshHostAlias: "builder")
+        }
+
+        let first = try runShellScript(invocation.standardInput, environment: environment)
+        XCTAssertEqual(first.status, 0, first.output)
+        XCTAssertEqual(try outcome(first), .configured)
+        let configured = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertEqual(configured, original + "\n" + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet + "\n")
+
+        let second = try runShellScript(invocation.standardInput, environment: environment)
+        XCTAssertEqual(second.status, 0, second.output)
+        XCTAssertEqual(try outcome(second), .configured)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), configured)
+
+        // The same row saved with CRLF line ends is still the app's own.
+        let crlf = configured.replacingOccurrences(of: "\n", with: "\r\n")
+        try Data(crlf.utf8).write(to: configURL)
+        let third = try runShellScript(invocation.standardInput, environment: environment)
+        XCTAssertEqual(third.status, 0, third.output)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), crlf)
     }
 
     /// 42 is the refusal exit only with the refusal frame beside it; a reload
@@ -2379,10 +2463,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     /// The listing a real `claude plugin list --json` prints (Claude Code
     /// 2.1.x), framed by the listing script, with a banner on each side as a
     /// login shell's merged pipe delivers it.
-    private static func framedListing(_ version: String?, _ scope: String) -> String {
+    private static func framedListing(
+        _ version: String?, _ scope: String, enabled: Bool = true, errorDetails: String = ""
+    ) -> String {
         let ours = version.map {
             """
-            ,{"id":"\(ClaudeRemoteEnrollmentService.remotePluginReference)","version":"\($0)","scope":"\(scope)","enabled":true,"installPath":"/home/dev/.claude/plugins/cache/localvoxtral/localvoxtral-remote/\($0)","installedAt":"2026-07-27T20:59:23.439Z","lastUpdated":"2026-09-07T13:27:31.000Z"}
+            ,{"id":"\(ClaudeRemoteEnrollmentService.remotePluginReference)","version":"\($0)","scope":"\(scope)","enabled":\(enabled)\(errorDetails),"installPath":"/home/dev/.claude/plugins/cache/localvoxtral/localvoxtral-remote/\($0)","installedAt":"2026-07-27T20:59:23.439Z","lastUpdated":"2026-09-07T13:27:31.000Z"}
             """
         } ?? ""
         return "Welcome to builder\n"
@@ -2391,6 +2477,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             + ours + "]\n"
             + ClaudeRemoteEnrollmentService.pluginListFrameEnd + "\nLast login: today\n"
     }
+
+    /// The plugin check's answer from a host where the plugin is installed,
+    /// enabled and loading.
+    private static let listedPlugin = ClaudeRemoteEnrollmentService.RunResult(
+        exitCode: 0, message: framedListing(ClaudeRemoteEnrollmentService.remotePluginVersion, "user")
+    )
 
     /// Records the ssh invocations a plugin setup makes, from the
     /// nonisolated runner closure.
@@ -2413,7 +2505,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         install: ClaudeRemoteEnrollmentService.RunResult = .init(exitCode: 0, message: ""),
         calls: PluginSetupCalls
     ) -> ClaudeRemoteEnrollmentService.Runner {
-        let listing = Self.framedListing
+        let listing: @Sendable (String?, String) -> String = { ClaudeRemoteEnrollmentServiceTests.framedListing($0, $1) }
         return { invocation in
             calls.record(invocation)
             let stdin = String(decoding: invocation.standardInput, as: UTF8.self)
