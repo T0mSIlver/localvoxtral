@@ -626,6 +626,37 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertNil(session.audio.sessionRecording.finish(), "no audio kept for a pass that won't run")
     }
 
+    /// #2060: turning kept audio off in Settings during the dictation dropped
+    /// the recording the second pass reads, so the stop skipped the pass.
+    func testTurningKeptAudioOffMidDictationKeepsTheSecondPassAndSavesNoAudio() async throws {
+        let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+        let harness = makeHarness(transcriber: transcriber, secondPassSetting: true, keptAudio: true)
+        let session = harness.viewModel.session
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
+        let audioStore = DictationAudioStore(directoryURL: directory)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: audioStore.fullQualityDirectoryURL)
+        }
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.audioStore = audioStore
+        harness.viewModel.sessionStore = store
+        XCTAssertTrue(session.sessionStoresAudio)
+
+        harness.viewModel.settings.dictationAudioEnabled = false
+        session.stopKeepingSessionAudio()
+        harness.viewModel.settings.dictationAudioEnabled = true
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+        let count = await store.count()
+
+        XCTAssertEqual(transcriber.calls.count, 1, "the second pass still runs")
+        XCTAssertEqual(harness.overlay.committedTexts, [Self.batchText])
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(audioStore.storedIDs(), [], "switched back on before the stop, it still saves no audio")
+    }
+
     // MARK: - Harness
 
     private func storeProposing(_ term: String, in projectKey: String) -> LearnedTermStore {
@@ -701,9 +732,13 @@ final class StopSecondPassPipelineTests: XCTestCase {
         secondPassSetting: Bool? = nil,
         realtimeText: String = realtimeText,
         pcm: Data = pcm,
-        clock: ManualSessionClock = ManualSessionClock()
+        clock: ManualSessionClock = ManualSessionClock(),
+        keptAudio: Bool? = nil
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
+        if let keptAudio {
+            settings.dictationAudioEnabled = keptAudio
+        }
         settings.polishSpeakerTerms = ["localvoxtral", "Claude Code"]
         settings.polishContextTrustedEndpointEnabled = false
         if polisher != nil {

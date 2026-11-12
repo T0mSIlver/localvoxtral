@@ -781,6 +781,18 @@ extension DictationSessionController {
             enabled: sessionStoresAudio || sessionHasStopSecondPass || sessionHasStallBackfill)
     }
 
+    /// Kept audio turned off in Settings: a dictation in progress saves none
+    /// either, even if the switch goes back on before it stops. The 16 kHz
+    /// recording stays while the second pass or the stall backfill reads it
+    /// (#2060).
+    func stopKeepingSessionAudio() {
+        sessionStoresAudio = false
+        sessionKeepsFullQualityAudio = false
+        audio.fullQualityRecording.begin(enabled: false)
+        guard !sessionHasStopSecondPass, !sessionHasStallBackfill else { return }
+        audio.sessionRecording.begin(enabled: false)
+    }
+
     /// Fail fast on Live Auto-Paste without Accessibility trust: transcribed
     /// text would have nowhere to go. Refresh trust once (the user may have
     /// just granted it), then warn + prompt before opening the socket. We do
