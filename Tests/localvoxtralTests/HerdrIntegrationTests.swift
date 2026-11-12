@@ -626,11 +626,12 @@ final class HerdrIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(patched.hasPrefix("[theme]\n"), "the patch must only APPEND")
 
-        // 2. Idempotence: a second run leaves the table alone rather than appending again.
-        XCTAssertEqual(try service.setupRemoteHerdr(sshHostAlias: alias, timeout: 60), .customized)
+        // 2. Idempotence: a second run recognises the app's own table, reports it
+        // configured and leaves it alone rather than appending again.
+        XCTAssertEqual(try service.setupRemoteHerdr(sshHostAlias: alias, timeout: 60), .configured)
         XCTAssertEqual(
             try String(contentsOfFile: configPath, encoding: .utf8), patched,
-            "the refused second run must leave the config byte-identical"
+            "the second run must leave the config byte-identical"
         )
 
         // 3. The trailing-comment header variant its grep must recognise.
