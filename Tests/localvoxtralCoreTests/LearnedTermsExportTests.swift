@@ -130,6 +130,30 @@ final class LearnedTermsExportTests: XCTestCase {
         XCTAssertEqual(local.projects.count, 4)
     }
 
+    /// A local project the file holds under its own key is that project, not
+    /// a stand-in for another folder of the same name in the file: the other
+    /// folder keeps its terms apart, whichever comes first in the file.
+    func testNameMatchSkipsLocalProjectThatIsInTheFile() {
+        let work = project("/Users/tom/work/app", "app", [term("alpha")])
+        let scratch = project("/Users/tom/scratch/app", "app", [term("beta")])
+        for order in [[work, scratch], [scratch, work]] {
+            var local = LearnedTerms(projects: [project("/Users/tom/work/app", "app", [term("one")])])
+            local.merge(importing: order, now: now)
+
+            let label = order.map(\.key).joined(separator: ", ")
+            XCTAssertEqual(
+                local.projects.first { $0.key == "/Users/tom/work/app" }?.terms.map(\.term),
+                ["one", "alpha"],
+                label
+            )
+            XCTAssertEqual(
+                local.projects.first { $0.key == "/Users/tom/scratch/app" }?.terms.map(\.term),
+                ["beta"],
+                label
+            )
+        }
+    }
+
     /// A checkout linked to its repository (#971) holds no terms: they are
     /// on the `repo:` record. The import keeps the link, or the checkout's
     /// dictations would read none of them.
