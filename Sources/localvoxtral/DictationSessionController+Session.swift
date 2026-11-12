@@ -1086,6 +1086,7 @@ extension DictationSessionController {
         let indicatorDuration = TimingConstants.recentFailureIndicatorDuration
         recentFailureResetTask = Task { [weak self, clock = dependencies.clock] in
             await clock.sleep(.seconds(indicatorDuration))
+            guard !Task.isCancelled else { return }
             guard let self else { return }
             guard self.realtimeSessionIndicatorState == .recentFailure else { return }
             guard !self.isConnectingRealtimeSession, !self.isDictating, !self.isFinalizingStop else { return }
