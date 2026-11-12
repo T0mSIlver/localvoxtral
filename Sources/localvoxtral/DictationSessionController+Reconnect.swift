@@ -316,7 +316,11 @@ extension DictationSessionController {
         disarmSpokenStop()
         escapeCancelHandler.stop()
         ownStopWithoutFinalization()
+        // A polish or second pass commits after this returns, and its end
+        // would otherwise say Ready with the idle icon (#2065).
+        stoppedOnItsOwnStatus = Self.connectionLostMessage
         finishStoppedSession(promotePendingSegment: true)
+        holdFailureIndicatorUntilStopCompletes = isFinalizingStop
         statusText = Self.connectionLostMessage
         lastError = Self.connectionLostMessage
         logConnectionFailure(
