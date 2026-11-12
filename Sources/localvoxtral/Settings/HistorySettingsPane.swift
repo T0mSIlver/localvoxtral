@@ -226,10 +226,7 @@ struct HistorySettingsPane: View {
 
     private func turnAudioOff(removingBackups: Bool) {
         settings.dictationAudioEnabled = false
-        // A dictation in progress keeps nothing either, even if the switch
-        // goes back on before it stops.
-        viewModel.session.audio.sessionRecording.begin(enabled: false)
-        viewModel.session.audio.fullQualityRecording.begin(enabled: false)
+        viewModel.session.stopKeepingSessionAudio()
         let deleting = viewModel.session.deleteAllAudio(removingBackups: removingBackups)
         Task {
             await deleting?.value
