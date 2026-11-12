@@ -1,5 +1,6 @@
 import ClaudeContextWire
 import Foundation
+@testable import LocalvoxtralCLICore
 import XCTest
 import localvoxtralTestSupport
 
@@ -143,6 +144,45 @@ final class AgentCLIServiceTests: XCTestCase {
             let response = await service.respond(to: request)
             XCTAssertEqual(try json(response), #"{"cli":1,"history":{"dictations":[],"historyKept":false},"ok":true}"#)
         }
+    }
+
+    /// #2059: History keeps dictations but its file did not open. The
+    /// command said "History is off" and exited 0, sending the user to a
+    /// setting that was already right.
+    func testAHistoryThatDidNotOpenSaysWhyAndHistoryExitsOne() async throws {
+        let reason = "Your history couldn't be opened. The log says why."
+        let source = fixture()
+        source.state.withLock { state in
+            state.historyKept = false
+            state.historyUnavailable = reason
+            state.status = AgentCLIStatus(running: true, version: "1.4.0", historyUnavailable: reason)
+        }
+        let service = service(source)
+        func run(_ request: AgentCLIRequest, json: Bool = false) async throws -> AgentCLIRunner.Outcome {
+            let response = await service.respond(to: request)
+            let line = try XCTUnwrap(AgentCLIWire.encodeLine(response))
+            return AgentCLIRunner(transport: { _ in .success(line) }, timeZone: TimeZone(identifier: "UTC")!)
+                .run(AgentCLIInvocation(request: request, json: json))
+        }
+
+        for request in [
+            AgentCLIRequest(command: .historyLast),
+            AgentCLIRequest(command: .historySearch, text: "queue"),
+        ] {
+            let outcome = try await run(request)
+            XCTAssertEqual(outcome.exitCode, .refused, request.command)
+            XCTAssertEqual(outcome.stdout, "")
+            XCTAssertEqual(outcome.stderr, "localvoxtral: \(reason)\n")
+        }
+        let json = try await run(AgentCLIRequest(command: .historyLast), json: true)
+        XCTAssertEqual(json.exitCode, .refused)
+        XCTAssertEqual(
+            json.stdout,
+            #"{"cli":1,"history":{"dictations":[],"historyKept":false,"historyUnavailable":"Your history couldn't be opened. The log says why."},"ok":true}"# + "\n"
+        )
+        let status = try await run(AgentCLIRequest(command: .status))
+        XCTAssertEqual(status.exitCode, .answered)
+        XCTAssertTrue(status.stdout.contains("History: \(reason)\n"), status.stdout)
     }
 
     // MARK: terms list

@@ -71,6 +71,8 @@ public struct AgentCLIRunner: Sendable {
         let exitCode: ExitCode
         if let error = response.error {
             exitCode = error.code == .notRunning ? .notRunning : .refused
+        } else if response.history?.historyUnavailable != nil {
+            exitCode = .refused
         } else if response.doctor?.hasFailure == true {
             exitCode = .checkFailed
         } else {
@@ -82,6 +84,9 @@ public struct AgentCLIRunner: Sendable {
         }
         if let error = response.error {
             return Outcome(stdout: "", stderr: "localvoxtral: \(error.message)\n", exitCode: exitCode)
+        }
+        if let unavailable = response.history?.historyUnavailable {
+            return Outcome(stdout: "", stderr: "localvoxtral: \(unavailable)\n", exitCode: exitCode)
         }
         let text = AgentCLIText(timeZone: timeZone).render(response)
         return Outcome(stdout: text, stderr: "", exitCode: exitCode)
@@ -179,7 +184,7 @@ public struct AgentCLIText: Sendable {
         if let engine = status.polish {
             lines.append(engine.enabled ? "Polish: \(engine.model) (\(engine.backend))" : "Polish: off")
         }
-        lines.append("History: \(status.historyKept ? "kept" : "off")")
+        lines.append("History: \(status.historyUnavailable ?? (status.historyKept ? "kept" : "off"))")
         if let join = status.lastJoin {
             let project = join.project.map { " in \($0.name)" } ?? ""
             lines.append("Last dictation joined: \(join.agent)\(project), \(join.remote ? "remote" : "local"), by \(join.mechanism)")

@@ -7,6 +7,10 @@ import Foundation
 package protocol AgentCLIDataSource: Sendable {
     /// False under History's "Don't keep".
     func historyKept() async -> Bool
+    /// Under any other choice, why History holds nothing to read: its file
+    /// did not open, or its last read or write failed (the app's
+    /// `historyUnavailableText`). Nil when History works or is off.
+    func historyUnavailable() async -> String?
     /// Newest first: dictations whose transcript or final text contains
     /// `text` (all of them when empty), started at or after `since`.
     func dictations(matching text: String, since: Date?, limit: Int) async -> [AgentCLIDictation]
@@ -93,6 +97,7 @@ package struct AgentCLIService: Sendable {
         guard (1...AgentCLIWire.maxHistoryLimit).contains(limit) else {
             return .failure(.badRequest, "--limit must be between 1 and \(AgentCLIWire.maxHistoryLimit)")
         }
+        if let unavailable = await historyUnavailableResponse() { return unavailable }
         guard await source.historyKept() else {
             return AgentCLIResponse(history: AgentCLIHistory(historyKept: false, dictations: []))
         }
@@ -117,11 +122,18 @@ package struct AgentCLIService: Sendable {
     }
 
     private func historyLast(_ request: AgentCLIRequest) async -> AgentCLIResponse {
+        if let unavailable = await historyUnavailableResponse() { return unavailable }
         guard await source.historyKept() else {
             return AgentCLIResponse(history: AgentCLIHistory(historyKept: false, dictations: []))
         }
         let last = await source.lastDictation()
         return AgentCLIResponse(history: AgentCLIHistory(historyKept: true, dictations: last.map { [$0] } ?? []))
+    }
+
+    private func historyUnavailableResponse() async -> AgentCLIResponse? {
+        guard let reason = await source.historyUnavailable() else { return nil }
+        return AgentCLIResponse(
+            history: AgentCLIHistory(historyKept: false, dictations: [], historyUnavailable: reason))
     }
 
     // MARK: Terms
