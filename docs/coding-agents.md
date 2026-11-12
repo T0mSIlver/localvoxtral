@@ -48,9 +48,6 @@ Context**.
 - **Agent prompt profile in terminals and Claude Desktop** (on by default).
   In a terminal, or in a Claude Code session in Claude Desktop's Code tab,
   polishing switches to an agent-tuned prompt, described below.
-- **Model-first polishing.** Polishing keeps the model's final wording and
-  technical formatting, so useful Markdown and reconstructed identifiers
-  survive.
 - **Context** (opt-in). File names from your repository, your clipboard,
   the agent's screen and its session can reach the polisher to get
   technical spellings right. See
@@ -58,6 +55,9 @@ Context**.
 - **Say "paste clipboard" to paste clipboard** (on by default). Say "paste clipboard"
   mid-dictation, and the clipboard content goes in as a code block when the
   text commits.
+
+Polishing keeps the model's final wording and technical formatting, so useful
+Markdown and reconstructed identifiers survive.
 
 The agent-tuned prompt turns spoken symbol forms into written ones. "Dash
 dash force" becomes "--force", "src slash auth" becomes "src/auth", and "the

@@ -638,7 +638,7 @@ request is in [History](#history).
 
 Open **Settings…** from the menu bar popover. Settings shares a window with
 History, Insights and Projects, which sit above the sidebar's Settings
-header.
+header. Projects holds the [learned terms](#terms-learned-from-polishing).
 
 - **General**: permission status for Microphone and Accessibility, with
   grant buttons, **Re-run setup**, and two startup switches. **Open
@@ -663,7 +663,7 @@ header.
 - **Text Processing**: [About you](#add-your-global-terms),
   [Suggest terms](#get-term-suggestions), the LLM Polishing switch, the
   agent prompt profile and spoken clipboard paste. **Advanced** holds
-  [learned terms](#terms-learned-from-polishing),
+  [dismissed suggestions](#get-term-suggestions),
   [the coding agent's terms](#terms-from-your-coding-agent), the legacy
   replacement dictionary, [the instructions' size](#what-the-prompt-costs)
   and [the prompt files](#edit-the-polishing-prompts-and-dictionary).

@@ -1058,7 +1058,8 @@ Every field is length-capped at both ends. Hook content is never logged.
 ### How the remote plugin reaches your Mac
 
 The remote plugin subscribes to session start, prompt submit, stop,
-working-directory change, tool use and session end, so the app sees a new
+working-directory change, tool use, the notification that the session waits
+for you, and session end, so the app sees a new
 remote session before its first prompt. Otherwise the events match the local
 table above.
 
@@ -1154,10 +1155,10 @@ The same allowlist as the local plugin, plus two additions:
 
 The environment values are herdr's pane id, socket path and session name;
 cmux's surface id and socket path; the Remote Control bridge session id; the
-Claude Desktop session id; the tmux socket and pane; the screen session; the
-zellij session; the ssh tty; the ssh connection; LC_LVX_TTY; the hook
-script's own parent pid; the name of the session's repository; and the
-branch checked out. The
+Claude Desktop session id; the T3 Code thread id; the tmux socket and pane;
+the screen session; the zellij session; the ssh tty; the ssh connection;
+LC_LVX_TTY; the hook script's own parent pid; the name of the session's
+repository and of its origin; and the branch checked out. The
 [hook script](plugins/localvoxtral-remote/hooks/post.sh) holds the exact
 list.
 
