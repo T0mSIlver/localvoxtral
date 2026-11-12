@@ -74,12 +74,13 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         case .externalURL: settings.llmPolishingModel
         case .anthropicAPI: settings.resolvedAnthropicPolishingModel
         }
+        let unavailable = await historyUnavailable()
         return AgentCLIStatus(
             running: true,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
             dictating: viewModel.isDictating,
-            historyKept: await historyKept(),
-            historyUnavailable: await historyUnavailable(),
+            historyKept: unavailable == nil ? await historyKept() : false,
+            historyUnavailable: unavailable,
             dictation: AgentCLIEngine(
                 backend: settings.dictationBackendMode.rawValue,
                 model: settings.effectiveModelName,
