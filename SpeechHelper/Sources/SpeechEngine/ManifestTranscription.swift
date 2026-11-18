@@ -48,7 +48,9 @@ public enum ManifestTranscription {
             audioSeconds += Double(audio.count) / 16_000
             let session = engine.makeSession(
                 transcriptionDelayMs: options.transcriptionDelayMs,
-                utteranceLimit: options.utteranceLimit
+                utteranceLimit: options.utteranceLimit,
+                terms: .empty,
+                language: nil
             )
             var offset = 0
             while offset < audio.count {
