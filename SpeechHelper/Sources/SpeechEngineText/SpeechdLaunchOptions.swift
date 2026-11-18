@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 public struct SpeechdLaunchOptions: Equatable {
     public var modelID: String?
