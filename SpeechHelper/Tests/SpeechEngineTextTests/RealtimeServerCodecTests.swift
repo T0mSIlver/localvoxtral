@@ -90,6 +90,10 @@ final class RealtimeServerCodecTests: XCTestCase {
 
     // MARK: Handshake
 
+    // WebSocketHandshake needs CryptoKit, so it is not in the Linux build
+    // (scripts/speech-text-tests-linux.sh).
+    #if canImport(CryptoKit)
+
     func testAcceptKeyMatchesRFC6455Example() {
         // The canonical example from RFC 6455 §1.3.
         XCTAssertEqual(
@@ -113,6 +117,7 @@ final class RealtimeServerCodecTests: XCTestCase {
     func testParseRequestHeadIncompleteUntilTerminator() {
         XCTAssertNil(WebSocketHandshake.parseRequestHead(Data("GET /health HTTP/1.1\r\nHost: x".utf8)))
     }
+    #endif
 
     // MARK: Protocol
 
