@@ -27,6 +27,10 @@ struct SpeechdMain {
             try await StreamingSpeechBenchmark.run(options)
             return
         }
+        if options.transcribeManifest != nil {
+            try await ManifestTranscription.run(options)
+            return
+        }
 
         // Exit if the supervising app dies, so a killed app never orphans the model. The
         // watchdog guards the load too: a crash mid-load must not leave the helper loading
