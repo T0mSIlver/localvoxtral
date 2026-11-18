@@ -41,6 +41,8 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let environment: [String: String]?
         /// `--step-ms`: the transcription mode's feed size. Absent means 80.
         let stepMilliseconds: Int?
+        /// `--pause-gate hold|drop` for the helper. Absent means no gate.
+        let pauseGate: String?
     }
 
     /// About twenty seconds of plain dictation. The bench loops it to fill the run.
@@ -99,6 +101,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         }
         if let step = config.stepMilliseconds {
             arguments.append(contentsOf: ["--step-ms", "\(step)"])
+        }
+        if let pauseGate = config.pauseGate {
+            arguments.append(contentsOf: ["--pause-gate", pauseGate])
         }
         let environment = ProcessInfo.processInfo.environment
             .merging(config.environment ?? [:]) { _, new in new }

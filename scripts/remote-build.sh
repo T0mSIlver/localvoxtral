@@ -72,7 +72,8 @@ set -euo pipefail
 #                  directory instead of a catalog repo), LV_SPEECHD_BENCH_WAV (a
 #                  recorded WAV), LV_SPEECHD_BENCH_TRANSCRIBE (an agent-dictation
 #                  manifest: print one TRANSCRIBE line per recording instead of
-#                  timing), and LV_SPEECHD_BENCH_DELAY_MS.
+#                  timing), LV_SPEECHD_BENCH_DELAY_MS, and LV_SPEECHD_BENCH_PAUSE_GATE
+#                  (hold or drop: the helper's --pause-gate).
 #     polishd-bench
 #                  time the packaged polishing helper on the polish eval
 #                  corpora, one arm after another per round: greedy, greedy
@@ -977,6 +978,13 @@ case "$CMD" in
         exit 1
       fi
       SPEECHD_BENCH_OPTIONAL+=",\"stepMilliseconds\":$LV_SPEECHD_BENCH_STEP_MS"
+    fi
+    if [[ -n "${LV_SPEECHD_BENCH_PAUSE_GATE:-}" ]]; then
+      if [[ "$LV_SPEECHD_BENCH_PAUSE_GATE" != hold && "$LV_SPEECHD_BENCH_PAUSE_GATE" != drop ]]; then
+        echo "speechd-bench: LV_SPEECHD_BENCH_PAUSE_GATE must be hold or drop" >&2
+        exit 1
+      fi
+      SPEECHD_BENCH_OPTIONAL+=",\"pauseGate\":\"$LV_SPEECHD_BENCH_PAUSE_GATE\""
     fi
     if [[ -n "${LV_SPEECHD_BENCH_DELAY_MS:-}" ]]; then
       if [[ ! "$LV_SPEECHD_BENCH_DELAY_MS" =~ ^[1-9][0-9]*$ ]]; then

@@ -23,6 +23,21 @@ public enum ManifestTranscription {
         let stopped: String?
     }
 
+    /// One recording's cost, numbers only: `TRANSCRIBE work` lines can go where the
+    /// texts must not.
+    private struct Work: Encodable {
+        let id: String
+        let audioMs: Int
+        /// Time inside the engine's steps and its stop flush.
+        let stepMs: Int
+        let flushMs: Int
+        let steps: Int
+        let tokens: Int
+        let gateCloses: Int?
+        let gateHeldMs: Int?
+        let gateDroppedMs: Int?
+    }
+
     public static func run(_ options: SpeechdLaunchOptions) async throws {
         guard let manifestPath = options.transcribeManifest else { return }
         Memory.cacheLimit = options.cacheLimitMB * 1024 * 1024
@@ -30,7 +45,8 @@ public enum ManifestTranscription {
             modelID: options.modelID,
             modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
-            engine: options.engine
+            engine: options.engine,
+            pauseGate: options.pauseGate
         )
         let manifestURL = URL(fileURLWithPath: manifestPath)
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
@@ -53,16 +69,34 @@ public enum ManifestTranscription {
                 language: nil
             )
             var offset = 0
-            while offset < audio.count {
-                let end = min(offset + step, audio.count)
-                _ = session.step(Array(audio[offset..<end]))
-                offset = end
+            var steps = 0
+            let clock = ContinuousClock()
+            let stepTime = clock.measure {
+                while offset < audio.count {
+                    let end = min(offset + step, audio.count)
+                    _ = session.step(Array(audio[offset..<end]))
+                    offset = end
+                    steps += 1
+                }
             }
-            _ = session.finish()
+            let flushTime = clock.measure { _ = session.finish() }
             let text = session.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let stopped = session.utteranceStop.map { String(describing: $0) }
             let json = try encoder.encode(Line(id: recording.id, text: text, stopped: stopped))
             print("TRANSCRIBE " + String(decoding: json, as: UTF8.self))
+            let gate = session.pauseGateStats
+            let work = try encoder.encode(Work(
+                id: recording.id,
+                audioMs: audio.count / 16,
+                stepMs: milliseconds(stepTime),
+                flushMs: milliseconds(flushTime),
+                steps: steps,
+                tokens: session.decodedTokenCount,
+                gateCloses: gate?.closes,
+                gateHeldMs: gate.map { $0.heldSamples / 16 },
+                gateDroppedMs: gate.map { $0.droppedSamples / 16 }
+            ))
+            print("TRANSCRIBE work " + String(decoding: work, as: UTF8.self))
             Memory.clearCache()
             if index == 0 {
                 firstSeconds = Date().timeIntervalSince(start)
@@ -77,5 +111,10 @@ public enum ManifestTranscription {
             audioSeconds > 0 ? elapsed / audioSeconds : 0,
             Double(Memory.snapshot().peakMemory) / 1_048_576
         ))
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds) * 1_000
+            + Int(duration.components.attoseconds / 1_000_000_000_000_000)
     }
 }
