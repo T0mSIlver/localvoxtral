@@ -8,7 +8,9 @@ Its vendored dependency pin and upgrade procedure live in `DEPENDENCY.md`.
   only the xcodebuild lane in `scripts/package_app.sh` can (package aggregate
   scheme `SpeechHelper`); a swift-build binary fails at runtime loading the
   metallib. Unit tests are Metal-free:
-  `./scripts/remote-build.sh test --package-path SpeechHelper`.
+  `./scripts/remote-build.sh test --package-path SpeechHelper`. On Linux,
+  `./scripts/speech-text-tests-linux.sh` runs them for `SpeechEngineText`, all but
+  three files that need Apple frameworks: iterate there first.
 - On Xcode 26+ the Metal compiler is a separate ~700 MB component — one-time
   host setup is `xcodebuild -downloadComponent MetalToolchain` (the catalog
   fetch fails transiently sometimes; retry). `xcrun --find metal` succeeding
