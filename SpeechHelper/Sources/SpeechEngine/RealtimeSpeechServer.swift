@@ -472,6 +472,9 @@ enum SpeechModelLoader {
                 fromDirectory: { try VoxtralRealtimeModel.fromDirectory($0) },
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
             )
+            let cast = VoxtralParameterPrecision.castToFloat16(model)
+            FileHandle.standardError.write(Data(
+                "speechd: \(cast) float32 parameters cast to float16\n".utf8))
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
             return VoxtralASREngine(model: model)
         case .nemotron:
