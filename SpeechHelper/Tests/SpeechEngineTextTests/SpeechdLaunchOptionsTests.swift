@@ -20,6 +20,19 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.stepMilliseconds, 240)
     }
 
+    func testPauseGateIsOffUnlessNamedAndTakesHoldOrDrop() throws {
+        XCTAssertNil(try SpeechdOptionParser.parse(["--model", "example/model"]).pauseGate)
+        for mode in PauseGate.Mode.allCases {
+            let options = try SpeechdOptionParser.parse([
+                "--model", "example/model", "--pause-gate", mode.rawValue,
+            ])
+            XCTAssertEqual(options.pauseGate, mode)
+        }
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse(["--model", "example/model", "--pause-gate", "on"])
+        ) { XCTAssertEqual($0 as? SpeechdOptionError, .invalidValue("--pause-gate")) }
+    }
+
     func testStepCadenceDefaultsToModelNativeCadence() throws {
         let options = try SpeechdOptionParser.parse(["--model", "example/model"])
 

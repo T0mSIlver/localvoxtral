@@ -21,6 +21,9 @@ public struct SpeechdLaunchOptions: Equatable {
     public var stepMilliseconds = 80
     /// Maximum length of one utterance (one engine stream session); see `UtteranceLimit`.
     public var utteranceLimit = UtteranceLimit()
+    /// `--pause-gate hold|drop`: what a Voxtral session does with a pause (`PauseGate`).
+    /// Nil steps every 80 ms through it, as before.
+    public var pauseGate: PauseGate.Mode?
     public var benchmark: SpeechdBenchmarkOptions?
 
     public init() {}
@@ -137,6 +140,11 @@ public enum SpeechdOptionParser {
                     throw SpeechdOptionError.invalidValue(flag)
                 }
                 options.utteranceLimit = UtteranceLimit(seconds: seconds)
+            case "--pause-gate":
+                guard let mode = PauseGate.Mode(rawValue: try value(flag)) else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                options.pauseGate = mode
             case "--bench":
                 benchmarkEnabled = true
             case "--seconds":

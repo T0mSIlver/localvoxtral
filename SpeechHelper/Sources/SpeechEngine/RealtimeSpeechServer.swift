@@ -40,7 +40,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
         stepMilliseconds: Int = 80,
-        utteranceLimit: UtteranceLimit = UtteranceLimit()
+        utteranceLimit: UtteranceLimit = UtteranceLimit(),
+        pauseGate: PauseGate.Mode? = nil
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let engine = try await SpeechModelLoader.load(
@@ -48,7 +49,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             modelRevision: modelRevision,
             modelDirectory: modelDirectory,
             engine: engine,
-            lockWeights: true
+            lockWeights: true,
+            pauseGate: pauseGate
         )
         let started = ContinuousClock.now
         let steps = EngineWarmUp.run(
@@ -381,7 +383,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     /// `inferenceQueue`, before the session is dropped.
     private static func logStepStats(_ ctx: Connection, ending: String) {
         guard let line = ctx.stepStats.finish(
-            ending: ending, decodedTokens: ctx.session?.decodedTokenCount ?? 0
+            ending: ending, decodedTokens: ctx.session?.decodedTokenCount ?? 0,
+            pauseGate: ctx.session?.pauseGateStats
         ) else { return }
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
@@ -459,7 +462,8 @@ enum SpeechModelLoader {
         modelRevision: String?,
         modelDirectory: String?,
         engine: SpeechASREngineKind?,
-        lockWeights: Bool = false
+        lockWeights: Bool = false,
+        pauseGate: PauseGate.Mode? = nil
     ) async throws -> SpeechASREngine {
         switch SpeechASREngineKind.resolve(
             named: engine, modelID: modelID, modelDirectory: modelDirectory
@@ -473,7 +477,10 @@ enum SpeechModelLoader {
                 fromPretrained: { try await VoxtralRealtimeModel.fromPretrained($0) }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
-            return VoxtralASREngine(model: model)
+            if let pauseGate {
+                FileHandle.standardError.write(Data("speechd: pause gate \(pauseGate.rawValue)\n".utf8))
+            }
+            return VoxtralASREngine(model: model, pauseGate: pauseGate)
         case .nemotron:
             let model = try await loadModel(
                 modelID: modelID,
@@ -495,6 +502,11 @@ enum SpeechModelLoader {
                 }
             )
             if lockWeights { logWeightLock(WeightPageLock.lock(model)) }
+            if pauseGate != nil {
+                // A Nemotron step costs a tenth of a Voxtral one; its sessions are not gated.
+                FileHandle.standardError.write(Data(
+                    "speechd: --pause-gate applies to Voxtral only; ignored for this model\n".utf8))
+            }
             return NemotronASREngine(model: model)
         }
     }

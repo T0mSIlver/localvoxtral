@@ -33,6 +33,12 @@ public protocol SpeechASRStreamingSession: AnyObject, Sendable {
     /// Voxtral's decoder counts tokens, Nemotron's RNN-T never ends a stream
     /// so its session counts the audio it was fed.
     var utteranceStop: UtteranceStop? { get }
+    /// What the session's pause gate did so far, nil for a session without one.
+    var pauseGateStats: PauseGate.Stats? { get }
+}
+
+extension SpeechASRStreamingSession {
+    public var pauseGateStats: PauseGate.Stats? { nil }
 }
 
 /// A loaded ASR model that opens one streaming session per utterance.

@@ -18,7 +18,8 @@ public enum StreamingSpeechBenchmark {
             modelID: options.modelID,
             modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
-            engine: options.engine
+            engine: options.engine,
+            pauseGate: options.pauseGate
         )
         let loaded = clock.now
         let audio = try BenchmarkAudio.make(
@@ -108,6 +109,7 @@ public enum StreamingSpeechBenchmark {
             nextMarkIndex += 1
         }
         printTimeline(timeline, records: records, benchmark: benchmark)
+        printBusyShare(records: records, audioSamples: steppedSamples, session: session)
         print(
             "BENCH done seconds=\(benchmark.seconds) limit_s=\(options.utteranceLimit.seconds) "
                 + "tokens=\(session.decodedTokenCount) "
@@ -254,6 +256,24 @@ public enum StreamingSpeechBenchmark {
         )
         // Word k's appearance time, comparable across runs of one model on the same audio.
         print("BENCH words_s=" + words.map { String(format: "%.3f", $0) }.joined(separator: ","))
+    }
+
+    /// The share of the audio's length the steps took: how busy the GPU is when the
+    /// same audio arrives in real time. With a pause gate, what it held and dropped.
+    private static func printBusyShare(
+        records: [StepRecord], audioSamples: Int, session: SpeechASRStreamingSession
+    ) {
+        let busy = records.map(\.latencyMilliseconds).reduce(0, +)
+        let audio = Double(audioSamples) * 1_000 / Double(sampleRate)
+        var line = String(
+            format: "BENCH busy step_ms_total=%.0f audio_ms=%.0f busy_share=%.3f",
+            busy, audio, audio > 0 ? busy / audio : 0
+        )
+        if let gate = session.pauseGateStats {
+            line += " gate_closes=\(gate.closes) gate_held_ms=\(gate.heldSamples * 1_000 / sampleRate)"
+                + " gate_dropped_ms=\(gate.droppedSamples * 1_000 / sampleRate)"
+        }
+        print(line)
     }
 
     private static func printMark(

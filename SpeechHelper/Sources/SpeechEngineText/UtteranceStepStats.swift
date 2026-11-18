@@ -15,6 +15,10 @@ public struct UtteranceStepStats: Sendable {
 
     private let sampleRate: Int
     private var steps = 0
+    /// Time inside steps and the audio they covered: their ratio is the share of the
+    /// dictation the GPU was busy.
+    private var busyMilliseconds = 0.0
+    private var audioMilliseconds = 0
     private var slowestMilliseconds = 0.0
     private var slowestAudioMilliseconds = 0
     private var reportedSlowStep = false
@@ -34,6 +38,8 @@ public struct UtteranceStepStats: Sendable {
     public mutating func record(milliseconds: Double, samples: [Float], producedText: Bool) -> String? {
         let audioMilliseconds = samples.count * 1_000 / sampleRate
         steps += 1
+        busyMilliseconds += milliseconds
+        self.audioMilliseconds += audioMilliseconds
         if milliseconds > slowestMilliseconds {
             slowestMilliseconds = milliseconds
             slowestAudioMilliseconds = audioMilliseconds
@@ -56,15 +62,25 @@ public struct UtteranceStepStats: Sendable {
     }
 
     /// The summary line for an utterance that ran at least one step, then a fresh start.
-    /// `ending` is a fixed word: commit, clear or close.
-    public mutating func finish(ending: String, decodedTokens: Int) -> String? {
+    /// `ending` is a fixed word: commit, clear or close. `pauseGate` is the session's
+    /// gate, when it has one.
+    public mutating func finish(
+        ending: String, decodedTokens: Int, pauseGate: PauseGate.Stats? = nil
+    ) -> String? {
         defer { self = UtteranceStepStats(sampleRate: sampleRate) }
         guard steps > 0 else { return nil }
-        return Self.diagnosticPrefix
+        var line = Self.diagnosticPrefix
             + "utterance ended by \(ending): \(steps) steps, slowest \(Int(slowestMilliseconds)) ms "
             + "for \(slowestAudioMilliseconds) ms of audio, longest audio without text "
             + "\(longestAudioWithoutTextMilliseconds) ms (loudest \(Int(loudestInLongestRun.rounded())) dBFS), "
-            + "\(decodedTokens) tokens"
+            + "\(decodedTokens) tokens, stepping took \(Int(busyMilliseconds)) ms "
+            + "for \(audioMilliseconds) ms of audio"
+        if let pauseGate {
+            line += ", pause gate closed \(pauseGate.closes) times, held "
+                + "\(pauseGate.heldSamples * 1_000 / sampleRate) ms, dropped "
+                + "\(pauseGate.droppedSamples * 1_000 / sampleRate) ms"
+        }
+        return line
     }
 
     /// RMS level of float samples in [-1, 1], in dBFS; -120 for silence or no samples.

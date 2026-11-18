@@ -12,9 +12,11 @@ import SpeechEngineText
 
 final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
     private let model: VoxtralRealtimeModel
+    private let pauseGate: PauseGate.Mode?
 
-    init(model: VoxtralRealtimeModel) {
+    init(model: VoxtralRealtimeModel, pauseGate: PauseGate.Mode? = nil) {
         self.model = model
+        self.pauseGate = pauseGate
     }
 
     func makeSession(
@@ -28,15 +30,22 @@ final class VoxtralASREngine: SpeechASREngine, @unchecked Sendable {
         let maxDecodedTokens = utteranceLimit.maxDecodedTokens(
             frameRate: model.config.audioEncodingArgs.frameRate
         )
-        return VoxtralASRSession(
+        let delayMs = transcriptionDelayMs ?? model.config.transcriptionDelayMs
+        let session = VoxtralASRSession(
             session: model.makeStreamSession(
                 temperature: 0.0,
                 maxTokens: maxDecodedTokens,
                 transcriptionDelayMs: transcriptionDelayMs
             ),
             maxDecodedTokens: maxDecodedTokens,
-            delayMs: transcriptionDelayMs ?? model.config.transcriptionDelayMs,
+            delayMs: delayMs,
             leftPadTokens: model.config.nLeftPadTokens,
+            padTokenId: model.config.streamingPadTokenId
+        )
+        guard let pauseGate else { return session }
+        return PauseGatedSession(
+            session: session,
+            gate: PauseGate(configuration: .voxtral(mode: pauseGate, delayMs: delayMs)),
             padTokenId: model.config.streamingPadTokenId
         )
     }

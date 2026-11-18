@@ -30,7 +30,24 @@ final class UtteranceStepStatsTests: XCTestCase {
         XCTAssertEqual(
             stats.finish(ending: "close", decodedTokens: 10),
             "speechd diag: utterance ended by close: 10 steps, slowest 90 ms for 80 ms of audio, "
-                + "longest audio without text 400 ms (loudest -20 dBFS), 10 tokens"
+                + "longest audio without text 400 ms (loudest -20 dBFS), 10 tokens, "
+                + "stepping took 615 ms for 800 ms of audio"
+        )
+    }
+
+    /// A gated session's summary says what its gate did with the pauses.
+    func testTheSummaryOfAGatedSessionCountsWhatTheGateHeldAndDropped() {
+        var stats = UtteranceStepStats()
+        _ = stats.record(milliseconds: 55, samples: step(0.1), producedText: true)
+
+        let line = stats.finish(
+            ending: "commit", decodedTokens: 1,
+            pauseGate: PauseGate.Stats(closes: 2, droppedSamples: 32_000, heldSamples: 7_680)
+        )
+
+        XCTAssertEqual(
+            line?.hasSuffix("stepping took 55 ms for 80 ms of audio, pause gate closed 2 times, held 480 ms, dropped 2000 ms"),
+            true
         )
     }
 
