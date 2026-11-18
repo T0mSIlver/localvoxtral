@@ -40,7 +40,7 @@ let package = Package(
         // SpeechModelCatalog) and the Nemotron 3.5 streaming session.
         .package(
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "1ff862c19da1f2b1edea10ed2ea13ebb65aba7aa"
+            revision: "0cd877167f5777d1814ef2ebb534ba162a535b62"
         ),
     ],
     targets: [
