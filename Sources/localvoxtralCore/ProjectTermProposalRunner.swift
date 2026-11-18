@@ -245,11 +245,3 @@ extension ProjectTermProposal.Outcome {
         return .terms(terms, usage: usage, line: line)
     }
 }
-
-extension QuickCaptureDraft.Outcome {
-    /// A draft with `usage` beside it, when it has none of its own.
-    package func reporting(_ usage: ProjectTermProposal.Usage?) -> Self {
-        guard let usage, case .draft(let draft, nil) = self else { return self }
-        return .draft(draft, usage: usage)
-    }
-}

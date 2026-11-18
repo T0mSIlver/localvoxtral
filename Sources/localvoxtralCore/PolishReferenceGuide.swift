@@ -113,7 +113,7 @@ extension LLMPromptTemplates {
 extension LLMPromptTemplates {
     /// The fixed instructions every polish request carries after the
     /// profile's own rules: the repair guide when the request goes to
-    /// Anthropic, then the reference guide. Dictation, quick capture, the
+    /// Anthropic, then the reference guide. Dictation, the
     /// prompt-cache warmup and the Settings token count all build theirs
     /// here, so none of them can miss one (#1901); each then adds its own
     /// About-you block.

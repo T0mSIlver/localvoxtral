@@ -24,7 +24,20 @@ final class MistralRealtimeModelsTests: XCTestCase {
         XCTAssertEqual(MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3), takesTerms)
         XCTAssertEqual(MistralRealtimeModels.capabilities(for: MistralRealtimeModels.voxtral3Alias), takesTerms)
         XCTAssertEqual(
-            MistralRealtimeModels.capabilities(for: MistralRealtimeWebSocketClient.defaultModel), .audioOnly)
+            MistralRealtimeModels.capabilities(for: "voxtral-mini-transcribe-realtime-2602"), .audioOnly)
+    }
+
+    /// The default moved to Realtime 3 because Mistral retires the hosted
+    /// 2602 on 2027-04-30: a stored 2602 id becomes the default's empty form,
+    /// and every other stored value stays.
+    func testAStored2602DictationModelMovesToTheDefault() {
+        XCTAssertEqual(MistralRealtimeWebSocketClient.defaultModel, MistralRealtimeModels.voxtral3)
+        for stored in ["voxtral-mini-transcribe-realtime-2602", " Voxtral-Mini-Realtime-2602 "] {
+            XCTAssertEqual(MistralRealtimeModels.storedDictationModel(migrating: stored), "", stored)
+        }
+        for stored in ["", MistralRealtimeModels.voxtral3, "voxtral-mini-realtime-latest", "my-proxy-model"] {
+            XCTAssertEqual(MistralRealtimeModels.storedDictationModel(migrating: stored), stored, stored)
+        }
     }
 
     func testVoxtral3IsPricedUnderItsIdAndAlias() throws {
@@ -51,7 +64,7 @@ final class MistralRealtimeModelsTests: XCTestCase {
             ["Claude Code", "herdr"])
         XCTAssertEqual(
             MistralRealtimeWebSocketClient.sessionContextBias(
-                for: configuration, model: MistralRealtimeWebSocketClient.defaultModel),
+                for: configuration, model: "voxtral-mini-transcribe-realtime-2602"),
             [])
     }
 

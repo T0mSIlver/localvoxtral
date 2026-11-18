@@ -229,6 +229,11 @@ final class SpeakerTermSuggestionModel {
     /// Which run owns `phase`. A stopped run whose request returns late must
     /// not touch the row of the run that replaced it (review, 2026-09-21).
     @ObservationIgnored private var runID = 0
+    /// Where each chip on the row came from, for the outcome counts.
+    @ObservationIgnored private var sourceByKey: [String: TermSuggestionOutcomes.Source] = [:]
+
+    /// The app's defaults key for `TermSuggestionOutcomes` (LVX-11).
+    static let outcomesDefaultsKey = "settings.term_suggestion_outcomes"
 
     init(
         settings: SettingsStore,
@@ -265,21 +270,38 @@ final class SpeakerTermSuggestionModel {
     /// polishing model fix, confirmed across dictations. Called when the pane
     /// appears, so the list is there before anyone presses a button.
     ///
+    /// They pass the screen the model's answer passes: a learned term is
+    /// confirmed by being matched three times, which a term the recognizer
+    /// already spells right is too. On the owner's data (2026-11-04) both
+    /// refused chips that came from learned terms ("dashboard", "DeepSeek")
+    /// were of that kind.
+    ///
     /// Additive — a suggestion already on screen stays, and one the user has
-    /// added or refused never comes back.
-    func refreshLearnedSuggestions() {
-        let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
-        let learned = SpeakerTermSuggestions.filtered(
-            unsent(learnedTerms()),
-            terms: knownTerms,
-            dismissed: settings.polishDismissedTermSuggestions
-        ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
+    /// added or refused never comes back, also when they did so while the
+    /// dictations were being read.
+    func refreshLearnedSuggestions() async {
+        let candidates = learnedCandidates()
+        guard !candidates.isEmpty else { return }
+        let screened = TermSuggestionScreen.screened(candidates, dictations: await recentDictations())
+        let learned = learnedCandidates(from: screened)
         guard !learned.isEmpty else { return }
         suggestions = Array((suggestions + learned).prefix(SpeakerTermSuggestions.maxShown))
+        noteShown(source: .learned)
         // Never while a run is in flight: `.loading` is the row's progress
         // state, and dropping out of it would hide the Stop button and the
         // clock from a user whose request is still running.
         if phase == .nothingFound { phase = .idle }
+    }
+
+    /// The learned terms (or `terms`, screened from them) not known, refused
+    /// or already on screen.
+    private func learnedCandidates(from terms: [String]? = nil) -> [String] {
+        let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
+        return SpeakerTermSuggestions.filtered(
+            unsent(terms ?? learnedTerms()),
+            terms: knownTerms,
+            dismissed: settings.polishDismissedTermSuggestions
+        ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
     }
 
     /// What the Text processing sidebar row shows: every chip waiting, from
@@ -288,8 +310,8 @@ final class SpeakerTermSuggestionModel {
 
     func paneAppeared() {
         isPaneVisible = true
-        refreshLearnedSuggestions()
         hasUnseenSuggestions = false
+        Task { await refreshLearnedSuggestions() }
     }
 
     func paneDisappeared() {
@@ -297,9 +319,12 @@ final class SpeakerTermSuggestionModel {
     }
 
     /// The button's action. The model owns the task so a dictation can stop it.
+    /// It hands the cadence its starting count like a background run: the
+    /// dictations saved while the model answers were not read (LVX-93).
     func start() {
         guard phase != .loading else { return }
-        task = Task { await suggest() }
+        let countAtStart = settings.termSuggestionDictationsSinceRun
+        task = Task { await suggest(countAtStart: countAtStart) }
     }
 
     /// A run nobody asked for (`TermSuggestionCadence`). Same request, same
@@ -397,12 +422,13 @@ final class SpeakerTermSuggestionModel {
                     dismissed: settings.polishDismissedTermSuggestions
                 ).prefix(SpeakerTermSuggestions.maxShown)
             )
+            noteShown(source: .model)
             phase = suggestions.isEmpty && !background ? .nothingFound : .idle
             // A run that started before the pane had refreshed, or that ran
             // for minutes while dictation taught the app new terms, must not
             // leave the free chips out (review, 2026-09-20). Runs AFTER the
             // phase leaves `.loading`, which is what lets it fill.
-            refreshLearnedSuggestions()
+            await refreshLearnedSuggestions()
             Log.polishing.info("Term suggestions received: \(self.suggestions.count, privacy: .public)")
             return .completed
         } catch {
@@ -417,29 +443,80 @@ final class SpeakerTermSuggestionModel {
 
     func accept(_ term: String) {
         guard add([term]) else { return }
+        recordOutcome(.accepted, of: [term])
         suggestions.removeAll { $0 == term }
     }
 
     func acceptAll() {
         guard add(suggestions) else { return }
+        recordOutcome(.accepted, of: suggestions)
         suggestions = []
     }
 
     func dismiss(_ term: String) {
         settings.dismissTermSuggestion(term)
+        recordOutcome(.refused, of: [term])
         suggestions.removeAll { $0 == term }
+    }
+
+    // MARK: Outcome counts (LVX-11)
+
+    /// Counts the chips on the row that no count has seen yet, as offered
+    /// by `source`. Once per chip per launch: a learned chip offered again
+    /// after a relaunch counts again.
+    private func noteShown(source: TermSuggestionOutcomes.Source) {
+        let new = suggestions.map(SpeakerTermSuggestions.key).filter { sourceByKey[$0] == nil }
+        for key in new { sourceByKey[key] = source }
+        record(.shown, source: source, count: new.count)
+    }
+
+    private func recordOutcome(_ event: TermSuggestionOutcomes.Event, of terms: [String]) {
+        var counts: [TermSuggestionOutcomes.Source: Int] = [:]
+        for term in terms {
+            counts[sourceByKey[SpeakerTermSuggestions.key(term)] ?? .model, default: 0] += 1
+        }
+        for (source, count) in counts.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            record(event, source: source, count: count)
+        }
+    }
+
+    /// Adds to the saved counts in the app's defaults. Counts only: no term
+    /// is saved or logged.
+    private func record(_ event: TermSuggestionOutcomes.Event, source: TermSuggestionOutcomes.Source, count: Int) {
+        guard count > 0 else { return }
+        let defaults = settings.defaults
+        var outcomes = defaults.data(forKey: Self.outcomesDefaultsKey)
+            .flatMap { try? JSONDecoder().decode(TermSuggestionOutcomes.self, from: $0) }
+            ?? TermSuggestionOutcomes()
+        outcomes.record(event, source: source, count: count, at: now())
+        if let data = try? JSONEncoder().encode(outcomes) {
+            defaults.set(data, forKey: Self.outcomesDefaultsKey)
+        }
+        Log.polishing.info(
+            "Term suggestions \(String(describing: event), privacy: .public): \(count, privacy: .public) from \(source.rawValue, privacy: .public)"
+        )
     }
 
     /// False when the list's cap swallowed any of them: the chips stay and
     /// the row says why, instead of vanishing as if they had been added.
+    /// Checked after the assignment too, whose merge with the saved list
+    /// drops this copy's addition when another copy filled the list
+    /// (LVX-93).
     private func add(_ terms: [String]) -> Bool {
         let updated = SpeakerTerms.sanitized(settings.polishSpeakerTerms + terms)
         let wanted = Set(terms.map(SpeakerTermSuggestions.key))
-        guard wanted.isSubset(of: Set(updated.map(SpeakerTermSuggestions.key))) else {
+        func allKept(_ list: [String]) -> Bool {
+            wanted.isSubset(of: Set(list.map(SpeakerTermSuggestions.key)))
+        }
+        guard allKept(updated) else {
             phase = .failed("Terms list is full.")
             return false
         }
         settings.polishSpeakerTerms = updated
+        guard allKept(settings.polishSpeakerTerms) else {
+            phase = .failed("Terms list is full.")
+            return false
+        }
         if case .failed = phase { phase = .idle }
         return true
     }

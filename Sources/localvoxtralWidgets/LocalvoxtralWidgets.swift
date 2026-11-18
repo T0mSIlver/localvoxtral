@@ -43,6 +43,9 @@ struct SnapshotProvider: TimelineProvider {
     /// Entries a minute apart for the first hour, so an age like "2 min
     /// ago" stays true without the app writing anything.
     var minuteEntries = false
+    /// An entry where the snapshot goes stale, and a reload before it to
+    /// read the app's newer heartbeat (#2058).
+    var checksHeartbeat = false
 
     func placeholder(in context: Context) -> SnapshotEntry {
         SnapshotEntry(date: .now, snapshot: WidgetSampleData.snapshot(now: .now))
@@ -61,10 +64,15 @@ struct SnapshotProvider: TimelineProvider {
             dates += (1...59).map { now.addingTimeInterval(Double($0) * 60) }
         }
         let midnight = nextMidnight(after: now)
+        var reload = minuteEntries ? now.addingTimeInterval(3_600) : midnight
+        if checksHeartbeat, let snapshot, let check = snapshot.heartbeatCheckDate(now: now) {
+            dates.append(snapshot.staleDate)
+            reload = min(reload, check)
+        }
         completion(Timeline(
             entries: dates.filter { $0 < midnight }.map { SnapshotEntry(date: $0, snapshot: snapshot) }
                 + [SnapshotEntry(date: midnight, snapshot: snapshot)],
-            policy: minuteEntries ? .after(now.addingTimeInterval(3_600)) : .after(midnight)
+            policy: .after(reload)
         ))
     }
 }
@@ -102,7 +110,7 @@ struct PeriodProvider: AppIntentTimelineProvider {
 
 struct EnginesWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: WidgetShared.Kind.engines.rawValue, provider: SnapshotProvider()) { entry in
+        StaticConfiguration(kind: WidgetShared.Kind.engines.rawValue, provider: SnapshotProvider(checksHeartbeat: true)) { entry in
             EnginesEntryView(entry: entry)
         }
         .configurationDisplayName("Engines")
@@ -118,7 +126,7 @@ struct EnginesEntryView: View {
     var body: some View {
         Group {
             if let snapshot = entry.snapshot {
-                EnginesWidgetView(content: EnginesWidgetContent(snapshot.engines, size: family.size), size: family.size) {
+                EnginesWidgetView(content: EnginesWidgetContent(snapshot, size: family.size, now: entry.date), size: family.size) {
                     Button(intent: TurnOffPolishIntent()) {
                         Text("Turn off polish")
                     }

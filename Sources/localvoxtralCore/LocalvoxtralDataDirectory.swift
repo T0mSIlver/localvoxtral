@@ -1,7 +1,7 @@
 import Foundation
 
 /// The folder the app keeps its own data in: History, recordings, diagnostic
-/// records, learned terms, quick captures, the usage ledger, configs and the
+/// records, learned terms, the usage ledger, configs and the
 /// Claude session cache. `~/Library/Application Support/localvoxtral`, or
 /// `LOCALVOXTRAL_DATA_HOME` when set.
 ///

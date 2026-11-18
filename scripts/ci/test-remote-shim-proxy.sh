@@ -4,8 +4,7 @@
 # ALL_PROXY, or a proxy from ~/.curlrc. That proxy would get the bearer token
 # and the prompt outside the ssh tunnel.
 #
-# Runs the Claude Code shim, the Vibe shim, capture.sh (through the README ask)
-# and the doctor with real curl, every proxy variable set and a ~/.curlrc,
+# Runs the Claude Code shim, the Vibe shim and the doctor with real curl, every proxy variable set and a ~/.curlrc,
 # against two loopback listeners: the Mac and a proxy. The Mac must get every
 # request, the proxy none, and the ~/.curlrc must not be read. Then checks
 # that every curl call in the remote hooks and the Mac's ssh probes bypasses
@@ -50,7 +49,7 @@ wait_for() {
 # --- Listeners -----------------------------------------------------------------
 # Each binds port 0, writes its port to a file, and logs one line per request:
 # the request line and whether it carried the token. The Mac answers every
-# hook with the README ask and the doctor with its report; the proxy answers
+# hook and the doctor with its report; the proxy answers
 # 200 to anything, so a shim that went through it would still see success.
 cat >"$TMP_DIR/listener.py" <<'EOF'
 import http.server, sys
@@ -65,8 +64,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         doctor = role == "mac" and self.path == "/v1/doctor"
         body = b"1. [ok  ] App: localvoxtral.\n\nNo problems found.\n" if doctor else b"{}"
         self.send_response(401 if doctor and auth != "token" else 200)
-        if role == "mac" and "/v1/hook/" in self.path:
-            self.send_header("X-Lvx-Readme", "wanted")
         if doctor:
             self.send_header("X-Lvx-Doctor-Failed", "0")
         self.send_header("Content-Length", str(len(body)))
@@ -115,7 +112,7 @@ git -C "$TMP_DIR/repo" commit -q -m init
 
 VIBE_DIR="$TMP_DIR/vibe-remote"
 mkdir -p "$VIBE_DIR" "$HOME_DIR/.vibe"
-cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$PLUGIN/hooks/terms.sh" "$PLUGIN/hooks/capture.sh" "$VIBE_DIR/"
+cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$PLUGIN/hooks/terms.sh" "$PLUGIN/hooks/repository.sh" "$VIBE_DIR/"
 echo "$TOKEN" >"$VIBE_DIR/token"
 echo "$PORT" >"$VIBE_DIR/port"
 echo 'model = "x"' >"$HOME_DIR/.vibe/config.toml"
@@ -143,27 +140,23 @@ $(cat "$TMP_DIR/proxy.log")"
   [ ! -e "$TMP_DIR/curlrc-trace" ] || fail "$1: curl read ~/.curlrc"
 }
 
-# 1. The Claude Code shim: the prompt and the README the ask starts.
+# 1. The Claude Code shim: the prompt.
 printf '{"session_id":"sess-1","prompt":"rename the enum"}' \
   | host_env sh "$PLUGIN/hooks/post.sh" UserPromptSubmit >/dev/null || fail "claude shim exited $?"
 expect_no_leak "claude shim"
-wait_for "$TMP_DIR/mac.log" "POST /v1/readme token" || fail "claude shim: no README reached the Mac:
-$(cat "$TMP_DIR/mac.log")"
 grep -q "POST /v1/hook/UserPromptSubmit token" "$TMP_DIR/mac.log" || fail "claude shim: no prompt reached the Mac"
 expect_no_leak "claude shim"
-pass "claude shim and capture.sh reach the Mac, never the proxy"
+pass "claude shim reaches the Mac, never the proxy"
 
-# 2. The Vibe shim, from a fresh state so its README ask runs too.
+# 2. The Vibe shim, from a fresh state.
 : >"$TMP_DIR/mac.log"
 rm -rf "$TMP_DIR/run"
 mkdir -p "$TMP_DIR/run"
 printf '%s' "$VIBE_PAYLOAD" | host_env sh "$VIBE_DIR/post.sh" >/dev/null || fail "vibe shim exited $?"
 expect_no_leak "vibe shim"
-wait_for "$TMP_DIR/mac.log" "POST /v1/readme token" || fail "vibe shim: no README reached the Mac:
-$(cat "$TMP_DIR/mac.log")"
 grep -q "POST /v1/hook/UserPromptSubmit token" "$TMP_DIR/mac.log" || fail "vibe shim: no prompt reached the Mac"
 expect_no_leak "vibe shim"
-pass "vibe shim and capture.sh reach the Mac, never the proxy"
+pass "vibe shim reaches the Mac, never the proxy"
 
 # 3. The doctor, with and without the token.
 : >"$TMP_DIR/mac.log"

@@ -10,7 +10,7 @@ import os
 enum OverlaySpokenSend: Equatable {
     /// Return, pressed in this app while it is frontmost.
     case returnKey(pid_t)
-    /// The opencode prompt relay's submit, after its append (#719).
+    /// A prompt route's submit (the cmux surface's), after its append.
     case promptRelaySubmit
     /// The joined Claude Code session's mod fills and submits (#1644): no
     /// key, so neither focus nor Secure Keyboard Entry matters. A refusal
@@ -269,20 +269,13 @@ extension DictationSessionController {
     }
 
     /// The session whose pane the words are for, when its pane can be read
-    /// back: the one a go-to brought forward, or else the one the dictation
-    /// joined. Nil when there is none, or its pane cannot be read back (a
-    /// plain ssh or cmux session); the pid check alone then applies.
+    /// back: the one the dictation joined. Nil when there is none, or its
+    /// pane cannot be read back (a plain ssh or cmux session); the pid
+    /// check alone then applies.
     private func liveSpokenSendPaneSessionID() -> String? {
-        switch liveGoToLanding {
-        case .verified(let sessionID)?:
-            return sessionID
-        case .unverified?:
-            return nil
-        case nil:
-            guard let snapshot = context.claudeSessionJoin?.snapshot else { return nil }
-            if case .unsupported = SessionPaneFocusRoute.of(snapshot) { return nil }
-            return snapshot.sessionID
-        }
+        guard let snapshot = context.claudeSessionJoin?.snapshot else { return nil }
+        if case .unsupported = SessionPaneFocusRoute.of(snapshot) { return nil }
+        return snapshot.sessionID
     }
 
     /// Live text was typed: the next withheld segment needs a space before
@@ -329,12 +322,6 @@ extension DictationSessionController {
     private func liveSpokenSendReturnTarget() -> pid_t? {
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
             Log.dictation.notice("spoken send: Secure Keyboard Entry is on; no Return")
-            return nil
-        }
-        // A go-to whose pane did not read back as the session's may have
-        // brought another prompt forward.
-        if case .unverified? = liveGoToLanding {
-            Log.dictation.notice("spoken send: the last go-to was not verified; no Return")
             return nil
         }
         guard !liveSpokenSendPaneLeft else {

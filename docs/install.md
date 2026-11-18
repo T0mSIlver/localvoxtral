@@ -1,6 +1,6 @@
 # Install
 
-Install localvoxtral, update it, remove it, or switch to nightly builds.
+Install localvoxtral, update it, remove it, or switch to RC builds.
 You need an Apple Silicon Mac running macOS 15 or later.
 
 ## Install localvoxtral
@@ -39,7 +39,21 @@ it from Settings.
 
 ## Update localvoxtral
 
-Update the same way you installed:
+localvoxtral updates itself. It checks for a new stable release once a day,
+downloads it in the background, and installs it when no dictation is running
+and you have been away from the keyboard for five minutes. The menu bar icon
+goes away for a few seconds and comes back on the new version. Most updates
+download only what changed, a few MB.
+
+To choose when to install, turn off **Install updates automatically** in
+**Settings → About**: localvoxtral then shows each update in a window and
+installs when you click Install. **Check for Updates…** on the same pane
+checks now.
+
+An RC build moves to the first stable release built after it. Copies
+built from source never update themselves, and releases from before November
+2026 have no updater: update one of those once, the same way you installed
+it:
 
 - Run the installer script again.
 - With Homebrew, run the upgrade:
@@ -47,6 +61,8 @@ Update the same way you installed:
   ```bash
   brew upgrade --cask localvoxtral
   ```
+
+  Homebrew leaves later updates to the app, unless you pass `--greedy`.
 
 - Or download the newest DMG and replace the app in your Applications folder.
 
@@ -101,6 +117,7 @@ your login keychain.
    ```bash
    rm -rf ~/.cache/huggingface/hub/models--T0mSIlver--Voxtral-Mini-4B-Realtime-2602-4bit-qhead \
      ~/.cache/huggingface/hub/models--mlx-community--nemotron-3.5-asr-streaming-0.6b-8bit \
+     ~/.cache/huggingface/hub/models--T0mSIlver--nemotron-labs-unified-asr-0.6b-8bit \
      ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-0.8B-8bit \
      ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-OptiQ-4bit \
      ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-OptiQ-4bit
@@ -116,7 +133,7 @@ Keychain Access.
 
 The cask follows stable releases. A stable release ships every day that the
 main branch has something new and checked, so a Homebrew upgrade never moves
-you onto a nightly.
+you onto an RC.
 
 The tap is
 [T0mSIlver/homebrew-localvoxtral](https://github.com/T0mSIlver/homebrew-localvoxtral).
@@ -126,20 +143,22 @@ public.
 [@achembarpu](https://github.com/achembarpu) wrote the first version of the
 cask.
 
-## Try a nightly build
+## Try an RC build
 
-Stable releases ship daily, so most people need nothing else. Nightlies are
-prereleases of the main branch, cut on demand, for testing a fix before the
-next daily release.
+Stable releases ship daily, so most people need nothing else. An RC
+(release candidate) is a prerelease cut on demand, from the main branch or
+from a branch that has not merged yet, for testing a fix before the next
+daily release. Its tag looks like `v0.18.0-rc.1`: the next daily's version
+plus `-rc.N`.
 
-Nightlies pass the same checks as a stable release except the end-to-end
+RCs pass the same checks as a stable release except the end-to-end
 dictation check. They pass unit tests, live speech-to-text integration,
 packaging, and a launch smoke test.
 
-To install the newest nightly or stable release, whichever is newer, run:
+To install the newest RC or stable release, whichever is newer, run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=nightly bash
+curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | LOCALVOXTRAL_CHANNEL=rc bash
 ```
 
 Re-running that command never leaves you behind stable. To follow stable
@@ -153,8 +172,8 @@ curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts
 ```
 
 Take the tag from the [Releases](https://github.com/T0mSIlver/localvoxtral/releases)
-page. Only the seven most recent nightlies are kept, so pin a tag only for a build
-you are testing now. Nightlies are notarized like stable releases. The rare
-nightly built while signing was unavailable says so at the top of its
+page. Only the seven most recent RCs are kept, so pin a tag only for a build
+you are testing now. RCs are notarized like stable releases. The rare
+RC built while signing was unavailable says so at the top of its
 release notes; install it with the installer script, which re-signs it on
 your Mac.

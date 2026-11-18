@@ -56,7 +56,6 @@ final class SendTriggerPhrasesTests: XCTestCase {
 
     func testOnlyAToggledOrCapturedDictationStopsByVoice() {
         XCTAssertTrue(SpokenStopRule.stopsByVoice(.toggled))
-        XCTAssertTrue(SpokenStopRule.stopsByVoice(.quickCapture))
         XCTAssertFalse(SpokenStopRule.stopsByVoice(.held))
     }
 

@@ -2,8 +2,7 @@
 
 [herdr](https://herdr.dev) is a terminal multiplexer for coding agents. When a
 Claude Code, opencode, Codex or Mistral Vibe session runs in a herdr pane,
-localvoxtral joins that exact pane: it reads its screen for context and writes
-your words into it through herdr itself.
+localvoxtral joins that exact pane and reads its screen for context.
 
 herdr needs no plugin. Install the plugin or hooks of the agent you run in the
 pane, as for any terminal: [Claude Code](https://t0msilver.github.io/localvoxtral/integrations/claude-code/),
@@ -26,28 +25,10 @@ from herdr. Neighboring panes and the rest of the herdr view never reach it.
 [Dictating into Claude Code](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#dictating-into-claude-code)
 has a video of a join inside herdr.
 
-**Words that land in the pane, whatever has focus.** Dictation goes into the
-joined pane through herdr's socket, not as keystrokes. It needs no clipboard
-and lands even if you click another window while you speak:
-
-- In **Overlay Buffer**, the app sends the text once, when it commits.
-- In **Live Auto-Paste**, it sends each finished phrase as you speak.
-- "Send it" presses Enter in that pane
-  ([Press Return with "send it"](https://t0msilver.github.io/localvoxtral/docs/dictation/#press-return-with-send-it)).
-
-With polishing off, this works in a herdr running on this Mac. On a remote or
-federated herdr (below), it needs the context join, so polishing must be on;
-otherwise the app types the words as keystrokes.
-
-**opencode in a herdr pane.** The opencode plugin's prompt relay puts your
-words into opencode's prompt directly. In a local herdr, it finds the pane
-even with polishing off, so the words don't fall back to keystrokes.
-
-**"Send that to" a session in another pane.** In Overlay Buffer, ending a
-dictation with "send that to" and a session's name sends it to that session
-and presses Enter there. A session in a local herdr pane receives it without
-its pane coming forward
-([Send a dictation to another session](https://t0msilver.github.io/localvoxtral/docs/agents/#send-a-dictation-to-another-session)).
+**Words that land in the pane.** Dictation is typed into the focused
+terminal, as in any other pane. "Send it" presses Enter there only after the
+app has read back that herdr's focused pane is still the joined session
+([Press Return with "send it"](https://t0msilver.github.io/localvoxtral/docs/dictation/#press-return-with-send-it)).
 
 ## Set up on this Mac
 
@@ -105,19 +86,10 @@ carry the session's hooks back to your Mac. Details:
 
 ## Safety rules
 
-herdr's socket gives full control over every pane, so localvoxtral limits
-itself to two actions on the joined pane: add text, and press Enter.
-
-- **No stray Enter.** Text that holds a line break or another control
-  character never goes through herdr, since herdr would pass a line break
-  to the pane as Enter.
-- **No Enter at a shell.** Before pressing Enter, the app checks that the
-  agent still runs in the pane's foreground. If the pane is back at its shell
-  prompt, no Enter is pressed and the dictation stays in History.
-- **Never typed twice.** When herdr refuses a write, the app types the text
-  only if your keystrokes would reach the same pane: its terminal in front and
-  herdr's focus on that pane. Otherwise, and whenever a write may already have
-  landed, the text stays in History.
+localvoxtral never writes into a herdr pane. Your words are typed into the
+terminal in front. Before "send it" presses Enter, the app reads back that
+herdr's focused pane is still the joined session and that the agent still
+runs in the pane's foreground. If not, no Enter is pressed.
 
 ## What doesn't work
 
@@ -127,8 +99,6 @@ itself to two actions on the joined pane: add text, and press Enter.
   screen, your last prompt, the names of files the agent recently touched and
   short tool excerpts. It reads nothing from the host's repository: no
   status, no diff, no file list.
-- **"Send that to" a remote or federated session.** The popover says "Can't
-  send to that session yet".
 - **Codex and opencode on a remote host.** Only Claude Code and Mistral Vibe
   send their hooks back from a host.
 

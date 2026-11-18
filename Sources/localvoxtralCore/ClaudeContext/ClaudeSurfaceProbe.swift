@@ -1,8 +1,9 @@
 import Foundation
 
-/// `localvoxtral --probe-surface [--json] [--desktop]`: resolve the Claude Code
-/// join for whatever surface is frontmost right now (or, with `--desktop`, for
-/// the session focused in Claude Desktop), print the answer, exit.
+/// `localvoxtral --probe-surface [--json] [--desktop | --t3]`: resolve the
+/// Claude Code join for whatever surface is frontmost right now (or, with
+/// `--desktop`, for the session focused in Claude Desktop, and with `--t3`,
+/// for the thread focused in T3 Code), print the answer, exit.
 ///
 /// The verb exists because the join is otherwise unobservable. In the field the
 /// only symptom of a join that will not resolve is context that never arrives,
@@ -30,7 +31,7 @@ import Foundation
 /// Everything else the probe wires is a read: the AppleScript focused-pane tty,
 /// the herdr process-table binding, `pane.current`/`pane.process_info` on a
 /// local herdr socket, the AX focused-window identity, the app's saved session
-/// registry, and, only under `--desktop`, the address of Claude Desktop's
+/// registry, and, only under `--desktop` or `--t3`, the address of that app's
 /// focused web view (a read that switches Electron's accessibility tree on,
 /// which is why it waits for the flag). Nothing is written,
 /// nothing outlives the process, and the printed summary carries no token,
@@ -58,10 +59,13 @@ package enum ClaudeSurfaceProbe {
         /// Probe the running Claude Desktop instead of the frontmost app, with
         /// the Desktop arm's Accessibility reader wired in.
         package var desktop = false
+        /// Probe the running T3 Code instead, with the T3 Code arm's reader.
+        package var t3 = false
 
-        package init(json: Bool = false, desktop: Bool = false) {
+        package init(json: Bool = false, desktop: Bool = false, t3: Bool = false) {
             self.json = json
             self.desktop = desktop
+            self.t3 = t3
         }
     }
 
@@ -85,11 +89,12 @@ package enum ClaudeSurfaceProbe {
         case unsupportedSurface = "probe: frontmost application is not a joinable surface"
         case noLiveSessions = "probe: no live Claude sessions in the registry"
         case claudeDesktopNotRunning = "probe: Claude Desktop is not running"
+        case t3CodeNotRunning = "probe: T3 Code is not running"
         case timedOut = "probe: resolver did not answer within the probe deadline"
     }
 
     package static let usageText = """
-    usage: localvoxtral --probe-surface [--json] [--desktop]
+    usage: localvoxtral --probe-surface [--json] [--desktop | --t3]
 
     Resolves the Claude Code session join for the frontmost surface once and
     exits. Run it from the terminal you would dictate into: that terminal is
@@ -97,6 +102,7 @@ package enum ClaudeSurfaceProbe {
 
       --json      one line of JSON instead of the aligned human form
       --desktop   probe the session focused in Claude Desktop instead
+      --t3        probe the thread focused in T3 Code instead
 
     Exit status: 0 an arm joined, 1 no arm joined, 2 usage error.
     """
@@ -110,9 +116,13 @@ package enum ClaudeSurfaceProbe {
             case verb: continue
             case "--json": options.json = true
             case "--desktop": options.desktop = true
+            case "--t3": options.t3 = true
             default:
                 return .usageError("unrecognized option for \(verb): \(argument)")
             }
+        }
+        if options.desktop && options.t3 {
+            return .usageError("\(verb) takes --desktop or --t3, not both")
         }
         return .run(options)
     }
@@ -142,6 +152,7 @@ package enum ClaudeSurfaceProbe {
         guard TerminalScreenAllowlist.isSupported(target.bundleID)
             || BrowserTabAllowlist.isSupported(target.bundleID)
             || ClaudeDesktopAllowlist.isSupported(target.bundleID)
+            || T3CodeAllowlist.isSupported(target.bundleID)
         else {
             // The resolver returns nil for an unlisted bundle without noting a
             // cause, and "no reason at all" is the least useful thing a

@@ -16,7 +16,7 @@ extension ClaudeRemoteEnrollmentService {
     /// Read-only by construction: it writes nothing locally (no filesystem seam
     /// is touched) and runs nothing on the host that changes state — one or two
     /// curls against the forwarded port (`tunnelVerdict`) and one `claude
-    /// plugin list`.
+    /// plugin list --json`.
     ///
     /// **No probe output ever leaves this method.** Not in `summary`, not in
     /// `hint`, not in `detail` — every string returned is composed here from
@@ -43,16 +43,10 @@ extension ClaudeRemoteEnrollmentService {
     /// Throws only `.executionNotConfigured` (no runner injected — the default)
     /// and `.invalidHostAlias`. Everything else becomes a failed check, so one
     /// broken probe cannot hide the other's answer.
-    /// - Parameter staleAllocatedPort: pass this Mac's allocation when
-    ///   `remoteForwardPort` came from `~/.ssh/config` and the two disagree.
-    ///   The probe follows the CONFIG — that is the tunnel that exists — and
-    ///   every tunnel verdict names the mismatch instead of reporting a healthy
-    ///   old tunnel as a dead new one.
     public func executeVerification(
         sshHostAlias: String,
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
         listenerIsBound: Bool,
-        staleAllocatedPort: UInt16? = nil,
         includesPluginCheck: Bool = true,
         timeout: TimeInterval = defaultVerificationTimeout
     ) throws -> [VerificationCheck] {
@@ -70,7 +64,6 @@ extension ClaudeRemoteEnrollmentService {
             sshHostAlias: sshHostAlias,
             remoteForwardPort: remoteForwardPort,
             listenerIsBound: listenerIsBound,
-            staleAllocatedPort: staleAllocatedPort,
             runner: runner,
             timeout: timeout
         )
@@ -95,7 +88,7 @@ extension ClaudeRemoteEnrollmentService {
                 "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
                 sshHostAlias, "/bin/sh", "-s",
             ],
-            standardInput: Self.remoteScript(command: "claude plugin list")
+            standardInput: Data(Self.remotePluginListingScript.utf8)
         ) { Self.pluginCheck(result: $0, sshHostAlias: sshHostAlias) }
 
         Log.claudeContext.info(
@@ -124,7 +117,6 @@ extension ClaudeRemoteEnrollmentService {
         sshHostAlias: String,
         remoteForwardPort: UInt16,
         listenerIsBound: Bool,
-        staleAllocatedPort: UInt16?,
         runner: Runner,
         timeout: TimeInterval
     ) -> VerificationCheck {
@@ -142,8 +134,7 @@ extension ClaudeRemoteEnrollmentService {
                 result: result,
                 sshHostAlias: sshHostAlias,
                 remoteForwardPort: remoteForwardPort,
-                listenerIsBound: listenerIsBound,
-                staleAllocatedPort: staleAllocatedPort
+                listenerIsBound: listenerIsBound
             )
         }
         guard let standingResult, Self.nothingAnswered(standingResult) else { return standing }
@@ -159,8 +150,7 @@ extension ClaudeRemoteEnrollmentService {
                 result: result,
                 sshHostAlias: sshHostAlias,
                 remoteForwardPort: remoteForwardPort,
-                listenerIsBound: listenerIsBound,
-                staleAllocatedPort: staleAllocatedPort
+                listenerIsBound: listenerIsBound
             )
         }
     }
@@ -198,15 +188,13 @@ extension ClaudeRemoteEnrollmentService {
         result: RunResult,
         sshHostAlias: String,
         remoteForwardPort: UInt16,
-        listenerIsBound: Bool,
-        staleAllocatedPort: UInt16? = nil
+        listenerIsBound: Bool
     ) -> VerificationCheck {
         var check = tunnelCheck(
             result: result,
             sshHostAlias: sshHostAlias,
             remoteForwardPort: remoteForwardPort,
-            listenerIsBound: listenerIsBound,
-            staleAllocatedPort: staleAllocatedPort
+            listenerIsBound: listenerIsBound
         )
         // Our listener answered through our own forward: the block is right,
         // and the only thing missing is a connection that stays.
@@ -405,40 +393,11 @@ extension ClaudeRemoteEnrollmentService {
         }
     }
 
-    /// The tunnel exists on a port this Mac no longer allocates.
-    ///
-    /// Not a pass: the enrollment in front of the user names `allocatedPort`,
-    /// and half of the setup is on the other one. Not a failure of the tunnel
-    /// either — it says what is actually true over there, then names the one
-    /// step that fixes it (review finding, round 3).
-    package static func staleConfigTunnelCheck(
-        probedPort: UInt16,
-        allocatedPort: UInt16,
-        tunnelIsUp: Bool
-    ) -> VerificationCheck {
-        VerificationCheck(
-            kind: .tunnel,
-            passed: false,
-            summary: tunnelIsUp
-                ? "Tunnel is up on port \(probedPort), which is no longer this Mac's port."
-                : "No tunnel is live on port \(probedPort), and that is not this Mac's port either.",
-            hint: "Your ~/.ssh/config still forwards \(probedPort). Re-run step 1 to move it to "
-                + "\(allocatedPort), then step 2 so the host posts there too.",
-            detail: "The check followed ~/.ssh/config (port \(probedPort)) rather than this "
-                + "install's allocation (port \(allocatedPort))."
-        )
-    }
-
-    /// - Parameter staleAllocatedPort: non-nil when the probe followed
-    ///   `~/.ssh/config` to a port that is NOT this Mac's allocation. Every
-    ///   verdict then says so, because "the tunnel on 8473 is fine" is the
-    ///   right answer to the wrong question until step 1 is re-run.
     package static func tunnelCheck(
         result: RunResult,
         sshHostAlias: String,
         remoteForwardPort: UInt16,
-        listenerIsBound: Bool,
-        staleAllocatedPort: UInt16? = nil
+        listenerIsBound: Bool
     ) -> VerificationCheck {
         guard result.succeeded else {
             return VerificationCheck(
@@ -468,29 +427,6 @@ extension ClaudeRemoteEnrollmentService {
         // no framed line at all, which means the script never got to print one
         // — is "nothing answered", not a status.
         let code = httpCode(in: result)
-
-        // A tunnel on a port this Mac no longer allocates is its own answer,
-        // whichever way the probe came back: reporting only "up" or "nothing"
-        // would describe a port the enrollment in front of the user does not
-        // name.
-        if let staleAllocatedPort {
-            switch code {
-            case "401":
-                return staleConfigTunnelCheck(
-                    probedPort: remoteForwardPort,
-                    allocatedPort: staleAllocatedPort,
-                    tunnelIsUp: listenerIsBound
-                )
-            case "000", nil:
-                return staleConfigTunnelCheck(
-                    probedPort: remoteForwardPort,
-                    allocatedPort: staleAllocatedPort,
-                    tunnelIsUp: false
-                )
-            default:
-                break
-            }
-        }
 
         switch code {
         case "401":
@@ -561,13 +497,45 @@ extension ClaudeRemoteEnrollmentService {
                 detail: "`claude plugin list` exited with code \(result.exitCode)."
             )
         }
-        guard result.message.contains(ClaudePluginAssets.remotePluginName) else {
+        // Decoded, not text-matched: the listing names a disabled plugin, and
+        // one whose marketplace failed to load, like a working one (#2067).
+        let entry: ClaudePluginListEntry?
+        do {
+            entry = try Self.remotePluginEntry(inFramedOutput: result.message, reference: Self.remotePluginReference)
+        } catch {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "Could not list plugins on \(sshHostAlias).",
+                hint: "Run `ssh \(sshHostAlias) true` in a terminal to see whether the host is reachable.",
+                detail: "The host's plugin listing could not be decoded."
+            )
+        }
+        guard let entry else {
             return VerificationCheck(
                 kind: .plugin,
                 passed: false,
                 summary: "The plugin is not installed on \(sshHostAlias).",
                 hint: "Run step 2 on the host.",
                 detail: "`claude plugin list` did not name \(ClaudePluginAssets.remotePluginName)."
+            )
+        }
+        if entry.enabled == false {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: ClaudePluginStatus.failedToLoad(version: nil).sentence,
+                hint: "Run `claude plugin enable \(Self.remotePluginReference)` on \(sshHostAlias).",
+                detail: "`claude plugin list` lists \(ClaudePluginAssets.remotePluginName) as disabled."
+            )
+        }
+        if entry.marketplaceFailedToLoad {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: ClaudePluginStatus.failedToLoad(version: nil).sentence,
+                hint: "Run step 2 on the host.",
+                detail: "`claude plugin list` reports that the localvoxtral marketplace failed to load."
             )
         }
         return VerificationCheck(

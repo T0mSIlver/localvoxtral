@@ -56,10 +56,7 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     /// at `markPolished` flips the flag the moment the code yields.
     var commitsInPolishedTurn: [Bool] = []
     private var polishedTurnEnded: Bool?
-    /// Every destination strip the overlay was asked to show (#840).
-    var shownDestinations: [OverlayDestinationStrip?] = []
     /// Every draft a review asked the overlay to show (#927).
-    var shownDraftReviews: [QuickCaptureDraftSnapshot?] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
@@ -123,14 +120,6 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     }
 
     func captureLiveCommitTargetAppPID() {}
-
-    func showDestinations(_ strip: OverlayDestinationStrip?) {
-        shownDestinations.append(strip)
-    }
-
-    func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
-        shownDraftReviews.append(draft)
-    }
 
     func markPolished(_ polished: Bool) {
         markPolishedCalls.append(polished)

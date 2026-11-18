@@ -34,12 +34,12 @@ public enum ClaudeRemoteAgentCodec {
         return agent
     }
 
-    /// Labels only Claude's own tooling allocates: a Remote Control bridge
-    /// session and a Claude Desktop view. Another agent started inside such a
-    /// session inherits the variables, and joining it to that Claude view
-    /// would attach the wrong session's context. The local publisher withholds
-    /// them for the same reason.
-    static let claudeOnlyFields: [ClaudeRemoteEnvironmentField] = [.bridgeSessionID, .desktopSessionID]
+    /// Labels that name a Claude Code session's view: a Remote Control bridge
+    /// session, a Claude Desktop view and a T3 Code thread. Another agent
+    /// started inside such a session inherits the variables, and joining it to
+    /// that view would attach the wrong session's context. The local publisher
+    /// withholds them for the same reason.
+    static let claudeOnlyFields: [ClaudeRemoteEnvironmentField] = [.bridgeSessionID, .desktopSessionID, .t3ThreadID]
 
     public static func environment(
         _ environment: ClaudeRemoteSessionEnvironment?,

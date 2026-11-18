@@ -6,19 +6,22 @@ import FoundationNetworking
 
 /// Mistral's batch transcription endpoint (`POST /v1/audio/transcriptions`),
 /// used for the second pass an Overlay Buffer dictation gets on stop in
-/// Mistral API mode (#317): the realtime model takes no vocabulary, the batch
-/// model takes up to 100 `context_bias` terms.
+/// Mistral API mode (#317) and for the stall backfill: the model takes up to
+/// 100 `context_bias` terms.
 ///
-/// Docs: `context_bias` is an array of strings on the multipart request, at
-/// most 100 "words or phrases", optimized for English
-/// (docs.mistral.ai/studio/audio/speech_to_text/offline_transcription,
-/// "Context biasing"). Measured on the live API (2026-09-26), not in the docs:
-/// an item holding whitespace or a comma is a 400 ("must not contain commas or
-/// whitespace"), and a phrase joined with `_` comes back spelled with spaces.
+/// The model is Voxtral Mini Transcribe 3 (`voxtral-mini-transcribe-3-0`).
+/// Mistral deprecated the 2602 batch model (`voxtral-mini-2602`, alias
+/// `voxtral-mini-latest`) on 2026-10-31 and retires it on 2027-04-30.
+/// Measured on the live API (2026-11-04), not in the docs: Transcribe 3 takes
+/// phrases with spaces and items with commas, and writes a listed identifier
+/// as listed ("OverlayBufferStateMachine"). The 2602 model refused both with
+/// a 400, which is why terms used to go out joined with `_`.
 package enum MistralBatchTranscription {
-    /// Voxtral Mini Transcribe 2, the one model the endpoint serves.
-    package static let model = "voxtral-mini-latest"
+    package static let model = "voxtral-mini-transcribe-3-0"
     package static let maxContextBiasTerms = 100
+    /// The batch model takes terms the way Voxtral Realtime 3 does at start.
+    package static let capabilities = DictationModelCapabilities(
+        termBias: .sessionList(maxTerms: maxContextBiasTerms))
 
     // MARK: - Endpoint
 
@@ -43,49 +46,11 @@ package enum MistralBatchTranscription {
 
     // MARK: - Terms
 
-    /// The `context_bias` list: candidates in priority order, each made
-    /// acceptable to the API (whitespace runs become `_`; an item with a comma
-    /// is dropped, since no joiner keeps its meaning), duplicates dropped by a
-    /// case-insensitive key keeping the first spelling, and cut at 100.
+    /// The `context_bias` list: candidates in priority order, whitespace runs
+    /// collapsed to one space, duplicates dropped by a case-insensitive key
+    /// keeping the first spelling, cut at 100.
     package static func contextBias(from candidates: [String]) -> [String] {
-        var seen = Set<String>()
-        var terms: [String] = []
-        for candidate in candidates {
-            let words = candidate.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-            guard !words.isEmpty else { continue }
-            let term = words.joined(separator: "_")
-            guard !term.contains(",") else { continue }
-            guard seen.insert(term.lowercased()).inserted else { continue }
-            terms.append(term)
-            if terms.count == maxContextBiasTerms { break }
-        }
-        return terms
-    }
-
-    /// The answer with every phrase `contextBias` joined put back as it was
-    /// listed: the model writes about half of them as sent ("Claude_Code"),
-    /// the rest with spaces (measured 2026-09-26 on the term-recall set: 22
-    /// joined, 21 spaced). A term that held `_` itself is left alone.
-    package static func restoringPhrases(in text: String, candidates: [String]) -> String {
-        let sent = Set(contextBias(from: candidates))
-        var result = text
-        for candidate in candidates {
-            let words = candidate.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-            guard words.count > 1 else { continue }
-            let joined = words.joined(separator: "_")
-            guard sent.contains(joined) else { continue }
-            let pattern = "(?<![\\p{L}\\p{N}_])"
-                + NSRegularExpression.escapedPattern(for: joined)
-                + "(?![\\p{L}\\p{N}_])"
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-            else { continue }
-            result = regex.stringByReplacingMatches(
-                in: result,
-                range: NSRange(result.startIndex..., in: result),
-                withTemplate: NSRegularExpression.escapedTemplate(for: words.joined(separator: " "))
-            )
-        }
-        return result
+        capabilities.sessionTerms(from: candidates)
     }
 
     // MARK: - Request
@@ -196,6 +161,7 @@ extension MistralBatchTranscription {
 package protocol MistralBatchTranscribing: Sendable {
     /// `onUpload` gets the upload's measurement once the request ends,
     /// whether it answered, failed or was cancelled, when it sent anything.
+    /// It may come after `transcribe` returns.
     func transcribe(
         wav: Data,
         language: String?,
@@ -248,8 +214,14 @@ package struct MistralBatchTranscriptionClient: MistralBatchTranscribing {
             timeout: Self.requestTimeout
         )
         let meter = UploadMeter()
+        // Read on the session's delegate queue, which is serial for a session
+        // made with none (SameOriginHTTP): the progress callbacks the upload
+        // queued there run first. `data(for:delegate:)` can return before
+        // they have run, and the meter read here would find nothing (LVX-20).
         defer {
-            if let measurement = meter.measurement() { onUpload(measurement) }
+            session.delegateQueue.addOperation {
+                if let measurement = meter.measurement() { onUpload(measurement) }
+            }
         }
         #if canImport(FoundationNetworking)
         let (data, response) = try await session.data(for: request)

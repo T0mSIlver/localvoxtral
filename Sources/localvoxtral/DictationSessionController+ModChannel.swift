@@ -4,8 +4,7 @@ import Foundation
 /// Overlay Buffer commits into a Claude Code session's prompt box through
 /// its mod (#1409): `$.prompt.fill` puts the text at the cursor, with no key
 /// posted. A fill that surely did not land gives the text back to the
-/// keyboard, the way the opencode prompt relay does, and only while keys
-/// would still reach the session's prompt. A spoken send asks the mod to
+/// keyboard, and only while keys would still reach the session's prompt. A spoken send asks the mod to
 /// submit too (#1644).
 extension DictationSessionController {
     enum ModChannelStatus {

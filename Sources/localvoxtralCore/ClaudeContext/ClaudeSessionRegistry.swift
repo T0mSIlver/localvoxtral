@@ -128,10 +128,6 @@ public final class ClaudeSessionRegistry: Sendable {
         /// its process must not steer a recycled TTY.
         var declaredPID: Int32
         var declaredAt: Date
-        /// The declaring TUI's prompt relay, when it runs one (#719). In
-        /// memory only, like every focus declaration: the token never reaches
-        /// the persisted registry file.
-        var promptRelay: OpencodePromptRelayAddress?
     }
 
     private struct State {
@@ -519,51 +515,6 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
-    /// Whether any fresh focus declaration carries a prompt relay. Reads no
-    /// surface: it lets a dictation skip asking the terminal for its focused
-    /// TTY (an Apple event, with its consent prompt) when no opencode pane
-    /// could answer.
-    public func hasFreshOpencodePromptRelay() -> Bool {
-        let timestamp = now()
-        return state.withLock { state in
-            state.focusByTTY.values.contains {
-                $0.promptRelay != nil
-                    && timestamp.timeIntervalSince($0.declaredAt) <= limits.focusDeclarationTTL
-            }
-        }
-    }
-
-    /// The prompt relay of the opencode pane that displays `sessionID` now,
-    /// or nil (#719). Answers only from a fresh focus declaration naming that
-    /// session, declared by the pid the session is registered under, for a
-    /// live LOCAL session; the relay rides on exactly that declaration. Two
-    /// such declarations with different relays abstain. `sessionID` is the
-    /// scoped id a join carries.
-    public func opencodePromptRelay(sessionID: String) -> OpencodePromptRelay? {
-        let timestamp = now()
-        return state.withLock { state in
-            guard let session = state.sessions[sessionID],
-                  session.agent == .opencode,
-                  session.origin.isLocalAuthenticated,
-                  isFresh(session, now: timestamp),
-                  let pid = session.process?.claudePID,
-                  sessionID.hasPrefix(ClaudeAgentSessionScope.opencodePrefix)
-            else { return nil }
-            let relays = Set(state.focusByTTY.values.compactMap { focus -> OpencodePromptRelayAddress? in
-                guard focus.sessionID == sessionID,
-                      focus.declaredPID == pid,
-                      timestamp.timeIntervalSince(focus.declaredAt) <= limits.focusDeclarationTTL
-                else { return nil }
-                return focus.promptRelay
-            })
-            guard relays.count == 1, let address = relays.first else { return nil }
-            return OpencodePromptRelay(
-                address: address,
-                opencodeSessionID: String(sessionID.dropFirst(ClaudeAgentSessionScope.opencodePrefix.count))
-            )
-        }
-    }
-
     /// Look up by herdr pane id — the herdr focus join. LOCAL sessions only: a
     /// remote host's pane ids live in another machine's herdr and could collide
     /// with (or deliberately mirror) a local pane's id; matching them here would
@@ -643,6 +594,16 @@ public final class ClaudeSessionRegistry: Sendable {
     /// machine runs it. Exact equality; zero or several matches abstain.
     public func resolve(desktopSessionID: String) -> ClaudeSessionResolution {
         resolveUnique(reporting: desktopSessionID, via: \.desktopSessionID, label: "Claude Desktop")
+    }
+
+    /// Look up by T3 Code thread id — the T3 Code window join (LVX-55).
+    ///
+    /// Spans LOCAL and REMOTE sessions for the reason `resolve(desktopSessionID:)`
+    /// does: T3 Code allocates the thread id and shows it in the address of the
+    /// web view that displays the thread, whichever machine runs it. Exact
+    /// equality; zero or several matches abstain.
+    public func resolve(t3ThreadID: String) -> ClaudeSessionResolution {
+        resolveUnique(reporting: t3ThreadID, via: \.t3ThreadID, label: "T3 Code thread")
     }
 
     /// The one fresh session whose `key` equals `value`, across both origins.
@@ -1006,7 +967,7 @@ public final class ClaudeSessionRegistry: Sendable {
         if snapshot.origin.isLocalAuthenticated, snapshot.process?.claudePID == nil {
             return min(limits.sessionTTL, limits.pidlessLocalSessionTTL)
         }
-        if snapshot.desktopSessionID != nil {
+        if snapshot.reportsAppViewID {
             return max(limits.sessionTTL, limits.desktopSessionTTL)
         }
         return limits.sessionTTL
@@ -1106,8 +1067,7 @@ public final class ClaudeSessionRegistry: Sendable {
         state.focusByTTY[tty] = FocusDeclaration(
             sessionID: record.sessionID,
             declaredPID: process.claudePID,
-            declaredAt: now,
-            promptRelay: record.promptRelay
+            declaredAt: now
         )
         // Bounded like everything else a peer can grow: beyond the cap the
         // oldest declaration goes — it is the one closest to expiring anyway.
@@ -1138,7 +1098,7 @@ public final class ClaudeSessionRegistry: Sendable {
         func evict(_ snapshot: ClaudeSessionSnapshot) {
             removeLocked(&state, sessionID: snapshot.sessionID)
             evictions.count += 1
-            if snapshot.desktopSessionID != nil { evictions.desktopCount += 1 }
+            if snapshot.reportsAppViewID { evictions.desktopCount += 1 }
         }
         let grouped = Dictionary(grouping: state.sessions.values, by: \.origin)
         if grouped.count > 1 {
@@ -1152,8 +1112,8 @@ public final class ClaudeSessionRegistry: Sendable {
             for sessions in grouped.values {
                 // A desktop id is whatever the host sent, so it buys room only
                 // in its own origin's Desktop quota, never in another origin's.
-                let desktop = sessions.filter { $0.desktopSessionID != nil }
-                let others = sessions.filter { $0.desktopSessionID == nil }
+                let desktop = sessions.filter(\.reportsAppViewID)
+                let others = sessions.filter { !$0.reportsAppViewID }
                 // The pin never relaxes a quota: with the pinned session
                 // excluded there are still at least `count - quota` evictable
                 // siblings whenever quota >= 1.
@@ -1164,7 +1124,7 @@ public final class ClaudeSessionRegistry: Sendable {
                         .prefix(group.count - groupQuota)
                     for snapshot in evictable {
                         evict(snapshot)
-                        if snapshot.desktopSessionID == nil {
+                        if !snapshot.reportsAppViewID {
                             evictions.originQuotaCount += 1
                         } else {
                             evictions.desktopQuotaCount += 1
@@ -1491,8 +1451,8 @@ public final class ClaudeSessionRegistry: Sendable {
         _ lhs: ClaudeSessionSnapshot,
         _ rhs: ClaudeSessionSnapshot
     ) -> Bool {
-        let lhsDesktop = lhs.desktopSessionID != nil
-        let rhsDesktop = rhs.desktopSessionID != nil
+        let lhsDesktop = lhs.reportsAppViewID
+        let rhsDesktop = rhs.reportsAppViewID
         if lhsDesktop != rhsDesktop { return rhsDesktop }
         if lhs.lastActivity != rhs.lastActivity {
             return lhs.lastActivity < rhs.lastActivity

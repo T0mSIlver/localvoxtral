@@ -108,6 +108,23 @@ public enum ClaudePluginStatus: Sendable, Equatable {
         return .installed(version: installed)
     }
 
+    /// Whether an installed mod is behind the bundled one, read from the same
+    /// `claude plugin list` capture as the plugin's status. A mod change can
+    /// ship under an unchanged plugin version (LVX-98), so the plugin's
+    /// verdict alone misses it. False whenever the listing, the mod entry or
+    /// either version is missing: only a listed, older mod asks for an update.
+    public static func modIsBehind(listOutput: String?, bundledModVersion: String?) -> Bool {
+        guard let listOutput, let bundledModVersion,
+              let entries = ClaudePluginListing.entries(in: listOutput),
+              let entry = ClaudePluginListing.entry(
+                  for: listReference(pluginName: ClaudePluginAssets.modPluginName), in: entries
+              ),
+              !entry.marketplaceFailedToLoad,
+              let installed = entry.knownVersion
+        else { return false }
+        return compareVersions(installed, bundledModVersion) == .orderedAscending
+    }
+
     /// Dotted-numeric ordering (`1.5.0` > `1.4.0`; a missing component reads
     /// as 0, so `1.4` == `1.4.0`). Non-numeric components read as 0 rather
     /// than refusing: versions here come from our own regex and manifest.

@@ -1,10 +1,11 @@
 import Foundation
 
-/// Nemotron 3.5 ASR streams in fixed chunks of encoder frames, 80 ms each, and
-/// its model card publishes word-error rates for five chunk sizes. The chunk is
+/// Nemotron ASR streams in fixed chunks of encoder frames, 80 ms each, and
+/// its model card publishes word-error rates for a few chunk sizes. The chunk is
 /// the engine's latency: no text comes out of a chunk until all of it is in.
 /// This maps the helper's `--transcription-delay-ms` knob (Voxtral's native
-/// unit) onto that ladder, so one app-level setting drives both engines.
+/// unit) onto Nemotron 3.5's ladder, so one app-level setting drives both
+/// engines. Nemotron Unified takes the delay itself; see `NemotronUnifiedLayout`.
 public enum NemotronChunkLadder {
     /// The rungs the model card measures, in milliseconds.
     public static let supportedMilliseconds = [80, 160, 320, 560, 1120]
@@ -23,5 +24,48 @@ public enum NemotronChunkLadder {
         guard let delayMilliseconds else { return defaultMilliseconds }
         return supportedMilliseconds.last { $0 <= delayMilliseconds }
             ?? supportedMilliseconds[0]
+    }
+}
+
+/// Nemotron Unified streams buffered: each step re-encodes left context + chunk +
+/// right context, in 80 ms encoder frames, so the layout sets both the latency
+/// (chunk + right) and the GPU cost (frames re-encoded per chunk). These are
+/// NVIDIA's recommended rows with its 5.6 s left context, except at 320 ms: a
+/// 160 ms chunk with 160 ms right context halves the GPU per audio second (MacBook:
+/// 34.7 vs 68.6 ms per 80 ms step) for +0.6 WER points (NeMo, 50 FLEURS clips in 10
+/// languages: 12.67 vs 12.08 %).
+public enum NemotronUnifiedLayout {
+    public static let leftFrames = 70
+
+    /// Whether the checkpoint in `directory` streams buffered (Nemotron Unified):
+    /// its encoder uses the `chunked_limited_with_rc` attention mask. speechd loads
+    /// those in float16: same term recall and WER as bfloat16 on the 260-case set,
+    /// 16 % less GPU per step on an M1 Pro, which has no native bfloat16.
+    public static func isBufferedCheckpoint(directory: URL) -> Bool {
+        guard let data = try? Data(contentsOf: directory.appending(path: "config.json")),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let encoder = config["encoder"] as? [String: Any]
+        else { return false }
+        return encoder["att_context_style"] as? String == "chunked_limited_with_rc"
+    }
+
+    /// The latency when the caller asks for none: NVIDIA's 320 ms, on the layout above.
+    public static let defaultMilliseconds = 320
+
+    /// The chunk, in frames, for each latency row from NVIDIA's table (160, 240, 320,
+    /// 560, 1120, 2080 ms). At 320 ms speechd takes 2 frames where NVIDIA takes 1.
+    static let chunkRows: [(latency: Int, chunk: Int)] = [
+        (160, 1), (240, 1), (320, 2), (560, 2), (1120, 7), (2080, 13),
+    ]
+
+    /// `[left, chunk, right]` encoder frames for `--transcription-delay-ms`. Unified
+    /// takes any 80 ms step from 160 to 2080 ms: the delay rounds down to a frame, so
+    /// text never waits longer than asked, and clamps to that range (a delay under 160 ms
+    /// gets 160). The chunk comes
+    /// from the table row at or below the latency; the rest is right context.
+    public static func frames(forTranscriptionDelayMs delayMilliseconds: Int?) -> [Int] {
+        let total = min(max((delayMilliseconds ?? defaultMilliseconds) / 80, 2), 26)
+        let chunk = chunkRows.last { $0.latency <= total * 80 }!.chunk
+        return [leftFrames, chunk, total - chunk]
     }
 }

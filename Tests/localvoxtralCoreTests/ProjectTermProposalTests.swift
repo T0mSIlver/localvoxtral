@@ -24,7 +24,7 @@ final class ProjectTermProposalTests: XCTestCase {
             "--max-budget-usd", "0.50",
             "--output-format", "json",
             "--json-schema",
-            #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}"#,
+            #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}"#,
         ])
     }
 

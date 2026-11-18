@@ -172,7 +172,7 @@ package enum AgentWorkedRepositories {
 
     /// The `url` of `[remote "origin"]` in the repository's config, read
     /// from the file rather than by running git: the scan resolves dozens of
-    /// checkouts, and `QuickCaptureProjectLinker` reads it with git later.
+    /// checkouts, and `ProjectOriginLinker` reads it with git later.
     static func origin(ofMainCheckout checkout: String, fileManager: FileManager = .default) -> ProjectRemote? {
         let gitDirectory = RepoIndexing.resolveGitDirectory(root: checkout, fileManager: fileManager) ?? checkout
         let config = URL(fileURLWithPath: gitDirectory).appendingPathComponent("config")

@@ -67,6 +67,15 @@ extension ClaudeRemoteEnrollmentService {
         inFramedOutput output: String,
         reference: String
     ) throws -> String? {
+        try remotePluginEntry(inFramedOutput: output, reference: reference)?.knownVersion
+    }
+
+    /// The listing entry for `reference` in a framed capture, by the same
+    /// rules and with the same errors as `installedRemotePluginVersion`.
+    package static func remotePluginEntry(
+        inFramedOutput output: String,
+        reference: String
+    ) throws -> ClaudePluginListEntry? {
         guard let beginRange = output.range(of: pluginListFrameBegin),
               let endRange = output.range(
                   of: pluginListFrameEnd, range: beginRange.upperBound..<output.endIndex
@@ -94,7 +103,7 @@ extension ClaudeRemoteEnrollmentService {
                 message: "The host's plugin listing could not be decoded."
             )
         }
-        return ClaudePluginListing.entry(for: reference, in: entries)?.knownVersion
+        return ClaudePluginListing.entry(for: reference, in: entries)
     }
 
     /// Install or update the remote plugin and prove the installed version.

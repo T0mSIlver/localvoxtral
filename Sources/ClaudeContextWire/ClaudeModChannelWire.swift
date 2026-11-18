@@ -104,10 +104,6 @@ public enum ClaudeModChannelWire {
         /// app asks it at the dictation's start (a mod older than `append`
         /// answers `unknown_kind`) and at its stop.
         case ack
-        /// A spoken stop phrase (#1696): end the session's running main-loop
-        /// turn (`$.turn.abort`), with no key. `ok` once it is ended; with
-        /// no turn running, `ok: false` with `noTurnReason`.
-        case abort
         /// The Live Auto-Paste dictation was cancelled (#1805): no append
         /// that arrived before it fills, though one already filling may.
         /// Not answered; the next `ack` starts the next stream. A mod older
@@ -225,8 +221,6 @@ public enum ClaudeModChannelWire {
         /// went on under another session (`/clear`, a resume) before the
         /// app closed this session's channel.
         public static let sessionChangedReason = "session_changed"
-        /// The refusal of an `abort` while no turn runs.
-        public static let noTurnReason = "no_turn"
         /// A `send` a hook dropped whose text the box did not take back
         /// (#1803): not submitted and not in the box. The mod keeps trying,
         /// then puts it on the clipboard.

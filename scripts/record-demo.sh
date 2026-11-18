@@ -21,21 +21,15 @@ set -euo pipefail
 #   3 needsyou  payments raises a permission request (STAGED: the plugin's
 #               Notification hook event, sent by this script with payments'
 #               real session id, pid and pane), then the real app: banner and
-#               sound, orange dot, a tap, Tab Tab to payments, "yes, go ahead,
-#               send it" lands in payments, which comes forward
-#   4 inbox     tap, speak a bug, Tab to the Inbox; the app polishes, routes
-#               and drafts it, Claude checks it against the code, and this
-#               script presses File: a real issue in localvoxtral-demo, closed
-#               again when the take ends
-#   5 goto      "go to docs" brings the docs pane forward
-#   6 learned   hold, dictate "Qwen" (heard "Quen"), fix it by hand and submit:
+#               sound, orange dot
+#   4 learned   hold, dictate "Qwen" (heard "Quen"), fix it by hand and submit:
 #               the "Learned" toast; then Settings > Projects with the terms
 #               the agents proposed during setup (`localvoxtral terms propose`)
-#   7 history   Settings > History, then Insights, on twelve weeks of
+#   5 history   Settings > History, then Insights, on twelve weeks of
 #               dictations seeded into the demo's own data folder
 #
 # Each beat checks what it needs (the session joined, the banner, the pane
-# switch, the Inbox draft and its filing) and the run fails instead of
+# switch) and the run fails instead of
 # producing a video when one is missing. Staged: the History rows, the
 # permission request, and the speech and polish answers (below).
 #
@@ -51,8 +45,7 @@ set -euo pipefail
 # GUI session:
 #   ./scripts/record-demo.sh [path/to/localvoxtral.app]
 # It needs: Ghostty (>= 1.4: the app's join reads the pane tty over
-# AppleScript), herdr, a logged-in `claude`, `gh` logged in with write access
-# to T0mSIlver/localvoxtral-demo (the app files the Inbox issue with it),
+# AppleScript), herdr, a logged-in `claude`,
 # ffmpeg, BlackHole 2ch, Notifications > "when mirroring or sharing the
 # display" set to Allow (a recorded screen counts as shared, and macOS mutes
 # banners there), and the TCC grants: Accessibility and Screen Recording for
@@ -68,9 +61,8 @@ set -euo pipefail
 #                                menu bar icon and the banners are in it
 #   DEMO_WARMUP_SECONDS          off-camera speech warmup (default 12)
 #   DEMO_COMMIT_SECONDS          max wait for an overlay commit (default 90)
-#   DEMO_INBOX_SECONDS           max wait for the Inbox draft and check (default 300)
 #   DEMO_HERDR_SESSION           the isolated herdr session (default lv-demo)
-#   DEMO_DEMO_REPO               where the Inbox files (default T0mSIlver/localvoxtral-demo)
+#   DEMO_DEMO_REPO               payments' `origin` (default T0mSIlver/localvoxtral-demo)
 #   DEMO_MIC_DEVICE / DEMO_MIC_UID  the silent device the app's microphone is
 #                                pinned to (default BlackHole 2ch)
 #   DEMO_IDLE_REQUIRED_SECONDS   HID idle needed before a hands-free takeover (120)
@@ -97,7 +89,6 @@ DEMO_WIDTH="${DEMO_WIDTH:-1280}"
 DEMO_HEIGHT="${DEMO_HEIGHT:-800}"
 DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
 DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-90}"
-DEMO_INBOX_SECONDS="${DEMO_INBOX_SECONDS:-300}"
 DEMO_HERDR_SESSION="${DEMO_HERDR_SESSION:-lv-demo}"
 DEMO_DEMO_REPO="${DEMO_DEMO_REPO:-T0mSIlver/localvoxtral-demo}"
 DEMO_TIMELINE_OFFSET="${DEMO_TIMELINE_OFFSET:-0}"
@@ -109,13 +100,10 @@ DEMO_MIC_UID="${DEMO_MIC_UID:-}"
 
 # What the voice says, beat by beat. Beat 1 streams raw, so no spoken
 # symbols; beat 2's "use auth dot t s" and "dash dash coverage" are what the
-# agent polish turns into code; beat 6's "Qwen" is the word ASR mishears and
+# agent polish turns into code; beat 5's "Qwen" is the word ASR mishears and
 # the hand fix teaches.
 LINE_LIVE="Add an item potency key to the refund webhook handler, and check with me before you change the database. Send it."
 LINE_OVERLAY="In the README, show how to call use auth dot t s, and add the npm test dash dash coverage command."
-LINE_ANSWER="Yes, go ahead. Send it."
-LINE_INBOX="Bug: a refund of zero cents returns a 500 from the refunds endpoint."
-LINE_GOTO="Go to docs."
 LINE_LEARN="Benchmark the docs examples against Quen three."
 LEARN_TERM="Qwen"
 
@@ -170,9 +158,8 @@ exit(ok ? 0 : 1)
 SWIFT
 
 # Posts flagsChanged events for Right Command (keycode 54) at the HID tap, the
-# real tap/hold gesture path. `key <code> [shift]` posts one key press, for
-# Tab while an overlay runs (the app takes it as a Carbon hotkey); `mouse x y`
-# moves the pointer.
+# real tap/hold gesture path. `key <code> [shift]` posts one key press;
+# `mouse x y` moves the pointer.
 cat > "$HELPER_DIR/gesture.swift" <<'SWIFT'
 import CoreGraphics
 import Foundation
@@ -286,7 +273,6 @@ compile_helper ax-probe "$SCRIPT_DIR/lib/ax-probe.swift"
 tap_hotkey()     { "$HELPER_DIR/gesture" tap; }
 press_hotkey()   { "$HELPER_DIR/gesture" down; }
 release_hotkey() { "$HELPER_DIR/gesture" up; }
-press_tab()      { "$HELPER_DIR/gesture" key 48; }
 ax_probe()       { "$HELPER_DIR/ax-probe" "$@"; }
 
 # --- cleanup ----------------------------------------------------------------------
@@ -299,27 +285,11 @@ ORIGINAL_DARK_MODE=""
 DEMO_COMPLETED=0
 CLAUDE_BIN=""
 HERDR_BIN=""
-GH_BIN=""
 HERDR_SESSION_STARTED=0
 PLUGIN_INSTALLED_THIS_RUN=0
 MARKETPLACE_ADDED_THIS_RUN=0
 PROMPT_ANSWERER_PID=""
 DEDICATED_GUI="${LOCALVOXTRAL_DEDICATED_GUI:-0}"
-TAKE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-# The Inbox beat files a real issue in the throwaway repo; every take closes
-# the issues it opened, whether it finished or not.
-close_demo_issues() {
-  [[ -n "$GH_BIN" ]] || return 0
-  local numbers number
-  numbers="$("$GH_BIN" issue list --repo "$DEMO_DEMO_REPO" --state open \
-    --search "created:>=$TAKE_STARTED_AT" --json number --jq '.[].number' 2>/dev/null || true)"
-  for number in $numbers; do
-    "$GH_BIN" issue close "$number" --repo "$DEMO_DEMO_REPO" \
-      --comment "Filed by a README demo take (record-demo.yml); closed when the take ended." >/dev/null 2>&1 \
-      && echo "Closed $DEMO_DEMO_REPO#$number."
-  done
-}
 
 cleanup() {
   set +e
@@ -356,7 +326,6 @@ cleanup() {
     [[ "$MARKETPLACE_ADDED_THIS_RUN" == 1 ]] \
       && "$CLAUDE_BIN" plugin marketplace remove localvoxtral >/dev/null 2>&1
   fi
-  close_demo_issues
   if [[ -n "$DEMO_STAGE" ]]; then
     rm -rf "$DEMO_STAGE" 2>/dev/null || { sleep 1; rm -rf "$DEMO_STAGE" 2>/dev/null || true; }
   fi
@@ -397,7 +366,6 @@ echo "App microphone pinned to \"$DEMO_MIC_DEVICE\" ($DEMO_MIC_UID)"
 # Resolved through the login shell: the runner's PATH lacks ~/.local/bin.
 CLAUDE_BIN="$(zsh -lc 'command -v claude' 2>/dev/null || true)"
 HERDR_BIN="$(zsh -lc 'command -v herdr' 2>/dev/null || true)"
-GH_BIN="$(zsh -lc 'command -v gh' 2>/dev/null || true)"
 GHOSTTY_APP="${DEMO_GHOSTTY_APP:-}"
 if [[ -z "$GHOSTTY_APP" ]]; then
   GHOSTTY_APP="$(mdfind "kMDItemCFBundleIdentifier == '$GHOSTTY_BUNDLE_ID'" 2>/dev/null | head -n 1 || true)"
@@ -406,18 +374,12 @@ fi
 missing=""
 [[ -n "$CLAUDE_BIN" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null || missing="$missing a logged-in claude;"
 [[ -n "$HERDR_BIN" ]] || missing="$missing herdr;"
-[[ -n "$GH_BIN" ]] || missing="$missing gh;"
 [[ -n "$GHOSTTY_APP" && -d "$GHOSTTY_APP" ]] || missing="$missing Ghostty;"
 command -v ffmpeg >/dev/null || missing="$missing ffmpeg;"
 if [[ -n "$missing" ]]; then
   echo "Missing on this Mac:$missing" >&2
   exit 1
 fi
-# The app files the Inbox issue with this gh, as this user.
-"$GH_BIN" auth status >/dev/null 2>&1 \
-  || { echo "gh is not logged in for $(whoami): the Inbox beat could not file its issue." >&2; exit 1; }
-"$GH_BIN" repo view "$DEMO_DEMO_REPO" --json name >/dev/null \
-  || { echo "Cannot see $DEMO_DEMO_REPO with this gh login." >&2; exit 1; }
 
 herdr_cli() { "$HERDR_BIN" --session "$DEMO_HERDR_SESSION" "$@"; }
 
@@ -473,7 +435,7 @@ demo_default settings.live_spoken_send_enabled -bool true
 demo_default settings.overlay_spoken_send_enabled -bool true
 # The script stops each dictation itself, before the spoken-send auto stop.
 demo_default settings.spoken_stop_wait_ms -int 3000
-# Needs-you cues, and waiting sessions as Tab destinations.
+# Needs-you cues.
 demo_default settings.agent_attention_enabled -bool true
 demo_default settings.agent_attention_mark -string dot
 demo_default settings.llm_polishing_enabled -bool true
@@ -489,20 +451,18 @@ demo_default settings.selected_input_device_uid -string "$DEMO_MIC_UID"
 # the 8 GB Mini cannot run the bundled 4B models next to two Claude sessions.
 BACKEND_PORT_FILE="$HELPER_DIR/backend.port"
 LINE_FILE="$HELPER_DIR/next-line.txt"
-DEMO_ROUTE_TO="${DEMO_DEMO_REPO#*/},payments" python3 "$SCRIPT_DIR/lib/demo-backend.py" "$BACKEND_PORT_FILE" "$LINE_FILE" &
+python3 "$SCRIPT_DIR/lib/demo-backend.py" "$BACKEND_PORT_FILE" "$LINE_FILE" &
 BACKEND_PID=$!
 BACKEND_DEADLINE=$(( SECONDS + 10 ))
 until [[ -s "$BACKEND_PORT_FILE" ]] || (( SECONDS >= BACKEND_DEADLINE )); do sleep 0.25; done
 [[ -s "$BACKEND_PORT_FILE" ]] || { echo "The demo backend did not start." >&2; exit 1; }
 BACKEND_PORT="$(cat "$BACKEND_PORT_FILE")"
 demo_default settings.dictation_backend_mode -string external_url
-demo_default settings.realtime_provider -string realtime_api
 demo_default settings.realtime_api_endpoint_url -string "ws://127.0.0.1:$BACKEND_PORT/v1/realtime"
 demo_default settings.realtime_api_model_name -string demo
 demo_default settings.polishing_backend_mode -string external_url
 demo_default settings.llm_polishing_endpoint_url -string "http://127.0.0.1:$BACKEND_PORT/v1/chat/completions"
 demo_default settings.llm_polishing_model -string demo
-demo_default settings.quick_capture_router -string polishing_model
 # queue_line <line>: what the next dictation hears; speak <line>: how long
 # saying it takes at the backend's pace (2.8 words a second).
 queue_line() { printf '%s\n' "$1" >"$LINE_FILE"; }
@@ -614,8 +574,8 @@ MD
   git -C "$repo" -c user.name="demo" -c user.email="demo@example.com" commit -q -m "initial commit"
 done
 
-# The Inbox files payments' bugs in the throwaway repo. Docs gets no origin:
-# two checkouts of one repository share one project and its terms.
+# Payments gets an origin; docs gets none: two checkouts of one repository
+# share one project and its terms.
 git -C "$PAYMENTS_DIR" remote add origin "https://github.com/$DEMO_DEMO_REPO.git"
 
 # --- launch the app on its own data folder, seed History --------------------------
@@ -985,7 +945,7 @@ herdr_cli pane send-keys "$DOCS_PANE" Enter >/dev/null
 sleep 2
 
 # Beat 3 — needs you: payments asks for permission (staged hook event), the
-# banner and dot, a tap, Tab Tab to payments, the spoken answer.
+# banner and dot.
 tl_seg needsyou 1
 BEAT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 PAYMENTS_SESSION_ID="$(claude_session_id "$PAYMENTS_DIR")"
@@ -1011,81 +971,12 @@ if ! { [[ -n "$NC_PID" ]] && ax_probe "$NC_PID" --find "needs you" --timeout 8 >
   grep -q 'agent-attention' <<<"$NC_LOG" || beat_failed "needsyou: no \"needs you\" banner."
 fi
 sleep 3
-queue_line "@3 $LINE_ANSWER" # the answer comes after the two Tabs
-tap_hotkey
-sleep 1
-press_tab
-sleep 0.7
-press_tab
-sleep 1.3
-speak "$LINE_ANSWER"
-tap_hotkey
 tl_seg needsyou 4
-wait_pane_focused "$PAYMENTS_PANE" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: payments never came forward."
-wait_pane_text "$PAYMENTS_PANE" "go ahead" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: the answer never reached payments."
-log_since "$BEAT_LOG_START" | grep -qE "spoken send: (submit handed|Return pressed)|mod: spoken send submitted" || beat_failed "needsyou: \"send it\" did not submit the answer."
+sleep 4
 tl_seg needsyou 1
 sleep 3
 
-# Beat 4 — Inbox: a bug, Tab to the Inbox; the draft is routed, checked
-# against the code, and filed.
-tl_seg inbox 1
-BEAT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
-capture_ids() { "$CLI_PATH" capture list --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" capture-ids; }
-CAPTURES_BEFORE="$(capture_ids)"
-queue_line "$LINE_INBOX"
-tap_hotkey
-speak "$LINE_INBOX"
-press_tab
-sleep 1
-tap_hotkey
-tl_seg inbox 8
-capture_id() { capture_ids | grep -vxF -e "${CAPTURES_BEFORE:-none}" | head -n 1 || true; }
-CAPTURE_ID=""
-INBOX_DEADLINE=$(( SECONDS + 60 ))
-until [[ -n "$CAPTURE_ID" ]]; do
-  (( SECONDS >= INBOX_DEADLINE )) && beat_failed "inbox: no quick capture within 60 s."
-  sleep 2
-  CAPTURE_ID="$(capture_id)"
-done
-"$CLI_PATH" capture open "$CAPTURE_ID" >/dev/null || beat_failed "inbox: capture open refused."
-sleep 2
-center_window "$APP_PROCESS" "front window"
-# File is enabled once the draft is ready; Claude's check of the draft
-# against the code comes after it, and the app logs its end.
-CHECK_DEADLINE=$(( SECONDS + DEMO_INBOX_SECONDS ))
-until log show --start "$BEAT_LOG_START" --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null \
-  | grep -qE 'Quick capture draft: (claude|vibe|opencode) checked'; do
-  (( SECONDS >= CHECK_DEADLINE )) && beat_failed "inbox: the draft was never checked against the code. $("$CLI_PATH" capture show "$CAPTURE_ID" 2>&1 | head -n 20)"
-  sleep 3
-done
-"$CLI_PATH" capture show "$CAPTURE_ID" 2>/dev/null | grep -q "Repository: $DEMO_DEMO_REPO" \
-  || beat_failed "inbox: the draft does not file in $DEMO_DEMO_REPO. $("$CLI_PATH" capture show "$CAPTURE_ID" 2>&1 | head -n 3)"
-tl_seg inbox 1
-sleep 3
-ax_probe "$APP_PID" --press inbox.row.file --title File --timeout 10 >/dev/null || beat_failed "inbox: could not press File."
-tl_seg inbox 4
-FILED_DEADLINE=$(( SECONDS + 90 ))
-until "$CLI_PATH" capture show "$CAPTURE_ID" --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" filed-url \
-  | grep -q "github.com/$DEMO_DEMO_REPO/issues/"; do
-  (( SECONDS >= FILED_DEADLINE )) && beat_failed "inbox: the issue was never filed in $DEMO_DEMO_REPO."
-  sleep 2
-done
-tl_seg inbox 1
-sleep 3
-
-# Beat 5 — go to docs.
-tl_seg goto 1
-queue_line "$LINE_GOTO"
-tap_hotkey
-speak "$LINE_GOTO"
-tap_hotkey
-wait_pane_focused "$DOCS_PANE" 15 || beat_failed "goto: the docs pane never came forward."
-sleep 1
-assert_frontmost Ghostty "after go to docs"
-sleep 2
-
-# Beat 6 — learned: dictate a name ASR mishears, fix it by hand, submit; the
+# Beat 4 — learned: dictate a name ASR mishears, fix it by hand, submit; the
 # app learns it from the difference. Then the Projects pane.
 tl_seg learned 1
 herdr_cli pane send-keys "$DOCS_PANE" ctrl+c >/dev/null # the composer starts empty
@@ -1146,7 +1037,7 @@ open_settings_tab projects Projects
 tl_seg learned 1
 sleep 4
 
-# Beat 7 — History, then Insights.
+# Beat 6 — History, then Insights.
 tl_seg history 1
 open_settings_tab history History
 sleep 6
@@ -1167,9 +1058,7 @@ tsv, out, offset, stop = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys
 beats = [
     ("live", "Hold to talk: it streams into Claude Code. “Send it” submits"),
     ("overlay", "Tap to talk: the polish writes the session’s code words"),
-    ("needsyou", "An agent needs you: Tab to it and answer by voice"),
-    ("inbox", "A stray bug goes to the Inbox, checked and filed as an issue"),
-    ("goto", "“Go to docs” brings that session forward"),
+    ("needsyou", "An agent needs you: a banner, a sound and a dot on the menu bar"),
     ("learned", "Fix a word once and it is learned, with the agents’ terms"),
     ("history", "History and Insights: time saved, terms it learned"),
 ]

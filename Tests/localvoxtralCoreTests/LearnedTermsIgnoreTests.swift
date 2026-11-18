@@ -3,6 +3,7 @@ import Synchronization
 import XCTest
 
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// Forget Project and Ignore Project in Settings → Projects (#1006): what
 /// goes, what stays, and what an ignored repo can no longer add.
@@ -82,9 +83,11 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             LearnedTermProject(key: "/w/supervoxtral", name: "supervoxtral", terms: [term("Voxtral")], lastSeen: Self.start),
             orphan,
         ]
-        let rows = learned.listedProjects(now: Self.start)
+        let rows = ListedProjects.projects(from: learned, now: Self.start)
         XCTAssertTrue(rows.contains { $0.key == "/w/supervoxtral" }, "the leftover is listed, so it can be forgotten")
-        XCTAssertTrue(rows.contains { $0.key == "repo:github.com/me/gone" }, "the orphan is listed under its repository")
+        XCTAssertTrue(
+            rows.contains { $0.keys == ["/w/old-ink", "repo:github.com/me/gone"] },
+            "the orphan is listed under its repository")
 
         learned.forgetProject(keys: ["/w/supervoxtral"])
         learned.forgetProject(keys: ["/w/old-ink", "repo:github.com/me/gone"])
@@ -133,10 +136,9 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         let after = store.snapshot()
         XCTAssertEqual(proposed, [])
         XCTAssertEqual(after.projects, others, "nothing recorded for any of its checkouts")
-        XCTAssertFalse(after.listedProjects(now: Self.start).contains { $0.name == "quill" })
         XCTAssertFalse(after.confirmedEverywhere().contains { ["Kern", "Glyph", "Ligature"].contains($0.term) })
-        let choices = QuickCaptureProjects.projects(from: after, userLines: [:], now: Self.start, readme: { _ in nil })
-        XCTAssertFalse(choices.contains { $0.name == "quill" }, "quick capture does not list it")
+        let choices = ListedProjects.projects(from: after, now: Self.start)
+        XCTAssertFalse(choices.contains { $0.name == "quill" }, "the Projects pane does not list it")
         for key in [mac.key, host.key, clone.key] {
             XCTAssertFalse(after.needsProposal(projectKey: key, now: Self.start), key)
         }
@@ -259,7 +261,7 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             beforeTermsUpdate: {
                 guard armed.withLock({ armed in defer { armed = false }; return armed }) else { return }
                 // The other copy can write only while this one leaves the list free.
-                guard StoredFileLock.tryHolding(beside: ignoredURL) != nil else { return }
+                guard OtherCopyLock.tryHolding(beside: ignoredURL) != nil else { return }
                 otherWrites()
                 ranMidWrite.withLock { $0 = true }
             })

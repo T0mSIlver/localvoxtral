@@ -78,6 +78,19 @@ final class LearnedTermProposalTests: XCTestCase {
         XCTAssertEqual(term("PageComposer", in: memory)?.sources, ["repository"])
     }
 
+    /// A refusal holds whatever the spacing and punctuation of the
+    /// proposal, as refused suggestions already do (Codex term-pipeline
+    /// hunt, 2026-11-04).
+    func testARefusalHoldsAcrossSpacingAndPunctuation() {
+        let memory = proposed(["Stable-Diffusion", "inkwell", "Working Set"], excluding: ["Stable Diffusion", "working-set"])
+        XCTAssertEqual(memory.projects.first?.terms.map(\.term), ["inkwell"])
+
+        var command = LearnedTerms()
+        let added = command.recordCommandProposal(
+            ["Stable-Diffusion", "inkwell"], proposer: "claude", project: project, excluding: ["stable diffusion"], now: now)
+        XCTAssertEqual(added, ["inkwell"])
+    }
+
     func testTheCapEvictsUnearnedProposalsFirst() {
         var memory = LearnedTerms()
         let learned = (0..<(LearnedTerms.maxTermsPerProject - 1)).map { "Learned\($0)" }

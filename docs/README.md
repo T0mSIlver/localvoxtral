@@ -5,13 +5,12 @@ its code.
 
 ## Using localvoxtral
 
-- [Install](install.md): install, update, nightly builds
+- [Install](install.md): install, update, RC builds
 - [Dictating](dictation.md): shortcuts, output modes, settings reference,
   screenshots
 - [Terminals & coding agents](coding-agents.md): dictating into Claude Code
   and other CLI agents, session joins, the SSH remote plugin
-- [Work with several agents](agents.md): being told an agent needs you,
-  jumping to it, and naming, reaching and sending to sessions by voice
+- [Work with several agents](agents.md): being told an agent needs you
 - [Integration matrix](integration-matrix.md): for each coding agent and
   terminal, what joins, what context is attached, and why the gaps exist
 - [Under the hood](under-the-hood.md): privacy, the managed local engines

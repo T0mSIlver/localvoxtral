@@ -1,6 +1,7 @@
 import XCTest
 
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 final class TermRecallScoringTests: XCTestCase {
     private func makeCase(

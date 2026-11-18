@@ -28,7 +28,10 @@ package struct DebugRealtimeDeltaLogRecord: Equatable, Sendable {
     package let payload: String?
 }
 
-/// The opt-in raw-delta log (issue #13 instrumentation).
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
+/// The opt-in raw-delta log (issue #13 instrumentation). It logs dictated
+/// text `.public`, so only debug and harness builds compile it (LVX-80);
+/// `AgentCLILogPrivacyTests` fails on a public text log outside this gate.
 package struct RealtimeDeltaLog {
     /// Per-session sequence counter. Reset to 0 when a new realtime session
     /// connects. Only advanced inside the gated logging path, so a value of 0
@@ -117,3 +120,4 @@ package struct RealtimeDeltaLog {
         }
     }
 }
+#endif

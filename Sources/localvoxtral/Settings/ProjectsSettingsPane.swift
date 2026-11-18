@@ -1,22 +1,19 @@
 import ClaudeContextWire
 import SwiftUI
 
-/// Every project quick capture lists, one table row each (#939): where its
-/// issues go, where it is checked out, when it was last used and the drafts
-/// waiting on it. A row opens the project's sheet. The terms outside every
+/// Every project the learned terms list, one table row each (#939): its
+/// repository, where it is checked out, when it was last used and how many
+/// terms it holds. A row opens the project's sheet. The terms outside every
 /// project close the table as "No project" (#972), so this pane is the one
 /// place learned terms are seen, pinned and forgotten.
 ///
 /// Import… and Export… under Learned terms move every project's terms at
 /// once, so they sit below the table, not in a project's sheet (#999).
-///
-/// Opening the pane asks GitHub again for every project's description.
 struct ProjectsSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
     /// Nil in a view model that runs no services (previews, tests).
-    let inbox: QuickCaptureInboxViewModel?
-    let openInbox: () -> Void
+    let projects: ProjectsViewModel?
     /// The project key of each dictation in the last seven days, read from
     /// History when the pane opens.
     @State private var dictationProjectKeys: [String?] = []
@@ -32,7 +29,7 @@ struct ProjectsSettingsPane: View {
 
     private var rows: [ProjectsPaneRow] {
         _ = viewModel.learnedTermRevision
-        return inbox?.projectRows(dictationProjectKeys: dictationProjectKeys) ?? []
+        return projects?.projectRows(dictationProjectKeys: dictationProjectKeys) ?? []
     }
 
     /// Reading `learnedTermRevision` re-renders Export… after a dictation
@@ -44,7 +41,7 @@ struct ProjectsSettingsPane: View {
 
     var body: some View {
         let rows = rows
-        let unlisted = inbox?.unlistedTerms()
+        let unlisted = projects?.unlistedTerms()
         SettingsPage(tab: .projects) {
             SettingsGroup(title: "Projects", learnMoreURL: ProjectsLearnMore.projects) {
                 if let store = viewModel.learnedTermStore, store.problem == nil {
@@ -65,8 +62,8 @@ struct ProjectsSettingsPane: View {
                     SettingsGroupRow {
                         HStack(alignment: .firstTextBaseline, spacing: ProjectsTableColumnsSpacing.value) {
                             ProjectsTableColumns(
-                                name: Text("Project"), filing: Text("Files issues in"), checkouts: Text("Checkouts"),
-                                lastUsed: Text("Last used"), drafts: Text("Drafts")
+                                name: Text("Project"), repository: Text("Repository"), checkouts: Text("Checkouts"),
+                                lastUsed: Text("Last used"), terms: Text("Terms")
                             )
                             Text("Group").frame(width: ProjectGroupPicker.width, alignment: .leading)
                         }
@@ -83,11 +80,11 @@ struct ProjectsSettingsPane: View {
                                 } label: {
                                     ProjectsTableColumns(
                                         name: Text(row.name).fontWeight(.semibold),
-                                        filing: ProjectsFilingText(filing: row.filing),
+                                        repository: Text(row.repository ?? "–").foregroundStyle(.secondary),
                                         checkouts: Text(row.checkouts()).foregroundStyle(.secondary),
                                         lastUsed: Text(ProjectsPane.lastUsed(row.lastUsed, now: Date()))
                                             .foregroundStyle(.secondary),
-                                        drafts: Text(row.draftsWaiting == 0 ? "–" : "\(row.draftsWaiting)")
+                                        terms: Text(row.terms.isEmpty ? "–" : "\(row.terms.count)")
                                             .foregroundStyle(.secondary)
                                     )
                                     .contentShape(Rectangle())
@@ -95,7 +92,7 @@ struct ProjectsSettingsPane: View {
                                 .buttonStyle(.plain)
                                 .accessibilityIdentifier("projects.row")
                                 ProjectGroupPicker(group: row.group) { group in
-                                    Task { await inbox?.setGroup(group, keys: row.keys) }
+                                    Task { await projects?.setGroup(group, keys: row.keys) }
                                 }
                             }
                         }
@@ -108,11 +105,11 @@ struct ProjectsSettingsPane: View {
                                 } label: {
                                     ProjectsTableColumns(
                                         name: Text(LearnedTermProjectResolver.shared.name).fontWeight(.semibold),
-                                        filing: Text("–").foregroundStyle(.secondary),
+                                        repository: Text("–").foregroundStyle(.secondary),
                                         checkouts: Text("–").foregroundStyle(.secondary),
                                         lastUsed: Text(ProjectsPane.lastUsed(unlisted.lastUsed, now: Date()))
                                             .foregroundStyle(.secondary),
-                                        drafts: Text("–").foregroundStyle(.secondary)
+                                        terms: Text("\(unlisted.terms.count)").foregroundStyle(.secondary)
                                     )
                                     .contentShape(Rectangle())
                                 }
@@ -157,7 +154,7 @@ struct ProjectsSettingsPane: View {
                 projectSheet(key)
                     .opensWithNothingFocused()
             case .unlisted:
-                UnlistedTermsSheet(viewModel: viewModel, inbox: inbox) {
+                UnlistedTermsSheet(viewModel: viewModel, projects: projects) {
                     openProject = nil
                 }
                 .opensWithNothingFocused()
@@ -170,7 +167,7 @@ struct ProjectsSettingsPane: View {
                 let entries = await store.entries(since: Date().addingTimeInterval(-7 * 86_400))
                 dictationProjectKeys = entries.map(\.projectKey)
             }
-            await inbox?.refreshProjects(force: true)
+            await projects?.refreshProjects()
         }
     }
 
@@ -179,12 +176,8 @@ struct ProjectsSettingsPane: View {
             projectKey: key,
             settings: settings,
             viewModel: viewModel,
-            inbox: inbox,
+            projects: projects,
             dictationProjectKeys: dictationProjectKeys,
-            openInbox: {
-                openProject = nil
-                openInbox()
-            },
             onDone: { openProject = nil }
         )
     }
@@ -196,26 +189,26 @@ enum ProjectsLearnMore {
 }
 
 /// The gap between the table's columns. With the Group column, the fixed
-/// widths leave "Files issues in" about 100 points in the Settings window.
+/// widths leave "Repository" about 100 points in the Settings window.
 private enum ProjectsTableColumnsSpacing {
     static let value: CGFloat = 8
 }
 
 /// The table's five columns, the header's and each row's alike.
-private struct ProjectsTableColumns<Name: View, Filing: View, Checkouts: View, LastUsed: View, Drafts: View>: View {
+private struct ProjectsTableColumns<Name: View, Repository: View, Checkouts: View, LastUsed: View, Terms: View>: View {
     let name: Name
-    let filing: Filing
+    let repository: Repository
     let checkouts: Checkouts
     let lastUsed: LastUsed
-    let drafts: Drafts
+    let terms: Terms
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: ProjectsTableColumnsSpacing.value) {
             name.frame(width: 104, alignment: .leading)
-            filing.frame(maxWidth: .infinity, alignment: .leading)
+            repository.frame(maxWidth: .infinity, alignment: .leading)
             checkouts.frame(width: 88, alignment: .leading)
             lastUsed.frame(width: 64, alignment: .leading)
-            drafts.frame(width: 36, alignment: .trailing)
+            terms.frame(width: 36, alignment: .trailing)
         }
         .lineLimit(2)
     }
@@ -223,7 +216,7 @@ private struct ProjectsTableColumns<Name: View, Filing: View, Checkouts: View, L
 
 /// The Group column (#1005): Work, Personal or None.
 /// Borderless, so it reads as text like the other columns: a bordered
-/// picker left "Files issues in" too narrow to read.
+/// picker left "Repository" too narrow to read.
 private struct ProjectGroupPicker: View {
     static let width: CGFloat = 72
     let group: ProjectGroup?
@@ -250,57 +243,30 @@ private struct ProjectGroupPicker: View {
     }
 }
 
-/// Where File sends a project's issues, or why the project cannot say yet.
-private struct ProjectsFilingText: View {
-    let filing: ProjectsPaneRow.Filing
-
-    var body: some View {
-        switch filing {
-        case .repository(let repository):
-            Text(repository)
-        case .forkUnpicked:
-            warning("Fork: pick where to file")
-        case .noRepository:
-            warning("No GitHub repository")
-        }
-    }
-
-    private func warning(_ text: String) -> some View {
-        Label(text, systemImage: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
-    }
-}
-
-/// One project's four groups (#939), the same rows for every project:
-/// Repository, Description, Terms, Activity.
+/// One project's three groups (#939), the same rows for every project:
+/// Project, Terms, Activity.
 struct ProjectDetailSheet: View {
     let projectKey: String
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    let inbox: QuickCaptureInboxViewModel?
+    let projects: ProjectsViewModel?
     let dictationProjectKeys: [String?]
-    let openInbox: () -> Void
     let onDone: () -> Void
 
     init(
         projectKey: String, settings: SettingsStore, viewModel: DictationViewModel,
-        inbox: QuickCaptureInboxViewModel?, dictationProjectKeys: [String?],
-        openInbox: @escaping () -> Void, onDone: @escaping () -> Void, exportMessage: String? = nil
+        projects: ProjectsViewModel?, dictationProjectKeys: [String?],
+        onDone: @escaping () -> Void, exportMessage: String? = nil
     ) {
         self.projectKey = projectKey
         _settings = Bindable(settings)
         self.viewModel = viewModel
-        self.inbox = inbox
+        self.projects = projects
         self.dictationProjectKeys = dictationProjectKeys
-        self.openInbox = openInbox
         self.onDone = onDone
         _exportMessage = State(initialValue: exportMessage)
     }
 
-    @State private var isEditingRepository = false
-    @State private var repositoryDraft = ""
-    @State private var isEditingDescription = false
-    @State private var descriptionDraft = ""
     @State private var removal: Removal?
     /// What Export Terms… reported: a failed backup must show before the
     /// user forgets the only copy.
@@ -313,7 +279,7 @@ struct ProjectDetailSheet: View {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
         // folder goes or comes back.
-        return inbox?.projectRows(dictationProjectKeys: dictationProjectKeys).first { $0.keys.contains(projectKey) }
+        return projects?.projectRows(dictationProjectKeys: dictationProjectKeys).first { $0.keys.contains(projectKey) }
     }
 
     var body: some View {
@@ -323,8 +289,7 @@ struct ProjectDetailSheet: View {
                     .font(.headline)
                 ScrollView {
                     VStack(alignment: .leading, spacing: SettingsLayout.pageSpacing) {
-                        repositoryGroup(row)
-                        descriptionGroup(row)
+                        projectGroup(row)
                         ProjectTermsGroup(
                             terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore,
                             tokenCounter: tokenCounter)
@@ -432,144 +397,20 @@ struct ProjectDetailSheet: View {
         row.keys.first { $0.hasPrefix(ProjectRemote.keyPrefix) } ?? row.key
     }
 
-    // MARK: Repository
+    // MARK: Project
 
-    private func repositoryGroup(_ row: ProjectsPaneRow) -> some View {
-        SettingsGroup(title: "Repository", learnMoreURL: ProjectsLearnMore.projects) {
-            SettingsFieldRow(title: "GitHub repository") {
-                HStack(spacing: 8) {
-                    Text(row.repository ?? "None")
-                        .foregroundStyle(row.repository == nil ? .secondary : .primary)
-                        .textSelection(.enabled)
-                    // An origin is changed in git; only a typed answer, or
-                    // none, is the app's to change.
-                    if row.repository == nil || row.repositoryTyped {
-                        Button(row.repository == nil ? "Set…" : "Change…") {
-                            repositoryDraft = row.repository ?? ""
-                            isEditingRepository = true
-                        }
-                        .popover(isPresented: $isEditingRepository, arrowEdge: .bottom) {
-                            repositoryEditor(row)
-                        }
-                    }
-                }
+    private func projectGroup(_ row: ProjectsPaneRow) -> some View {
+        SettingsGroup(title: "Project", learnMoreURL: ProjectsLearnMore.projects) {
+            SettingsFieldRow(title: "Repository") {
+                // An origin is changed in git, not here.
+                Text(row.repository ?? "None")
+                    .foregroundStyle(row.repository == nil ? .secondary : .primary)
+                    .textSelection(.enabled)
             }
             SettingsFieldRow(title: "Checkouts") {
                 Text(row.checkouts(macName: "This Mac"))
                     .foregroundStyle(.secondary)
             }
-            SettingsFieldRow(title: "File issues here") {
-                if let fork = row.repository, let upstream = row.upstream {
-                    Picker("File issues here", selection: filing(fork: fork, upstream: upstream, row: row)) {
-                        if case .forkUnpicked = row.filing {
-                            Text("Choose").tag(String?.none)
-                        }
-                        Text(fork).tag(String?.some(fork))
-                        Text(upstream).tag(String?.some(upstream))
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                } else {
-                    Text(row.issueRepository ?? "None")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private func repositoryEditor(_ row: ProjectsPaneRow) -> some View {
-        let trimmed = repositoryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return VStack(alignment: .trailing, spacing: 10) {
-            TextField("owner/repository", text: $repositoryDraft)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 240)
-            HStack {
-                Button("Cancel") { isEditingRepository = false }
-                Button("Save") {
-                    isEditingRepository = false
-                    Task { await inbox?.setTypedRepository(trimmed, projectKey: row.key) }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!QuickCaptureInbox.isRepository(trimmed))
-            }
-        }
-        .padding(12)
-    }
-
-    private func filing(fork: String, upstream: String, row: ProjectsPaneRow) -> Binding<String?> {
-        Binding(
-            get: {
-                if case .forkUnpicked = row.filing { return nil }
-                return row.issueRepository
-            },
-            set: { choice in
-                guard let choice else { return }
-                Task { await inbox?.setFilesUpstream(choice == upstream, repository: fork) }
-            }
-        )
-    }
-
-    // MARK: Description
-
-    private func descriptionGroup(_ row: ProjectsPaneRow) -> some View {
-        SettingsGroup(title: "Description", learnMoreURL: ProjectsLearnMore.projects) {
-            SettingsGroupRow {
-                HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
-                    Text(row.description ?? "No description.")
-                        .foregroundStyle(row.description == nil ? .secondary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Edit…") {
-                        descriptionDraft = row.description ?? ""
-                        isEditingDescription = true
-                    }
-                    .popover(isPresented: $isEditingDescription, arrowEdge: .bottom) {
-                        descriptionEditor(row)
-                    }
-                }
-            }
-            SettingsFieldRow(title: "Written by") {
-                Text(Self.writer(row.descriptionSource))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func descriptionEditor(_ row: ProjectsPaneRow) -> some View {
-        VStack(alignment: .trailing, spacing: 10) {
-            TextField("What it is and what it has", text: $descriptionDraft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(3...6)
-                .frame(width: 360)
-            HStack {
-                Button("Cancel") { isEditingDescription = false }
-                Button("Save") {
-                    isEditingDescription = false
-                    saveDescription(descriptionDraft, row: row)
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(12)
-    }
-
-    /// The user's line replaces the automatic one; an emptied field, or one
-    /// set back to that text, returns to it. A repository checked out in
-    /// several places has one line, kept under its leading key.
-    private func saveDescription(_ text: String, row: ProjectsPaneRow) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let automatic = inbox?.model.projectChoices.first { $0.key == row.key }?.automaticLine
-        for key in row.keys.dropFirst() { settings.setQuickCaptureProjectLine("", for: key) }
-        settings.setQuickCaptureProjectLine(trimmed == automatic ? "" : trimmed, for: row.key)
-    }
-
-    static func writer(_ source: ProjectsPaneRow.DescriptionSource) -> String {
-        switch source {
-        case .user: "You"
-        case .github: "GitHub"
-        case .agent: "The coding agent"
-        case .readme: "The README"
-        case .none: "No one yet"
         }
     }
 
@@ -584,13 +425,6 @@ struct ProjectDetailSheet: View {
                     }
                     Text(Self.sessions(row.sessions))
                         .foregroundStyle(.secondary)
-                }
-            }
-            SettingsFieldRow(title: "Captures") {
-                HStack(spacing: 8) {
-                    Text(Self.captures(waiting: row.draftsWaiting, filed: row.filed))
-                        .foregroundStyle(.secondary)
-                    Button("Open Inbox", action: openInbox)
                 }
             }
             SettingsFieldRow(title: "Dictations") {
@@ -612,22 +446,18 @@ struct ProjectDetailSheet: View {
         }
         return "\(sessions.running) running · " + names.joined(separator: ", ")
     }
-
-    static func captures(waiting: Int, filed: Int) -> String {
-        "\(waiting) \(waiting == 1 ? "draft" : "drafts") waiting · \(filed) filed"
-    }
 }
 
 /// The terms outside every project, the table's "No project" entry (#972):
 /// the same Terms group as a project's sheet, alone.
 struct UnlistedTermsSheet: View {
     let viewModel: DictationViewModel
-    let inbox: QuickCaptureInboxViewModel?
+    let projects: ProjectsViewModel?
     let onDone: () -> Void
 
     private var unlisted: ProjectsPaneUnlisted? {
         _ = viewModel.learnedTermRevision
-        return inbox?.unlistedTerms()
+        return projects?.unlistedTerms()
     }
 
     var body: some View {

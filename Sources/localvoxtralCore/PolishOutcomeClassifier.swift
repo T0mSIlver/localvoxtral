@@ -8,6 +8,16 @@ package enum PolishOutcomeClassifier {
         package let title: String
         package let message: String
         package let technicalDetails: String?
+        /// The only text of this failure safe for a `.public` log: no provider
+        /// error sentence, which can quote the request and so the dictated text.
+        package let publicSummary: String
+
+        package init(title: String, message: String, technicalDetails: String?, publicSummary: String? = nil) {
+            self.title = title
+            self.message = message
+            self.technicalDetails = technicalDetails
+            self.publicSummary = publicSummary ?? message
+        }
     }
 
     /// The text the overlay commits for a reply, given the grounded text the
@@ -89,7 +99,8 @@ package enum PolishOutcomeClassifier {
                 technicalDetails: connectionTechnicalDetails(
                     summary,
                     endpointURL: endpointURL
-                )
+                ),
+                publicSummary: llmPolishingRejectionMessage(statusCode: statusCode, body: "")
             )
         case .some(.timedOut(let seconds)):
             // The endpoint was reachable and simply slow — a long

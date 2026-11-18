@@ -25,6 +25,23 @@ package enum OverlayBufferPhase: Equatable {
     case commitFailed
 }
 
+/// What LLM polish has done to the overlay's words this session (#1074).
+/// Polish runs once per stop, while finalizing:
+///
+///     none ─▶ polishing ─▶ polished(from:)   (the reply changed the words)
+///                 │
+///                 └─▶ none                    (unchanged, failed or not sent)
+package enum OverlayPolishState: Equatable, Sendable {
+    case none
+    /// The request is out: the header says "Polishing" and a band sweeps
+    /// the words until the reply lands.
+    case polishing
+    /// The reply changed the words. `from` is the text on screen just
+    /// before: the view marks the words that differ, and the header says
+    /// "Polished" while the panel is held before dismissal.
+    case polished(from: String)
+}
+
 // Valid state transitions:
 //   idle → buffering         (startSession)
 //   buffering → finalizing   (beginFinalizing)
@@ -37,18 +54,8 @@ package struct OverlayBufferStateMachine {
         package let bufferText: String
         package let errorMessage: String?
         package let secureInputActive: Bool
-        /// True once LLM polishing has changed the displayed text vs the raw
-        /// transcript for this session. The header then says "Polished" and
-        /// the words polish wrote are marked while the panel is held before
-        /// dismissal (#1074). Set only by the stop-commit polish path; cleared
-        /// on every new session.
-        package let polished: Bool
-        /// The text on screen just before the polished text replaced it,
-        /// while `polished`: the view marks the words that differ.
-        package var polishedFrom: String? = nil
-        /// The polish request is out: the header says "Polishing" and a band
-        /// sweeps the words until the reply lands (#1074).
-        package var polishing = false
+        /// Set only by the stop-commit polish path; cleared on every new session.
+        package var polish: OverlayPolishState = .none
         /// The stop's second pass missed its deadline: the header says so
         /// while the realtime text commits (#1867).
         package var secondPassMissed = false
@@ -56,11 +63,6 @@ package struct OverlayBufferStateMachine {
         /// once, from the join resolved at session start; cleared on every new
         /// session. `.hidden` renders nothing at all.
         package let claudeJoin: OverlayClaudeJoinBadge
-        /// Where the words go at stop (#840), nil when the overlay has no
-        /// choice to offer. Replaced whenever Tab moves or the list changes.
-        package var destinations: OverlayDestinationStrip? = nil
-        /// The draft a review dictation acts on (#927), nil otherwise.
-        package var draftReview: QuickCaptureDraftSnapshot? = nil
         package let anchor: OverlayAnchor
 
         package init(
@@ -68,28 +70,24 @@ package struct OverlayBufferStateMachine {
             bufferText: String,
             errorMessage: String?,
             secureInputActive: Bool,
-            polished: Bool,
-            polishedFrom: String? = nil,
-            polishing: Bool = false,
+            polish: OverlayPolishState = .none,
             secondPassMissed: Bool = false,
             claudeJoin: OverlayClaudeJoinBadge,
-            destinations: OverlayDestinationStrip? = nil,
-            draftReview: QuickCaptureDraftSnapshot? = nil,
             anchor: OverlayAnchor
         ) {
             self.phase = phase
             self.bufferText = bufferText
             self.errorMessage = errorMessage
             self.secureInputActive = secureInputActive
-            self.polished = polished
-            self.polishedFrom = polishedFrom
-            self.polishing = polishing
+            self.polish = polish
             self.secondPassMissed = secondPassMissed
             self.claudeJoin = claudeJoin
-            self.destinations = destinations
-            self.draftReview = draftReview
             self.anchor = anchor
         }
+
+        package var polished: Bool { polish.isPolished }
+        package var polishedFrom: String? { polish.polishedFrom }
+        package var polishing: Bool { polish == .polishing }
     }
 
     package init() {}
@@ -98,13 +96,10 @@ package struct OverlayBufferStateMachine {
     package private(set) var bufferText = ""
     package private(set) var errorMessage: String?
     package private(set) var secureInputActive = false
-    package private(set) var polished = false
-    package private(set) var polishedFrom: String?
-    package private(set) var polishing = false
+    package private(set) var polish: OverlayPolishState = .none
+    package var polished: Bool { polish.isPolished }
     package private(set) var secondPassMissed = false
     package private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
-    package private(set) var destinations: OverlayDestinationStrip?
-    package private(set) var draftReview: QuickCaptureDraftSnapshot?
     package private(set) var anchor: OverlayAnchor?
 
     package var snapshot: Snapshot? {
@@ -114,13 +109,9 @@ package struct OverlayBufferStateMachine {
             bufferText: bufferText,
             errorMessage: errorMessage,
             secureInputActive: secureInputActive,
-            polished: polished,
-            polishedFrom: polishedFrom,
-            polishing: polishing,
+            polish: polish,
             secondPassMissed: secondPassMissed,
             claudeJoin: claudeJoin,
-            destinations: destinations,
-            draftReview: draftReview,
             anchor: anchor
         )
     }
@@ -144,31 +135,13 @@ package struct OverlayBufferStateMachine {
         bufferText = ""
         errorMessage = nil
         secureInputActive = false
-        polished = false
-        polishedFrom = nil
-        polishing = false
+        polish = .none
         secondPassMissed = false
         // Assigned, never merely cleared: the previous dictation's join
         // describes the previous dictation's session, and a badge that survived
         // into this one would vouch for a grounding this session was not given.
         self.claudeJoin = claudeJoin
-        destinations = nil
-        draftReview = nil
         self.anchor = anchor
-    }
-
-    /// Shows where the words go. Only while the dictation runs: once it
-    /// stops, the destination is decided.
-    package mutating func setDestinations(_ strip: OverlayDestinationStrip?) {
-        guard phase == .buffering else { return }
-        destinations = strip
-    }
-
-    /// Shows the draft under review. Only while the dictation runs; it stays
-    /// through finalizing, so the panel does not jump at the stop.
-    package mutating func setDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
-        guard phase == .buffering else { return }
-        draftReview = draft
     }
 
     /// Marks that LLM polishing changed the displayed text vs the raw
@@ -179,16 +152,24 @@ package struct OverlayBufferStateMachine {
     /// annotate); a new session clears it.
     package mutating func setPolished(_ value: Bool) {
         guard phase != .idle else { return }
-        polished = value
-        polishedFrom = value ? bufferText : nil
-        polishing = false
+        polish = value ? .polished(from: bufferText) : .none
     }
 
     /// The polish request is out. Only while finalizing: a reply, a failure
-    /// or a new session ends it.
+    /// or a new session ends it. Polish runs once per stop, so a request
+    /// after a reply changed the words is refused and logged as a fault.
     package mutating func setPolishing(_ value: Bool) {
         guard phase == .finalizing else { return }
-        polishing = value
+        switch (polish, value) {
+        case (.polished, true):
+            Log.overlay.fault("setPolishing(true) after polish changed the words; ignored")
+        case (_, true):
+            polish = .polishing
+        case (.polishing, false):
+            polish = .none
+        case (_, false):
+            break
+        }
     }
 
     /// The stop's second pass missed its deadline. Only while finalizing:
@@ -228,7 +209,8 @@ package struct OverlayBufferStateMachine {
     package mutating func commitFailed(error: String, anchor: OverlayAnchor?) {
         guard phase != .idle else { return }
         phase = .commitFailed
-        polishing = false
+        // The sweep ends; a polish that landed stays, as the words on screen are its.
+        if polish == .polishing { polish = .none }
         errorMessage = error
         if let anchor {
             self.anchor = anchor
@@ -240,12 +222,19 @@ package struct OverlayBufferStateMachine {
         bufferText = ""
         errorMessage = nil
         secureInputActive = false
-        polished = false
-        polishedFrom = nil
-        polishing = false
+        polish = .none
         secondPassMissed = false
         claudeJoin = .hidden
-        destinations = nil
         anchor = nil
+    }
+}
+
+extension OverlayPolishState {
+    package var isPolished: Bool {
+        if case .polished = self { true } else { false }
+    }
+
+    package var polishedFrom: String? {
+        if case .polished(let from) = self { from } else { nil }
     }
 }

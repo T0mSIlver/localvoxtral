@@ -18,29 +18,17 @@ final class ProjectsPaneTests: XCTestCase {
 
     private func rows(
         _ learned: LearnedTerms,
-        captures: [QuickCaptureItem] = [],
         hosts: [(id: String, name: String)] = [],
         sessions: [ClaudeSessionSnapshot] = [],
-        dictations: [String?] = [],
-        userLines: [String: String] = [:]
+        dictations: [String?] = []
     ) -> [ProjectsPaneRow] {
         ProjectsPane.rows(
-            projects: QuickCaptureProjects.projects(
-                from: learned, userLines: userLines, now: now, readme: { _ in nil }, checkoutExists: { _ in true }
-            ),
+            projects: ListedProjects.projects(from: learned, now: now, checkoutExists: { _ in true }),
             learned: learned,
-            captures: captures,
             hostNames: hosts,
             liveSessions: sessions,
             dictationProjectKeys: dictations
         )
-    }
-
-    private func capture(_ projectKey: String?, _ state: QuickCaptureItem.State) -> QuickCaptureItem {
-        var item = QuickCaptureItem(capturedAt: now, text: "a note")
-        item.projectKey = projectKey
-        item.state = state
-        return item
     }
 
     private func session(_ id: String, cwd: String, origin: ClaudeTransportOrigin, agent: ClaudeHookAgent) -> ClaudeSessionSnapshot {
@@ -50,29 +38,15 @@ final class ProjectsPaneTests: XCTestCase {
         return snapshot
     }
 
-    func testFilesInColumnWarnsForAnUnpickedForkAndAProjectWithNoRepository() {
+    func testARowNamesTheRepositoryItsOriginNames() {
         var learned = LearnedTerms(projects: [
             LearnedTermProject(key: "/w/app", name: "app", terms: [term("Kern")], lastSeen: now),
-            LearnedTermProject(key: "/w/tool", name: "tool", terms: [term("Tokio")], lastSeen: now),
-            LearnedTermProject(key: "/w/lib", name: "lib", terms: [term("Serde")], lastSeen: now),
             LearnedTermProject(key: "/w/notes", name: "notes", terms: [term("Obsidian")], lastSeen: now),
         ])
         learned.recordOriginRepository("me/app", projectKey: "/w/app")
-        learned.recordOriginRepository("me/tool", projectKey: "/w/tool")
-        learned.recordOriginRepository("me/lib", projectKey: "/w/lib")
-        learned.recordGitHub(.init(description: nil, topics: [], parent: "them/tool"), repository: "me/tool", now: now)
-        learned.recordGitHub(.init(description: nil, topics: [], parent: "them/lib"), repository: "me/lib", now: now)
-        learned.setFilesUpstream(true, repository: "me/lib")
-
-        let filing = Dictionary(uniqueKeysWithValues: rows(learned).map { ($0.name, $0.filing) })
-        XCTAssertEqual(filing["app"], .repository("me/app"))
-        XCTAssertEqual(filing["tool"], .forkUnpicked(fork: "me/tool", upstream: "them/tool"))
-        XCTAssertEqual(filing["lib"], .repository("them/lib"))
-        XCTAssertEqual(filing["notes"], .noRepository)
-
-        // Picking the fork itself is a choice too: the warning goes.
-        learned.setFilesUpstream(false, repository: "me/tool")
-        XCTAssertEqual(rows(learned).first { $0.name == "tool" }?.filing, .repository("me/tool"))
+        let repositories = Dictionary(uniqueKeysWithValues: rows(learned).map { ($0.name, $0.repository) })
+        XCTAssertEqual(repositories["app"], "me/app")
+        XCTAssertNil(repositories["notes"] ?? nil)
     }
 
     func testCheckoutsNameTheMacAndEachHostThatReportedTheRepository() {
@@ -103,10 +77,6 @@ final class ProjectsPaneTests: XCTestCase {
         ])
         learned.recordOriginRepository("me/quill", projectKey: "/w/quill")
         learned.recordRemoteReport(project: remote("quill"), asRepository: true, repository: "me/quill", hostID: "h1", now: now)
-        let captures = [
-            capture("/w/quill", .ready), capture("remote:quill", .drafting), capture("/w/quill", .filed),
-            capture("/w/ink", .filed), capture(nil, .ready),
-        ]
         let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
         let sessions = [
             session("a", cwd: "/w/quill/.claude/worktrees/x", origin: local, agent: .opencode),
@@ -117,15 +87,11 @@ final class ProjectsPaneTests: XCTestCase {
         let dictations: [String?] = ["/w/quill", "remote:quill", "/w/ink", nil, "/w/gone"]
 
         let byName = Dictionary(uniqueKeysWithValues: rows(
-            learned, captures: captures, sessions: sessions, dictations: dictations
+            learned, sessions: sessions, dictations: dictations
         ).map { ($0.name, $0) })
-        XCTAssertEqual(byName["quill"]?.draftsWaiting, 2)
-        XCTAssertEqual(byName["quill"]?.filed, 1)
         XCTAssertEqual(byName["quill"]?.sessions, .init(running: 2, agents: [.claude, .opencode]),
                        "a sibling directory whose name starts the same is not the checkout")
         XCTAssertEqual(byName["quill"]?.dictationsThisWeek, 2)
-        XCTAssertEqual(byName["ink"]?.draftsWaiting, 0)
-        XCTAssertEqual(byName["ink"]?.filed, 1)
         XCTAssertEqual(byName["ink"]?.sessions, .init(running: 1, agents: [.vibe]))
         XCTAssertEqual(byName["ink"]?.dictationsThisWeek, 1)
     }
@@ -139,24 +105,6 @@ final class ProjectsPaneTests: XCTestCase {
         learned.recordRemoteReport(project: remote("far"), asRepository: true, now: now)
         XCTAssertEqual(rows(learned).map(\.name), ["far", "new", "old"])
         XCTAssertEqual(rows(learned).first?.lastUsed, now)
-    }
-
-    func testDescriptionAndWhoWroteIt() {
-        var learned = LearnedTerms(projects: [
-            LearnedTermProject(key: "/w/app", name: "app", terms: [term("Kern")], lastSeen: now),
-            LearnedTermProject(key: "/w/bare", name: "bare", terms: [term("Tokio")], lastSeen: now),
-        ])
-        learned.recordOriginRepository("me/app", projectKey: "/w/app")
-        learned.recordGitHub(.init(description: "Dictation for agents", topics: [], parent: nil), repository: "me/app", now: now)
-
-        var app = rows(learned).first { $0.name == "app" }
-        XCTAssertEqual(app?.description, "Dictation for agents.")
-        XCTAssertEqual(app?.descriptionSource, .github)
-        XCTAssertEqual(rows(learned).first { $0.name == "bare" }?.descriptionSource, ProjectsPaneRow.DescriptionSource.none)
-
-        app = rows(learned, userLines: ["/w/app": "My dictation app."]).first { $0.name == "app" }
-        XCTAssertEqual(app?.description, "My dictation app.")
-        XCTAssertEqual(app?.descriptionSource, .user)
     }
 
     func testTermsStrongestFirstEachSpellingOnceAcrossCheckouts() {

@@ -43,6 +43,7 @@ final class TextInsertionService {
     /// `insertion_scalar_trace` exists in the shared config folder, every
     /// UTF-16 chunk posted as keyboard events is hex-logged (see
     /// `postUnicodeTextEvents`). Set once per session at session start.
+    /// Debug and harness builds only; a release build never sets it.
     var isScalarTracingEnabled = false
 
     private var pendingRealtimeInsertionText = ""
@@ -258,6 +259,17 @@ final class TextInsertionService {
         clipboardWriteAfterPastes = write
     }
 
+    /// Quit: the process exits before any paste's restore runs, so a write
+    /// held for one would never happen. A held write runs, then `write`,
+    /// both now; the pastes stay pending (LVX-54).
+    func writeClipboardNowForQuit(_ write: @escaping @MainActor () -> Void) {
+        if let held = clipboardWriteAfterPastes {
+            clipboardWriteAfterPastes = nil
+            held()
+        }
+        write()
+    }
+
     /// True while text is pending behind a paste whose clipboard the
     /// target may still read: the restore will flush it.
     var pendingTextWaitsOnPaste: Bool {
@@ -326,8 +338,7 @@ final class TextInsertionService {
         } else {
             snapshot = capturePasteboardSnapshot(from: pasteboard)
         }
-        pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
+        guard TemporaryPasteWriter.write(text, to: pasteboard) else {
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: pasteboard.changeCount)
             return false
         }
@@ -1215,23 +1226,27 @@ final class TextInsertionService {
         }
 
         var didPostAnyEvent = false
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         var end = 0
+        #endif
 
         for var chunk in UnicodeEventChunks.chunks(text) {
+            #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
             let start = end
             end += chunk.count
-
             if isScalarTracingEnabled {
                 // Opt-in field diagnostic (marker file in the config folder):
                 // logs the exact UTF-16 units handed to keyboardSetUnicodeString,
                 // chunk boundaries included, so pipeline corruption (e.g. a
                 // split surrogate pair) is visible in the unified log. The hex
-                // IS transcript content — hence opt-in and privacy: .public.
+                // IS transcript content — hence opt-in, privacy: .public, and
+                // compiled out of release builds (LVX-80).
                 let hex = chunk.map { String(format: "%04X", $0) }.joined(separator: " ")
                 Log.insertion.notice(
                     "scalar-trace chunk[\(start, privacy: .public)..<\(end, privacy: .public)]: \(hex, privacy: .public)"
                 )
             }
+            #endif
 
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)

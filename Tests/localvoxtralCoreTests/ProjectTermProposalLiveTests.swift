@@ -124,7 +124,7 @@ final class ProjectTermProposalLiveTests: XCTestCase {
         let runner = Recording(ProjectTermProposalProcessRunner(vibeHome: appVibeHome, userVibeDirectory: userVibe))
         let store = Store()
         let proposer = ProjectTermProposer(store: store, runner: runner, now: { Date() })
-        await proposer.dictationCommitted(join: join(agent), enabled: true, excluding: [])?.value
+        await proposer.dictationCommitted(join: join(agent), enabled: true, excluding: { [] })?.value
         return (runner.outcomes.withLock { $0.first }, store)
     }
 
@@ -210,7 +210,7 @@ final class ProjectTermProposalLiveTests: XCTestCase {
         ))
         let store = Store()
         let proposer = ProjectTermProposer(store: store, runner: runner, now: { Date() })
-        await proposer.dictationCommitted(join: join(.opencode), enabled: true, excluding: [])?.value
+        await proposer.dictationCommitted(join: join(.opencode), enabled: true, excluding: { [] })?.value
         let outcome = runner.outcomes.withLock { $0.first }
         report("opencode, \(model)", outcome, store)
         guard case .terms(_, let usage, _)? = outcome else { return XCTFail("opencode run failed") }

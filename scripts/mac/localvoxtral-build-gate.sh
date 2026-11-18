@@ -22,6 +22,8 @@ set -euo pipefail
 #   reap work/localvoxtral-<id>  # terminate stale tests in one exact work dir
 #   disk                # df + per-work-dir du (du can take a while — on demand)
 #   gc                  # delete work dirs unused > LV_GC_MAX_AGE_DAYS (v4)
+#   gc --idle <hours>   # the same, for dirs unused > <hours> (1..720)
+#   remove work/localvoxtral-<id>  # delete one idle work dir now (EvalRecordings kept)
 
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
 # `voxlog` tails the STT test-service log. Post-migration the on-demand STT
@@ -262,16 +264,30 @@ workdir_has_prunable_entries() {
 # every gated run; the find catches pre-stamp dirs whose builds rewrote
 # .build metadata); (2) live processes rooted in the dir; (3) EvalRecordings
 # presence downgrades delete to a prune that keeps the recordings.
+#
+# `gc --idle <hours>` passes the window in hours instead: a caller that needs
+# the disk now (a nearly full data volume) reclaims dirs idle for hours, with
+# the same keep-checks.
 run_gc_command() {
-  local max_age_days="$LV_GC_MAX_AGE_DAYS"
-  if [[ ! "$max_age_days" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'gc: invalid LV_GC_MAX_AGE_DAYS: %s\n' "$max_age_days" >&2
-    return 1
+  local idle_hours="${1:-}" max_age_days="$LV_GC_MAX_AGE_DAYS" window_seconds window_label
+  if [[ -n "$idle_hours" ]]; then
+    # At most three digits before any arithmetic: a longer number wraps in bash
+    # (2^64 - 1 is -1) and would put the cutoff in the future.
+    [[ "$idle_hours" =~ ^[1-9][0-9]{0,2}$ ]] && (( idle_hours <= 720 )) || deny
+    window_seconds=$((idle_hours * 3600))
+    window_label="${idle_hours}h"
+  else
+    if [[ ! "$max_age_days" =~ ^[1-9][0-9]*$ ]]; then
+      printf 'gc: invalid LV_GC_MAX_AGE_DAYS: %s\n' "$max_age_days" >&2
+      return 1
+    fi
+    window_seconds=$((max_age_days * 86400))
+    window_label="${max_age_days}d"
   fi
   local now cutoff ref dir recent size_kb remaining_kb
   local deleted=0 pruned=0 kept_active=0 kept_busy=0 freed_kb=0
   now="$(date +%s)"
-  cutoff=$((now - max_age_days * 86400))
+  cutoff=$((now - window_seconds))
   ref="$(mktemp "${TMPDIR:-/tmp}/lv-gc-cutoff.XXXXXX")" || return 1
   touch -t "$(touch_timestamp_for_epoch "$cutoff")" "$ref" || { rm -f "$ref"; return 1; }
 
@@ -312,16 +328,16 @@ run_gc_command() {
       if (( size_kb > remaining_kb )); then
         freed_kb=$((freed_kb + size_kb - remaining_kb))
       fi
-      printf 'gc %s: unused >= %sd — pruned (EvalRecordings kept)\n' \
-        "${dir##*/}" "$max_age_days"
+      printf 'gc %s: unused >= %s — pruned (EvalRecordings kept)\n' \
+        "${dir##*/}" "$window_label"
       pruned=$((pruned + 1))
     else
       # An un-removable entry must not abort the pass; whatever survived
       # will be reported (and retried) by later runs.
       rm -rf "$dir" 2>/dev/null || true
       freed_kb=$((freed_kb + size_kb))
-      printf 'gc %s: unused >= %sd — deleted (%s)\n' \
-        "${dir##*/}" "$max_age_days" "$(format_kib "$size_kb")"
+      printf 'gc %s: unused >= %s — deleted (%s)\n' \
+        "${dir##*/}" "$window_label" "$(format_kib "$size_kb")"
       deleted=$((deleted + 1))
     fi
   done
@@ -329,6 +345,54 @@ run_gc_command() {
   printf 'gc: deleted %d, pruned %d, active %d, busy %d, freed ~%s\n' \
     "$deleted" "$pruned" "$kept_active" "$kept_busy" "$(format_kib "$freed_kb")"
   show_disk_free_line
+}
+
+# `remove work/localvoxtral-<id>`: delete one named work dir now, when its
+# caller is done with it (a build host short of disk). The same keep-checks as
+# gc, minus the age: a symlink, a dir any live process of this account uses
+# (fail closed when that cannot be proven), or one with a recorded payload
+# still running is kept; EvalRecordings survives, as in gc.
+run_remove_command() {
+  local name="$1" dir records record pgid started size_kb remaining_kb
+  validate_work_dir "$name" || deny
+  dir="$HOME/${name%/}"
+  if [[ -L "$dir" ]]; then
+    printf 'remove %s: a symlink — kept\n' "${dir##*/}"
+    return 1
+  fi
+  if [[ ! -d "$dir" ]]; then
+    printf 'remove %s: no such work dir\n' "${dir##*/}"
+    return 0
+  fi
+  records="$(payload_record_path "$name")"
+  if [[ -d "$records" ]]; then
+    for record in "$records"/*; do
+      [[ -f "$record" ]] || continue
+      pgid="${record##*/}"
+      IFS= read -r started <"$record" 2>/dev/null || started=""
+      if [[ "$pgid" =~ ^[0-9]+$ && -n "$started" && "$(process_start_time "$pgid")" == "$started" ]]; then
+        printf 'remove %s: a payload is still running in it — kept\n' "${dir##*/}"
+        return 1
+      fi
+    done
+  fi
+  if workdir_in_use "$dir"; then
+    printf 'remove %s: has live processes — kept\n' "${dir##*/}"
+    return 1
+  fi
+  size_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')" || size_kb=""
+  [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+  if [[ -e "$dir/EvalRecordings" ]]; then
+    prune_workdir_keep_recordings "$dir"
+    remaining_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')" || remaining_kb=""
+    [[ "$remaining_kb" =~ ^[0-9]+$ ]] || remaining_kb=0
+    printf 'remove %s: pruned, EvalRecordings kept (freed ~%s)\n' \
+      "${dir##*/}" "$(format_kib $((size_kb > remaining_kb ? size_kb - remaining_kb : 0)))"
+  else
+    rm -rf "$dir" 2>/dev/null || true
+    printf 'remove %s: deleted (%s)\n' "${dir##*/}" "$(format_kib "$size_kb")"
+  fi
+  rm -rf "$records" 2>/dev/null || true
 }
 
 show_versions() {
@@ -687,6 +751,7 @@ run_ensure_command() {
 run_reap_command() {
   local dir="$1"
   validate_work_dir "$dir" || deny
+  terminate_recorded_payload "$dir"
   if [[ ! -x "$REAPER" ]]; then
     printf 'reap: installed helper missing: %s\n' "$REAPER" >&2
     return 1
@@ -702,6 +767,119 @@ run_reap_command() {
 # agent's worktree.
 LV_GATE_PAYLOAD_PID=""
 LV_GATE_PAYLOAD_PGID=""
+LV_GATE_WATCHER_PID=""
+# Set by run_cd_command: the work dir's record directory, where this
+# payload's group is recorded for `reap`.
+LV_GATE_PAYLOAD_RECORD=""
+
+# The ssh session this gate serves: the nearest sshd ancestor within three
+# hops (sshd, or sshd-session, may run the forced command through a login
+# shell), else the parent.
+gate_session_pid() {
+  local pid="$PPID" comm hops=0
+  while (( hops < 3 )) && [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 )); do
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+    comm="${comm##*/}"
+    case "$comm" in
+      sshd*) printf '%s\n' "$pid"; return 0 ;;
+    esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    hops=$((hops + 1))
+  done
+  printf '%s\n' "$PPID"
+}
+
+# A dropped or killed client sends a pty-less session nothing: sshd only ends
+# its session process, and a payload that writes to its own log never hits
+# SIGPIPE (a package build kept an 8 GB Mac loaded for 40 minutes after its
+# client was gone, 2026-11-04). The watcher ends the payload group itself once
+# the session process is gone; the gate's wait then returns and its usual
+# drain finishes the group. It signals the group, not the gate, because a
+# signal ignored when the gate started (a CI runner ignores HUP) cannot be
+# trapped. Its stdio is /dev/null, so it never holds the ssh channel open.
+# A session that exited but is not yet reaped is a zombie, which `kill -0`
+# still finds: only a live, non-zombie process counts.
+session_is_alive() {
+  local state
+  state="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ' || true)"
+  [[ -n "$state" && "$state" != Z* ]]
+}
+
+# Runs between the watcher's fork and `$!`. A no-op here; the process-cleanup
+# test, which sources this file, redefines it to land a signal there.
+gate_after_watcher_fork() { :; }
+
+start_session_watcher() {
+  local session_pid pgid="$LV_GATE_PAYLOAD_PGID"
+  local poll="${LOCALVOXTRAL_GATE_SESSION_POLL_SECONDS:-1}"
+  session_pid="${LOCALVOXTRAL_GATE_SESSION_PID:-$(gate_session_pid)}"
+  [[ "$session_pid" =~ ^[0-9]+$ && "$pgid" =~ ^[0-9]+$ ]] || return 0
+  (
+    while session_is_alive "$session_pid"; do
+      sleep "$poll"
+    done
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+  ) </dev/null >/dev/null 2>&1 &
+  gate_after_watcher_fork
+  LV_GATE_WATCHER_PID=$!
+}
+
+stop_session_watcher() {
+  [[ -n "$LV_GATE_WATCHER_PID" ]] || return 0
+  kill "$LV_GATE_WATCHER_PID" 2>/dev/null || true
+  wait "$LV_GATE_WATCHER_PID" 2>/dev/null || true
+  LV_GATE_WATCHER_PID=""
+}
+
+# `<pgid> <leader start time>`: enough for `reap` to end exactly this group
+# and never a later process that reused the pid.
+process_start_time() {
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' || true
+}
+
+# One record per payload, `<records dir>/<pgid>`: unit-test shards run several
+# payloads in one work dir at once. Written aside and renamed into place: a
+# reap that found the record before its start time was written ended nothing
+# for that group and deleted the record (LVX-103). `reap`'s glob skips the
+# dot file.
+record_payload_group() {
+  [[ -n "$LV_GATE_PAYLOAD_RECORD" ]] || return 0
+  mkdir -p "$LV_GATE_PAYLOAD_RECORD" 2>/dev/null || return 0
+  local final="$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID"
+  local partial="$LV_GATE_PAYLOAD_RECORD/.$LV_GATE_PAYLOAD_PGID.partial"
+  process_start_time "$LV_GATE_PAYLOAD_PGID" >"$partial" 2>/dev/null \
+    && mv -f "$partial" "$final" 2>/dev/null || rm -f "$partial"
+}
+
+forget_payload_group() {
+  [[ -n "$LV_GATE_PAYLOAD_RECORD" && -n "$LV_GATE_PAYLOAD_PGID" ]] || return 0
+  rm -f "$LV_GATE_PAYLOAD_RECORD/$LV_GATE_PAYLOAD_PGID"
+}
+
+payload_record_path() {
+  printf '%s/.lv-gate-payloads/%s\n' "$HOME" "$(basename "${1%/}")"
+}
+
+# For `reap`: ends every payload group recorded for this work dir whose leader
+# is still the process that started it, as a gate whose client vanished
+# without the session ending would leave it.
+terminate_recorded_payload() {
+  local records record pgid started
+  records="$(payload_record_path "$1")"
+  [[ -d "$records" ]] || return 0
+  for record in "$records"/*; do
+    [[ -f "$record" ]] || continue
+    pgid="${record##*/}"
+    IFS= read -r started <"$record" 2>/dev/null || started=""
+    rm -f "$record"
+    [[ "$pgid" =~ ^[0-9]+$ ]] || continue
+    [[ -n "$started" && "$(process_start_time "$pgid")" == "$started" ]] || continue
+    printf 'reap: ending the abandoned payload group %s\n' "$pgid"
+    LV_GATE_PAYLOAD_PGID="$pgid"
+    LV_GATE_PAYLOAD_PID=""
+    terminate_payload_group
+  done
+}
 
 payload_group_is_alive() {
   [[ -n "$LV_GATE_PAYLOAD_PGID" ]] \
@@ -758,10 +936,15 @@ run_payload_with_cleanup() {
   LV_GATE_PAYLOAD_PID=$!
   LV_GATE_PAYLOAD_PGID=$LV_GATE_PAYLOAD_PID
   (( monitor_was_enabled == 1 )) || set +m
+  # Still under the recording traps: a signal handled between the watcher's
+  # fork and `$!` would exit before LV_GATE_WATCHER_PID is set, and the EXIT
+  # cleanup would leave the watcher running (LVX-107).
+  record_payload_group
+  start_session_watcher
 
   # Signal handlers exit with conventional shell statuses; EXIT owns the one
   # cleanup path. PIPE matters because stdout is `ssh | tee` on the client.
-  trap 'status=$?; trap - EXIT HUP INT TERM PIPE; terminate_payload_group; exit "$status"' EXIT
+  trap 'status=$?; trap - EXIT HUP INT TERM PIPE; stop_session_watcher; forget_payload_group; terminate_payload_group; exit "$status"' EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -775,6 +958,8 @@ run_payload_with_cleanup() {
   fi
   # The leader can exit on SIGPIPE while an xctest grandchild remains in the
   # group. Always drain the group, even when the leader reported success.
+  stop_session_watcher
+  forget_payload_group
   terminate_payload_group
   trap - EXIT HUP INT TERM PIPE
   return "$status"
@@ -839,6 +1024,7 @@ run_cd_command() {
 
   cd "$HOME/${dir%/}"
   touch_workdir_stamp "$PWD"
+  LV_GATE_PAYLOAD_RECORD="$(payload_record_path "$dir")"
   run_payload_with_cleanup "$payload"
 }
 
@@ -934,6 +1120,16 @@ case "$original_command" in
     ;;
   gc)
     run_gc_command
+    ;;
+  gc\ --idle\ *)
+    arg="${original_command#gc --idle }"
+    [[ "$arg" != *" "* && -n "$arg" ]] || deny
+    run_gc_command "$arg"
+    ;;
+  remove\ work/localvoxtral-*)
+    arg="${original_command#remove }"
+    [[ "$arg" != *" "* && -n "$arg" ]] || deny
+    run_remove_command "$arg"
     ;;
   ensure\ *)
     arg="${original_command#ensure }"

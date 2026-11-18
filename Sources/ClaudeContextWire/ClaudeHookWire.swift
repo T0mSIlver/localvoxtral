@@ -232,6 +232,12 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
     /// desktop app shows that session in, which is what the desktop join arm
     /// compares it against.
     public var desktopSessionID: String?
+    /// `$T3CODE_THREAD_ID` — the id of the T3 Code thread that runs this
+    /// session (LVX-55): a UUID, or `mcp:launch:<hex>` for a thread an agent
+    /// launched. The same value is the last route component of the web view
+    /// T3 Code shows that thread in, which the T3 Code join arm compares it
+    /// against.
+    public var t3ThreadID: String?
     /// When the process behind `claudePID` started, in microseconds since the
     /// epoch, from the kernel's process table. A pid is reused; a pid together
     /// with its start time is not. Published by agents that have no
@@ -251,6 +257,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         cmuxSocketPath: String? = nil,
         bridgeSessionID: String? = nil,
         desktopSessionID: String? = nil,
+        t3ThreadID: String? = nil,
         agentStartMicros: Int64? = nil
     ) {
         self.hookPID = hookPID
@@ -263,6 +270,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         self.cmuxSocketPath = cmuxSocketPath
         self.bridgeSessionID = bridgeSessionID
         self.desktopSessionID = desktopSessionID
+        self.t3ThreadID = t3ThreadID
         self.agentStartMicros = agentStartMicros
     }
 
@@ -277,6 +285,7 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         case cmuxSocketPath = "cmux_socket_path"
         case bridgeSessionID = "bridge_session_id"
         case desktopSessionID = "desktop_session_id"
+        case t3ThreadID = "t3_thread_id"
         case agentStartMicros = "agent_start_us"
     }
 }
@@ -325,10 +334,6 @@ public struct ClaudeHookRecord: Sendable, Equatable {
     public var toolName: String?
     public var files: [ClaudeFileTouch]
     public var process: ClaudeHookProcessInfo?
-    /// The opencode TUI half's prompt relay, on its `FocusChanged` records
-    /// only (#719). Dropped by `clamp` from every other record and whenever
-    /// malformed, so a record that carries it is otherwise unchanged.
-    public var promptRelay: OpencodePromptRelayAddress?
     /// What a `Notification` record waits for. Required on that event and
     /// dropped by `clamp` from every other one.
     public var notificationType: ClaudeNotificationType?
@@ -358,7 +363,6 @@ public struct ClaudeHookRecord: Sendable, Equatable {
         toolName: String? = nil,
         files: [ClaudeFileTouch] = [],
         process: ClaudeHookProcessInfo? = nil,
-        promptRelay: OpencodePromptRelayAddress? = nil,
         notificationType: ClaudeNotificationType? = nil,
         sessionTitle: String? = nil,
         promptID: String? = nil
@@ -373,35 +377,9 @@ public struct ClaudeHookRecord: Sendable, Equatable {
         self.toolName = toolName
         self.files = files
         self.process = process
-        self.promptRelay = promptRelay
         self.notificationType = notificationType
         self.sessionTitle = sessionTitle
         self.promptID = promptID
-    }
-}
-
-/// Where the opencode TUI half's prompt relay listens: a port on 127.0.0.1
-/// and the bearer token the relay demands (#719). The wire carries a port,
-/// never a host, so the app can only ever dial loopback. The relay forwards
-/// two calls into the pane's own prompt, append and submit, and nothing else;
-/// see docs/agent/invariants.md ("The app writes into an agent only through
-/// opencode's prompt relay").
-public struct OpencodePromptRelayAddress: Sendable, Hashable, Codable {
-    public var port: Int
-    /// 32 random bytes, lowercase hex.
-    public var token: String
-
-    public static let tokenLength = 64
-
-    public init(port: Int, token: String) {
-        self.port = port
-        self.token = token
-    }
-
-    public var isWellFormed: Bool {
-        (1...65_535).contains(port)
-            && token.utf8.count == Self.tokenLength
-            && token.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
     }
 }
 
@@ -417,7 +395,6 @@ extension ClaudeHookRecord: Codable {
         case toolName = "tool_name"
         case files
         case process
-        case promptRelay = "prompt_relay"
         case notificationType = "notification_type"
         case sessionTitle = "session_title"
         case promptID = "prompt_id"
@@ -439,9 +416,6 @@ extension ClaudeHookRecord: Codable {
         toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
         files = try container.decodeIfPresent([ClaudeFileTouch].self, forKey: .files) ?? []
         process = try container.decodeIfPresent(ClaudeHookProcessInfo.self, forKey: .process)
-        // A relay that does not decode loses the field, not the record: the
-        // focus declaration it rides on stands without it.
-        promptRelay = (try? container.decodeIfPresent(OpencodePromptRelayAddress.self, forKey: .promptRelay)) ?? nil
         // An unknown type decodes to nil, and `decodeLine` drops a
         // Notification without one.
         notificationType = (try? container.decodeIfPresent(ClaudeNotificationType.self, forKey: .notificationType)) ?? nil
@@ -468,7 +442,6 @@ extension ClaudeHookRecord: Codable {
         try container.encodeIfPresent(toolName, forKey: .toolName)
         try container.encode(files, forKey: .files)
         try container.encodeIfPresent(process, forKey: .process)
-        try container.encodeIfPresent(promptRelay, forKey: .promptRelay)
         try container.encodeIfPresent(notificationType, forKey: .notificationType)
         try container.encodeIfPresent(sessionTitle, forKey: .sessionTitle)
         try container.encodeIfPresent(promptID, forKey: .promptID)
@@ -599,10 +572,6 @@ public enum ClaudeHookWireCodec {
 
     static func clamp(_ record: ClaudeHookRecord, limits: ClaudeHookLimits) -> ClaudeHookRecord {
         var clamped = record
-        if let relay = record.promptRelay,
-           !(record.agent == .opencode && record.event == .focusChanged && relay.isWellFormed) {
-            clamped.promptRelay = nil
-        }
         if record.event != .notification {
             clamped.notificationType = nil
         }
@@ -642,6 +611,10 @@ public enum ClaudeHookWireCodec {
             }
             process.desktopSessionID = process.desktopSessionID.map {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            // Dropped, not truncated: a join key cut short could equal another.
+            process.t3ThreadID = process.t3ThreadID.flatMap {
+                $0.utf8.count <= limits.maxPathBytes ? $0 : nil
             }
             clamped.process = process
         }

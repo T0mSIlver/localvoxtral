@@ -59,6 +59,41 @@ package enum HerdrClientTTYProbe {
         }
     }
 
+    /// The herdr session a whole-view client in this TTY's foreground shows
+    /// (`HerdrMachineProfile.defaultSessionName` for a plain `herdr`), or nil
+    /// when the job is not one, or its herdr processes name different
+    /// sessions. `herdr --session <name>` attaches another server, so "a
+    /// whole-view client" alone does not say WHICH server a window shows
+    /// (Codex review of LVX-99).
+    package static func wholeViewSessionName(onTTYDevicePath path: String) -> String? {
+        wholeViewSessionName(
+            onTTYDevicePath: path,
+            deviceID: liveDeviceID,
+            processes: TTYProcessTable.entries(onDevice:),
+            arguments: SSHDestinationTTYProbe.processArguments(pid:)
+        )
+    }
+
+    package static func wholeViewSessionName(
+        onTTYDevicePath path: String,
+        deviceID: @Sendable (String) -> dev_t?,
+        processes: @Sendable (dev_t) -> [TTYProcessTable.Entry]?,
+        arguments: (Int32) -> [String]?
+    ) -> String? {
+        guard let device = deviceID(path), let entries = processes(device) else { return nil }
+        let clients = entries.filter {
+            $0.name == "herdr" && $0.processGroupID > 0 && $0.processGroupID == $0.terminalForegroundGroupID
+        }
+        var sessions = Set<String>()
+        for client in clients {
+            guard let argv = arguments(client.pid),
+                  case .plainClient(let selector) = SSHDestinationTTYProbe.classifyHerdrCommand(argv)
+            else { return nil }
+            sessions.insert(selector ?? HerdrMachineProfile.defaultSessionName)
+        }
+        return sessions.count == 1 ? sessions.first : nil
+    }
+
     /// Both live reads are the SHARED walk (`TTYProcessTable`), so this probe
     /// and the ssh-destination probe cannot drift apart on what "on this tty"
     /// means.

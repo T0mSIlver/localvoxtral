@@ -46,7 +46,10 @@
 #
 set -euo pipefail
 
-MARKER='[run-stt-integration]'
+# What the filter prints names the marker without brackets: a reason pasted
+# into a PR body as proof must not opt that PR in (LVX-114).
+MARKER_NAME='run-stt-integration'
+MARKER="[$MARKER_NAME]"
 
 # The files the suite executes, traced from the test: the client, its base
 # and protocol, what they call, and what the unconditional device test calls.
@@ -60,11 +63,9 @@ PATTERNS=(
   'Sources/localvoxtralCore/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
   'Sources/localvoxtralCore/RealtimeAPIWebSocketClient.swift' # the client under test
   'Sources/localvoxtralCore/StringExtensions.swift'       # API key and model trimming
-  'Sources/localvoxtralCore/RealtimeFileTranscriber.swift' # voice memo files through the socket
-  'Sources/localvoxtral/VoiceMemoCapture.swift'           # the memo decoder the live test uses
+  'Tests/localvoxtralTestSupport/RealtimeFileTranscriber.swift' # recorded files through the socket
   'Sources/localvoxtral/MicrophoneCaptureService.swift'
   'Sources/localvoxtral/AudioDeviceManager.swift'         # the unavailable-device test
-  'Sources/localvoxtralCore/TextMergingAlgorithms.swift'  # the scorer normalizes through it
   'Tests/localvoxtralCoreTests/RealtimeAPIVLLMIntegrationTests.swift' # the client half
   'Tests/localvoxtralTests/RealtimeAPIVLLMIntegrationTests.swift'     # the microphone half
   'Tests/localvoxtralTestSupport/IntegrationTestSupport.swift'
@@ -117,7 +118,7 @@ esac
 if [[ -n "$MARKER_TEXT_FILE" && -f "$MARKER_TEXT_FILE" ]] \
     && grep -qF "$MARKER" "$MARKER_TEXT_FILE"; then
   echo "run=true"
-  echo "reason=explicit $MARKER marker"
+  echo "reason=explicit $MARKER_NAME marker"
   exit 0
 fi
 
@@ -146,4 +147,4 @@ while IFS= read -r file; do
 done <"$CHANGED_FILES_FILE"
 
 echo "run=false"
-echo "reason=no change the live STT lane can see${NARROWED}; add $MARKER to the PR body or commit message and push to opt in"
+echo "reason=no change the live STT lane can see${NARROWED}; add the $MARKER_NAME marker, in square brackets, to the PR body or commit message and push to opt in"

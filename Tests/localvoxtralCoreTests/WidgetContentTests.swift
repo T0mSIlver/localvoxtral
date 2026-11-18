@@ -141,6 +141,46 @@ final class WidgetContentTests: XCTestCase {
         }
     }
 
+    private func enginesSnapshot(appRunning: Bool = true) -> WidgetSnapshot {
+        WidgetSnapshot(
+            writtenAt: now,
+            engines: engines(speech: voxtral(), polish: qwen(), appRunning: appRunning),
+            dictation: WidgetSnapshot.Dictation(),
+            vocabulary: WidgetSnapshot.Vocabulary(),
+            historyKept: true,
+            lastDictation: nil
+        )
+    }
+
+    /// A crash or a force quit writes no quit snapshot. Once the app's
+    /// heartbeat is overdue the widget shows it as not running, without the
+    /// button nothing would answer (#2058).
+    func testASnapshotPastItsHeartbeatShowsTheAppAsNotRunning() {
+        let snapshot = enginesSnapshot()
+        let live = EnginesWidgetContent(snapshot.engines, size: .medium, locale: locale)
+        XCTAssertEqual(
+            EnginesWidgetContent(snapshot, size: .medium, now: now.addingTimeInterval(WidgetSnapshot.staleAfter - 1), locale: locale),
+            live)
+        XCTAssertEqual(
+            EnginesWidgetContent(snapshot, size: .medium, now: now.addingTimeInterval(WidgetSnapshot.staleAfter), locale: locale),
+            EnginesWidgetContent(
+                layout: .stopped(title: "localvoxtral is not running", detail: "Open it to start its engines.", other: nil),
+                showsTurnOffPolish: false))
+    }
+
+    /// The Engines timeline rereads the file a heartbeat before the snapshot
+    /// goes stale, so a running app's newer heartbeat lands first; once
+    /// stale, or after a quit, it stops asking.
+    func testTheEnginesTimelineRereadsTheFileBeforeTheSnapshotGoesStale() {
+        let snapshot = enginesSnapshot()
+        let stale = now.addingTimeInterval(WidgetSnapshot.staleAfter)
+        let early = stale.addingTimeInterval(-WidgetSnapshot.heartbeatInterval)
+        XCTAssertEqual(snapshot.heartbeatCheckDate(now: now), early)
+        XCTAssertEqual(snapshot.heartbeatCheckDate(now: early), stale)
+        XCTAssertNil(snapshot.heartbeatCheckDate(now: stale))
+        XCTAssertNil(enginesSnapshot(appRunning: false).heartbeatCheckDate(now: now))
+    }
+
     /// A managed engine that is not loaded yet is waiting for a dictation,
     /// not broken.
     func testAnIdleEngineIsARowNotAStoppedEngine() {

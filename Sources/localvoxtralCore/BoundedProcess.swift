@@ -6,7 +6,7 @@ import Glibc
 import Foundation
 
 /// Runs one child process with a hard deadline and an output cap: the one
-/// process engine for git, quick capture, project terms, the `claude` CLI and
+/// process engine for git, project terms, the `claude` CLI and
 /// every remote setup ssh. Launch, the cap, the deadline, exit observation and
 /// the SIGTERM-then-SIGKILL teardown live here once, because each copy of them
 /// was a copy of the same bugs (#1881 patched quit into three).

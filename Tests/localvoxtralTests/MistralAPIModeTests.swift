@@ -402,7 +402,7 @@ final class MistralAPIModeTests: XCTestCase {
             session.invalidateAndCancel()
         }
         viewModel.session.mistralRealtimeClient.debugPrimeConnectedStateForTesting(
-            task: task, isUserInitiatedDisconnect: true, hasReceivedSessionCreated: true,
+            task: task, hasReceivedSessionCreated: true,
             usageModel: MistralRealtimeWebSocketClient.defaultModel)
         viewModel.session.mistralRealtimeClient.sendAudioChunk(Data(count: 16_000))
         viewModel.session.mistralRealtimeClient.disconnect()

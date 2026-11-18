@@ -248,6 +248,26 @@ if [[ "$TARGET" == "main" ]]; then
   fi
 fi
 
+# Every earlier try left a bundle claiming com.localvoxtral.app in /tmp, and
+# Launch Services kept them all. System Settings resolves the bundle id to one
+# of those paths when the owner turns Accessibility on, so the grant could land
+# on a stale try build's signature instead of the app that runs: the toggle
+# "does nothing" (hundreds of copies were found on the owner's Mac). Unregister
+# and delete every earlier try that is not running.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+RUNNING_APPS="$(for pid in $(pgrep -x localvoxtral || true); do ps -o comm= -p "$pid"; done)"
+for old_dest in /tmp/localvoxtral-try.* /private/tmp/localvoxtral-try.*; do
+  [[ -d "$old_dest" ]] || continue
+  # Another try-pr may have downloaded this one and not launched it yet.
+  [[ -z "$(find "$old_dest" -maxdepth 0 -mmin -10 2>/dev/null)" ]] || continue
+  old_app="$old_dest/extracted/localvoxtral.app"
+  if [[ -n "$RUNNING_APPS" ]] && grep -qF "$old_app/" <<<"$RUNNING_APPS"; then
+    continue
+  fi
+  [[ -d "$old_app" ]] && "$LSREGISTER" -u "$old_app" 2>/dev/null || true
+  rm -rf "$old_dest"
+done
+
 DEST="$(mktemp -d /tmp/localvoxtral-try.XXXXXX)"
 gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"
 ditto -x -k "$DEST/${ARTIFACT}.zip" "$DEST/extracted"
@@ -316,6 +336,18 @@ fi
 # exactly why the app has to be re-added in System Settings each time.
 echo "Designated requirement (compare across try-pr runs — stable == TCC grant survives):"
 codesign -d --requirements - "$APP" 2>&1 | sed 's/^/  /' || true
+# The installed app shares this bundle id. TCC keeps one Accessibility row per
+# bundle id, tied to one signature, so allowing this build takes the grant from
+# /Applications/localvoxtral.app (and back again). Say so, with the way back.
+INSTALLED_APP=/Applications/localvoxtral.app
+if [[ -d "$INSTALLED_APP" ]] \
+  && [[ "$(codesign -d --requirements - "$APP" 2>/dev/null)" != "$(codesign -d --requirements - "$INSTALLED_APP" 2>/dev/null)" ]]; then
+  echo "NOTE: this build is signed differently from $INSTALLED_APP. Allowing it in"
+  echo "      Accessibility (Device Control and Data Access on macOS 27) moves the"
+  echo "      grant to this build. Back on the installed app, if the toggle does nothing:"
+  echo "        tccutil reset Accessibility com.localvoxtral.app"
+  echo "      then relaunch it and allow it again."
+fi
 if (( IS_ADHOC )); then
   echo "NOTE: ad-hoc signed build — if text insertion fails, remove and re-add"
   echo "      localvoxtral in System Settings > Privacy & Security > Accessibility"

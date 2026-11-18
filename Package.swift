@@ -127,6 +127,9 @@ products.insert(.executable(name: "localvoxtral", targets: ["localvoxtral"]), at
 // wraps it into Contents/PlugIns.
 products.append(.executable(name: "localvoxtral-widgets", targets: ["localvoxtralWidgets"]))
 dependencies.append(.package(url: "https://github.com/Kentzo/ShortcutRecorder.git", from: "3.4.0"))
+// Updates (LVX-57): the app checks the appcast on each stable release and
+// installs when the user is away. `scripts/package_app.sh` embeds the framework.
+dependencies.append(.package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.10.1"))
 targets += [
     // The desktop widgets' SwiftUI views, apart from the extension so the
     // view snapshot tests can render them.
@@ -140,6 +143,7 @@ targets += [
         name: "localvoxtral",
         dependencies: [
             .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
+            .product(name: "Sparkle", package: "Sparkle"),
             "ClaudeContextWire",
             "localvoxtralCore",
         ],
@@ -150,7 +154,11 @@ targets += [
         resources: [
             .process("Resources"),
         ],
-        swiftSettings: harnessSwiftSettings
+        swiftSettings: harnessSwiftSettings,
+        // The packaged app keeps Sparkle.framework in Contents/Frameworks.
+        linkerSettings: [
+            .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+        ]
     ),
     .testTarget(
         name: "localvoxtralTests",

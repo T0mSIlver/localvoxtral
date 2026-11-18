@@ -13,7 +13,7 @@
 #   2. uploads each asset the release lacks or holds at another size;
 #   3. checks that every asset is there at its size, then publishes the draft.
 # The release stays a draft until step 3, so nobody sees it half uploaded. A
-# tag with a '-' (rc, nightly) is a prerelease and never marked Latest.
+# tag with a '-' (rc) is a prerelease and never marked Latest.
 #
 # Every GitHub call is retried: release run 37128200212 lost the zip to
 # `getaddrinfo ENOTFOUND uploads.github.com`. gh exits 1 for a network error
@@ -61,6 +61,16 @@ ASSETS=(
   "localvoxtral-polishd-$TAG.dSYM.zip"
   "localvoxtral-speechd-$TAG.dSYM.zip"
 )
+# A stable release carries the update feed the installed apps read through
+# /releases/latest/download/appcast.xml, plus the deltas it names
+# (build-update-feed.sh, LVX-57). Without the feed, every installed copy would
+# stop updating, so its absence fails the publish.
+if ! $PRERELEASE; then
+  ASSETS+=("appcast.xml")
+  while IFS= read -r delta; do
+    ASSETS+=("$(basename "$delta")")
+  done < <(find "$DIR" -maxdepth 1 -name "localvoxtral-$TAG-from-*.delta" | sort)
+fi
 
 # Everything local is checked before the first network call.
 [[ -f "$NOTES" ]] || { echo "publish-release.sh: no notes file at $NOTES" >&2; exit 1; }

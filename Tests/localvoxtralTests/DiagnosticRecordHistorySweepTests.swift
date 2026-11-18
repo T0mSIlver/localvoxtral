@@ -115,6 +115,29 @@ final class DiagnosticRecordBuilderRedactionTests: XCTestCase {
             XCTAssertTrue(source.harvest.contains { $0.contains("SessionRouter") }, "\(source.source): \(source.harvest)")
         }
     }
+
+    /// The matcher runs on the text as captured, so the value of
+    /// `DB_PASSWORD=…` and an identifier of the withheld prompt both come back
+    /// as matched terms. The builder drops them; a neighbour stays.
+    func testTheBuilderDropsMatchedTermsTheRedactionRemovedFromTheirSource() throws {
+        let secret = "CrimsonFalcon71"
+        let prompt = "ConfidentialRoadmapV2"
+        let screen = "export DB_PASSWORD=\(secret)\nPytestRunner \(prompt)"
+        let transcript = "crimson falcon 71 pytest runner confidential roadmap v2"
+        let prepared = PolishContextPreparation.prepare(text: screen, transcript: transcript, renderBudget: 2000)
+        let terms = prepared.grounding.entries.map(\.replaceWith)
+        XCTAssertTrue(terms.contains(secret) && terms.contains(prompt) && terms.contains("PytestRunner"), "\(terms)")
+
+        var inputs = DiagnosticRecordInputs.minimal(context: "unused context")
+        inputs.screenDecision = .render(excerpt: screen, startText: screen, elidedChurnLines: 0)
+        inputs.screenOutcome = prepared.grounding
+        inputs.withheldPrompt = prompt
+
+        let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
+
+        let terminal = try XCTUnwrap(record.sources.first { $0.source == "terminal" })
+        XCTAssertEqual(terminal.entries.map(\.term), ["PytestRunner"])
+    }
 }
 
 private extension DiagnosticRecordInputs {

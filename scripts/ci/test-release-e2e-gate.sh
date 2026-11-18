@@ -45,7 +45,7 @@ done
 case "$1 ${2:-}" in
   "workflow run")
     # The dispatch registers run 900 on top of the older run 800 (an earlier
-    # nightly on another commit), but only from the second listing on: GitHub
+    # rc on another commit), but only from the second listing on: GitHub
     # lists a dispatched run seconds late.
     echo "$*" >>"$SCEN/dispatched"
     ;;
@@ -153,8 +153,16 @@ dir="$(scenario rc-branch)"
 expect 1 "a release candidate from a branch is gated too" "$dir" --dry-run 1.2.3-rc.1 t/feature
 grep -q "commits/t%2Ffeature" "$dir/calls" || fail "the branch name is URI-encoded"
 
-dir="$(scenario nightly)"
-expect 0 "a nightly is not gated" "$dir" --dry-run nightly
+dir="$(scenario rc)"
+expect 0 "an rc is not gated" "$dir" --dry-run rc
+grep -q "Dry run: would dispatch Release App (rc, ref=main, publish=true)" "$dir/out" \
+  || fail "the rc dry run says what it would dispatch: $(cat "$dir/out")"
+dir="$(scenario rc-branch-publish)"
+expect 0 "an rc publishes from any ref, ungated" "$dir" --dry-run rc t/feature
+grep -q "Dry run: would dispatch Release App (rc, ref=t/feature, publish=true)" "$dir/out" \
+  || fail "the rc branch dry run says what it would dispatch: $(cat "$dir/out")"
+dir="$(scenario nightly-gone)"
+expect 1 "nightly is no longer a channel" "$dir" --dry-run nightly
 dir="$(scenario daily)"
 expect 0 "a daily release is left to the workflow's own gate" "$dir" --dry-run daily
 grep -q "the workflow picks a commit that passed it" "$dir/out" || fail "the daily skip says why: $(cat "$dir/out")"
@@ -164,7 +172,7 @@ dir="$(scenario daily-branch)"
 expect 1 "a daily release from a branch is refused" "$dir" --dry-run daily t/feature
 dir="$(scenario rehearsal)"
 expect 0 "a rehearsal is not gated" "$dir" --dry-run rehearse patch
-grep -q "not required for a nightly or a rehearsal" "$dir/out" || fail "the skip says why"
+grep -q "not required for an rc or a rehearsal" "$dir/out" || fail "the skip says why"
 
 dir="$(scenario dispatch 31:success)"
 expect 0 "a gated release dispatches and watches its run" "$dir" patch

@@ -231,9 +231,10 @@ public struct ClaudeHookPublisher: Sendable {
         processInfo(agentPID: environment.ppid(), claudeSessionHandles: true)
     }
 
-    /// - Parameter claudeSessionHandles: whether the two Claude-allocated
-    ///   session ids are published. They name a CLAUDE session's browser tab or
-    ///   desktop view, and another agent started from inside a Claude Code
+    /// - Parameter claudeSessionHandles: whether the view handles are
+    ///   published: the two Claude-allocated session ids and T3 Code's thread
+    ///   id. They name a CLAUDE session's browser tab, desktop view or T3
+    ///   thread, and another agent started from inside a Claude Code
     ///   session inherits them — publishing them there would let that agent's
     ///   session join the Claude view it was launched from.
     /// - Parameter agentStartMicros: the agent process's start time, for an
@@ -257,6 +258,7 @@ public struct ClaudeHookPublisher: Sendable {
             cmuxSocketPath: nonEmptyVariable("CMUX_SOCKET_PATH"),
             bridgeSessionID: claudeSessionHandles ? nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID") : nil,
             desktopSessionID: claudeSessionHandles ? nonEmptyVariable("CLAUDE_CODE_HOST_SESSION_ID") : nil,
+            t3ThreadID: claudeSessionHandles ? nonEmptyVariable("T3CODE_THREAD_ID") : nil,
             agentStartMicros: agentStartMicros
         )
     }

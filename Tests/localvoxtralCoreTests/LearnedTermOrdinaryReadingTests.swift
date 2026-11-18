@@ -78,7 +78,6 @@ final class LearnedTermOrdinaryReadingTests: XCTestCase {
                 ReplacementEntry(replaceWith: "useAuth", matches: ["use auth"]),
                 ReplacementEntry(replaceWith: "toolInput", matches: ["tool input"]),
             ],
-            isFallbackOnly: false,
             verificationCandidates: [ReplacementEntry(replaceWith: "Qwen", matches: ["kwen"])]
         )
         let guarded = RepoVocabularyMatcher.withholdingOrdinaryReadings(outcome, transcript: transcript)
@@ -98,7 +97,6 @@ final class LearnedTermOrdinaryReadingTests: XCTestCase {
         let cap = RepoVocabularyMatcher.nominationCap(forTranscript: transcript)
         let outcome = RepoVocabularyMatcher.GroundingOutcome(
             entries: [ReplacementEntry(replaceWith: "useAuth", matches: ["use auth"])],
-            isFallbackOnly: false,
             verificationCandidates: (0..<cap).map {
                 ReplacementEntry(replaceWith: "Term\($0)", matches: ["heard \($0)"])
             }

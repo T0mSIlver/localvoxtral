@@ -49,11 +49,10 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
             )
 
             XCTAssertTrue(outcome.entries.isEmpty, name)
-            XCTAssertTrue(outcome.phoneticEntries.isEmpty, name)
             XCTAssertEqual(outcome.verificationCandidates, [offered], name)
             XCTAssertEqual(
                 RepoVocabularyMatcher.preapplying(
-                    entries: outcome.entries + outcome.phoneticEntries, to: transcript
+                    entries: outcome.entries, to: transcript
                 ),
                 transcript,
                 name
@@ -79,7 +78,6 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
             outcome.entries,
             [ReplacementEntry(replaceWith: "flushRemainder", matches: ["flush remainder"])]
         )
-        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
         XCTAssertEqual(
             outcome.verificationCandidates,
             [ReplacementEntry(replaceWith: "terminal pane", matches: ["terminal pain"])]
@@ -220,7 +218,6 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
             outcome.entries,
             [ReplacementEntry(replaceWith: "clothes code", matches: ["clothes code"])]
         )
-        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
         XCTAssertTrue(outcome.verificationCandidates.isEmpty)
     }
 

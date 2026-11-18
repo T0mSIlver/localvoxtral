@@ -4,7 +4,11 @@ import Foundation
 /// Matches what `RealtimeAPIWebSocketClient` sends and expects (verified against the client),
 /// so this Swift server is a drop-in for the Python `voxmlx` process. Pure and Metal-free.
 public enum RealtimeClientMessage: Equatable, Sendable {
-    case sessionUpdate
+    /// `terms` is nil when the frame has no `context_bias` field, which keeps
+    /// the connection's current list; an empty array clears it. `language` is the
+    /// dictation language the app sends for a model that takes one (an ISO 639-1
+    /// code); nil when the frame has none, which keeps the connection's.
+    case sessionUpdate(terms: SessionTerms?, language: String? = nil)
     /// 16 kHz mono PCM16LE, base64-encoded.
     case audioAppend(base64PCM16: String)
     /// `final == true` finalizes the utterance; a non-final commit is a no-op (matches voxmlx).
@@ -17,6 +21,7 @@ public enum RealtimeClientMessage: Equatable, Sendable {
         case notJSONObject
         case missingType
         case invalidAudioPayload
+        case invalidContextBias
     }
 
     public static func parse(_ data: Data) throws -> RealtimeClientMessage {
@@ -27,7 +32,12 @@ public enum RealtimeClientMessage: Equatable, Sendable {
 
         switch type {
         case "session.update":
-            return .sessionUpdate
+            let language = (obj["language"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hint = language?.isEmpty == false ? language : nil
+            guard let field = obj["context_bias"] else { return .sessionUpdate(terms: nil, language: hint) }
+            guard let terms = field as? [String] else { throw ParseError.invalidContextBias }
+            return .sessionUpdate(terms: SessionTerms(terms), language: hint)
         case "input_audio_buffer.append":
             guard let audio = obj["audio"] as? String, !audio.isEmpty else {
                 throw ParseError.invalidAudioPayload

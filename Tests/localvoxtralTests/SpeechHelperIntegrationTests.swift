@@ -293,6 +293,11 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         let readyLine = "ready on 127.0.0.1:\(Self.testPort)"
         let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
             stderrLog.append(line)
+            // Timings only, no transcript: the load-time warm-up (LVX-111) and each
+            // utterance's slowest step.
+            if line.hasPrefix("speechd: warm-up") || line.contains("utterance ended by") {
+                print("speechd integration: helper: \(line)")
+            }
             if line.contains(readyLine), ready.set() {
                 readyOrExited.fulfill()
             }
@@ -340,7 +345,10 @@ final class SpeechHelperIntegrationTests: XCTestCase {
     func testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensureModelCached(model)
-        let (process, _) = try await launchHelper(binary: binary, model: model)
+        let (process, stderrLog) = try await launchHelper(binary: binary, model: model)
+        // A model that takes a language (Nemotron Unified) gets the phrase's,
+        // as a session with the user's choice would; the others get none.
+        let language = SpeechModelCatalog.option(forRepoID: model)?.capabilities.sessionLanguage(for: "en")
 
         let healthURL = URL(string: "http://127.0.0.1:\(Self.testPort)/health")!
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
@@ -403,7 +411,8 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         let configuration = RealtimeSessionConfiguration(
             endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
             apiKey: "",
-            model: model
+            model: model,
+            language: language
         )
         try client.connect(configuration: configuration)
         await fulfillment(
@@ -446,6 +455,72 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             0.55,
             "Expected synthetic-audio transcript accuracy >= 0.55. Transcript: \(doneText)"
         )
+        if let language {
+            // The session.update language reached the session as its prompt:
+            // "en" is index 0 in Nemotron's prompt dictionary.
+            XCTAssertTrue(
+                stderrLog.tail(200).contains("speechd: nemotron session language \(language) prompt 0"),
+                "speechd must open the session on the en prompt: \(stderrLog.tail(30))"
+            )
+        }
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
+    /// LVX-113: Nemotron Unified streamed 0 tokens on this two-second eval phrase, with
+    /// the `auto` prompt at speechd's 70/2/2 layout (NeMo does the same), and the final
+    /// came back empty. speechd now decodes such an utterance again offline.
+    func testShortPhraseTheStreamMissesStillGetsAFinal() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let (process, stderrLog) = try await launchHelper(binary: binary, model: model)
+
+        // The eval's exact audio: case i-en-posix-pipe, `say -v Samantha`.
+        let pcm16 = try IntegrationTestSupport.makeSpokenPCM16Data(
+            phrase: "posix pipe read wraps the raw descriptor", voice: "Samantha"
+        )
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm16, chunkSizeBytes: 3_200)
+
+        let client = RealtimeAPIWebSocketClient()
+        let transcript = TranscriptCapture()
+        let finalTranscript = expectation(description: "final transcript")
+        finalTranscript.assertForOverFulfill = false
+        let disconnected = expectation(description: "disconnected")
+        client.setEventHandler { event, _ in
+            switch event {
+            case .connected:
+                for chunk in chunks {
+                    client.sendAudioChunk(chunk)
+                }
+                client.sendCommit(final: true)
+            case .partialTranscript(let delta):
+                transcript.append(delta: delta)
+            case .finalTranscript(let text):
+                transcript.append(doneText: text)
+                finalTranscript.fulfill()
+            case .disconnected:
+                disconnected.fulfill()
+            default:
+                break
+            }
+        }
+        try client.connect(configuration: RealtimeSessionConfiguration(
+            endpoint: URL(string: "ws://127.0.0.1:\(Self.testPort)/v1/realtime")!,
+            apiKey: "",
+            model: model
+        ))
+        await fulfillment(of: [finalTranscript], timeout: 120)
+        client.disconnect()
+        await fulfillment(of: [disconnected], timeout: 5)
+
+        let snapshot = transcript.snapshot()
+        let doneText = try XCTUnwrap(snapshot.doneTexts.only)
+        print("speechd integration: short phrase word count \(doneText.split(separator: " ").count)")
+        XCTAssertFalse(
+            doneText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "Empty final on two seconds of speech. Helper log tail:\n\(stderrLog.tail(10))"
+        )
+        XCTAssertEqual(snapshot.deltas.joined(), doneText)
         XCTAssertTrue(process.isRunning)
         process.terminate()
     }

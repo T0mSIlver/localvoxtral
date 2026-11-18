@@ -2,7 +2,7 @@ name: Record README Demo
 
 # Hands-free demo recording on the Mac Mini runner (GUI session):
 # scripts/record-demo.sh stages two Claude Code sessions in herdr inside
-# Ghostty, drives the app through the seven beats of "one morning with two
+# Ghostty, drives the app through the six beats of "one morning with two
 # agents" (#1847), with speech and polish answered by a scripted backend
 # (scripts/lib/demo-backend.py): the 8 GB Mini cannot run the 4B models next
 # to two Claude sessions.
@@ -14,10 +14,8 @@ name: Record README Demo
 # from user-attachments URLs, which have no upload API, so the owner
 # drag-drops story.mp4 into a PR comment and pastes the URL.
 #
-# The take files one real issue in T0mSIlver/localvoxtral-demo (the Inbox
-# beat) and closes it when it ends. Runner requirements, beyond the
-# capture-assets grants: Ghostty >= 1.4, herdr, a logged-in `claude`, `gh`
-# logged in for the runner user, ffmpeg, BlackHole 2ch, notifications allowed
+# Runner requirements, beyond the capture-assets grants: Ghostty >= 1.4,
+# herdr, a logged-in `claude`, ffmpeg, BlackHole 2ch, notifications allowed
 # while the display is shared, and the app's Automation -> Ghostty grant (see
 # scripts/record-demo.sh).
 

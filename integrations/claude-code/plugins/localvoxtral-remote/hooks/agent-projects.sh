@@ -13,7 +13,7 @@
 #
 # The cwd then resolves the way the hook shim names the session's project:
 # the basename of the repository's main checkout (post.sh's lvx_project, so a
-# worktree counts as its repository), and the origin `capture.sh repository`
+# worktree counts as its repository), and the origin `repository.sh`
 # prints, run in that directory. A cwd that is gone, outside git, or without
 # an origin is skipped. Two cwds with the same name (worktrees of one
 # repository) keep the newest.
@@ -35,7 +35,7 @@ umask 077
 LC_ALL=C
 export LC_ALL
 
-# Absolute, because capture.sh runs from each repository's directory.
+# Absolute, because repository.sh runs from each repository's directory.
 DIR="$(cd "${0%/*}" 2>/dev/null && pwd -P)" || exit 0
 MODE="${1:-}"
 
@@ -141,7 +141,7 @@ lvx_scan() {
     [ -d "$_lvx_cwd" ] || continue
     _lvx_project="$(cd "$_lvx_cwd" 2>/dev/null && lvx_project 2>/dev/null)" || continue
     [ -n "$_lvx_project" ] || continue
-    _lvx_repo="$(cd "$_lvx_cwd" 2>/dev/null && sh "$DIR/capture.sh" repository </dev/null 2>/dev/null)" || continue
+    _lvx_repo="$(cd "$_lvx_cwd" 2>/dev/null && sh "$DIR/repository.sh" </dev/null 2>/dev/null)" || continue
     [ -n "$_lvx_repo" ] || continue
     echo "$_lvx_epoch $_lvx_project $_lvx_repo"
   done
@@ -153,7 +153,7 @@ lvx_scan() {
 # letters, digits and `._-/`, at most 200 bytes. Enumerated, not ranges, for
 # the reason post.sh gives: a range follows the locale's collation.
 lvx_value() {
-  [ -r "$DIR/capture.sh" ] || return 0
+  [ -r "$DIR/repository.sh" ] || return 0
   lvx_scan 2>/dev/null | sort -r -n -k 1,1 2>/dev/null | {
     _lvx_value=""
     _lvx_seen=","

@@ -365,8 +365,11 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         // A repo full of Tests/Resources directories must not turn ordinary
         // prose into capitalization "corrections": the technical-signal gate
         // keeps those components out of the vocabulary entirely.
-        let vocab = RepoIndexing.buildVocabulary(
-            paths: ["Tests/FooTests.swift", "Resources/image.png"],
+        let vocab = RepoVocabulary(
+            terms: RepoIndexing.buildVocabularyTerms(
+                paths: ["Tests/FooTests.swift", "Resources/image.png"],
+                branch: nil
+            ),
             branch: nil
         )
         let entries = RepoVocabularyMatcher.candidateEntries(
@@ -406,10 +409,10 @@ final class RepoVocabularyMatcherTests: XCTestCase {
     }
 
     func testAlignedFallbackAbstainsCleanlyWithLargeAmbiguousVocabulary() {
-        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+        let result = RepoVocabularyMatcher.groundedCandidates(
             transcript: "please improve overall error handling for generated files",
             vocabulary: Self.largeVocabulary
-        )
+        ).entries
         XCTAssertTrue(result.isEmpty, "entries: \(result)")
     }
 }

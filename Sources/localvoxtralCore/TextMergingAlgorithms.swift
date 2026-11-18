@@ -4,14 +4,8 @@ package enum TextMergingAlgorithms {
     private static let replayCharacterThreshold = 32
     private static let replayWordThreshold = 8
 
-    // Pre-compiled regex patterns for normalizeTranscriptionFormatting.
-    // These are static string literals so try! is safe — a crash here means a
-    // coding error in the pattern, which we want to catch immediately.
-    private static let apostropheSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*'\\s*(\\p{L})")
-    private static let hyphenSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*-\\s*(\\p{L})")
-    private static let preSymbolSpaceRegex = try! NSRegularExpression(pattern: "\\s+([,.;:!?%\\)\\]])")
-    private static let postSymbolSpaceRegex = try! NSRegularExpression(pattern: "([\\(\\[])\\s+")
-    private static let multipleSpacesRegex = try! NSRegularExpression(pattern: "[ \\t]{2,}")
+    // A static string literal, so try! is safe: a crash here means a coding
+    // error in the pattern, which we want to catch immediately.
     private static let wordTokenRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
 
     package static func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
@@ -32,7 +26,14 @@ package enum TextMergingAlgorithms {
     /// `longestSuffixPrefixOverlap`, counting only an overlap that starts a
     /// word in `lhs`. A shared letter inside a word is a coincidence, not an
     /// alignment: "I need" + "doing" is not "I needoing" (#516).
-    package static func wordAlignedSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
+    /// `rhsStartsAWord`: `rhs` opened on a space, so its first word is whole
+    /// and the overlap must also end a word in it: "be" + " better" keeps
+    /// both words, "the" + " the plan" still drops the repeat.
+    package static func wordAlignedSuffixPrefixOverlap(
+        lhs: String,
+        rhs: String,
+        rhsStartsAWord: Bool = false
+    ) -> Int {
         let maxOverlap = min(lhs.count, rhs.count)
         guard maxOverlap > 0 else { return 0 }
 
@@ -42,6 +43,9 @@ package enum TextMergingAlgorithms {
                 continue
             }
             let rhsEnd = rhs.index(rhs.startIndex, offsetBy: overlap)
+            if rhsStartsAWord, rhsEnd < rhs.endIndex, isWordCharacter(rhs[rhsEnd]) {
+                continue
+            }
             if lhs[lhsStart...] == rhs[..<rhsEnd] {
                 return overlap
             }
@@ -62,9 +66,16 @@ package enum TextMergingAlgorithms {
     /// The overlap to drop when joining `incoming` onto `existing`. Text that
     /// starts mid-word may repeat the end of the word it continues
     /// ("information" + "ation overload"), so it also aligns inside a word,
-    /// on two letters or more.
-    package static func joinOverlap(existing: String, incoming: String, incomingStartsMidWord: Bool) -> Int {
-        let aligned = wordAlignedSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+    /// on two letters or more. Text that `incomingHadLeadingSpace` starts a
+    /// whole word, so the overlap must end on a word boundary in it.
+    package static func joinOverlap(
+        existing: String,
+        incoming: String,
+        incomingStartsMidWord: Bool,
+        incomingHadLeadingSpace: Bool = false
+    ) -> Int {
+        let aligned = wordAlignedSuffixPrefixOverlap(
+            lhs: existing, rhs: incoming, rhsStartsAWord: incomingHadLeadingSpace)
         guard aligned == 0, incomingStartsMidWord else { return aligned }
         let unaligned = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
         return unaligned >= 2 ? unaligned : 0
@@ -82,11 +93,13 @@ package enum TextMergingAlgorithms {
     /// Joins a finalized segment onto the dictation event. A segment boundary
     /// is where the backend ended a generation or the socket reconnected, not
     /// where the speaker paused, so it joins with a space, or with nothing
-    /// when the segment `startsMidWord` (#516).
+    /// when the segment `startsMidWord` (#516). `segmentHadLeadingSpace`: the
+    /// raw segment opened on whitespace, which trimming removed.
     package static func appendToCurrentDictationEvent(
         segment: String,
         existingText: String,
-        segmentStartsMidWord: Bool = false
+        segmentStartsMidWord: Bool = false,
+        segmentHadLeadingSpace: Bool = false
     ) -> String {
         let normalizedSegment = segment.trimmed
         guard !normalizedSegment.isEmpty else { return existingText }
@@ -109,7 +122,8 @@ package enum TextMergingAlgorithms {
         let overlap = joinOverlap(
             existing: normalizedExisting,
             incoming: normalizedSegment,
-            incomingStartsMidWord: segmentStartsMidWord
+            incomingStartsMidWord: segmentStartsMidWord,
+            incomingHadLeadingSpace: segmentHadLeadingSpace
         )
         if overlap > 0 {
             let overlapIndex = normalizedSegment.index(normalizedSegment.startIndex, offsetBy: overlap)
@@ -275,25 +289,6 @@ package enum TextMergingAlgorithms {
         }
 
         return appendWithoutOverlap(existing: existing, incoming: incoming)
-    }
-
-    /// Lightweight transcription cleanup for tokenizer spacing artifacts.
-    /// This is intentionally conservative and should not rewrite semantics.
-    package static func normalizeTranscriptionFormatting(_ text: String) -> String {
-        guard !text.isEmpty else { return text }
-
-        var output = text.replacingOccurrences(of: "\u{00A0}", with: " ")
-        output = applyRegex(apostropheSpacingRegex, template: "$1'$2", to: output)
-        output = applyRegex(hyphenSpacingRegex, template: "$1-$2", to: output)
-        output = applyRegex(preSymbolSpaceRegex, template: "$1", to: output)
-        output = applyRegex(postSymbolSpaceRegex, template: "$1", to: output)
-        output = applyRegex(multipleSpacesRegex, template: " ", to: output)
-        return output
-    }
-
-    private static func applyRegex(_ regex: NSRegularExpression, template: String, to text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }
 
     private static func appendWithoutOverlap(

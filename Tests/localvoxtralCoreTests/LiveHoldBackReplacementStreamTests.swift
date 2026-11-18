@@ -437,6 +437,37 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.ingest("/compact "), "/compact ")
     }
 
+    // MARK: - A chunk that completes the previous chunk's last character
+
+    /// The speech helper diffs transcripts by unicode scalar, so a chunk can
+    /// start with a scalar that merges into the character the previous chunk
+    /// ended with (a skin-tone modifier, the second half of a flag, a
+    /// combining accent). That character may already be released; the merged
+    /// scalars must still be typed, and nothing after them skipped. Compared
+    /// by unicode scalars, since `==` on String is canonical equivalence and
+    /// would accept some scalar sequences that differ.
+    func testChunkMergingIntoReleasedCharacterLosesNoScalar() {
+        let cases: [(entries: [ReplacementEntry], chunks: [String])] = [
+            ([], ["ok 👍", "🏽 thanks "]),
+            ([], ["🇫", "🇷 "]),
+            ([], ["cafe", "\u{0301} ok "]),
+            ([voxtralEntry], ["ok ", "\u{0301} ok "]),
+        ]
+        for testCase in cases {
+            var stream = makeStream(entries: testCase.entries, sanitizesNewlines: true)
+            var typed = ""
+            for chunk in testCase.chunks {
+                typed += stream.ingest(chunk)
+            }
+            typed += stream.flushRemainder()
+            XCTAssertEqual(
+                Array(typed.unicodeScalars),
+                Array(testCase.chunks.joined().unicodeScalars),
+                "chunks \(testCase.chunks.debugDescription) typed \(typed.debugDescription)"
+            )
+        }
+    }
+
     // MARK: - Rule chaining (a correction rewrites held text into rule-key words)
 
     /// PR #100 review finding, exact repro: rules `"x y" -> "bar"` and

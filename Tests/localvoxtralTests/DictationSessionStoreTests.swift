@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 import localvoxtralTestSupport
 @testable import localvoxtral
@@ -176,6 +177,55 @@ final class DictationSessionStoreTests: XCTestCase {
 
         let entries = await store.entries()
         XCTAssertEqual(entries.map(\.rawText), ["fresh"])
+    }
+
+    /// Delete, a retention trim and Delete All each leave the store file and
+    /// its WAL without the deleted text (LVX-101). macOS's SQLite deletes
+    /// with `secure_delete = FAST`, which zeroes a row inside its page but
+    /// not the overflow pages a long dictation spills into: those go to the
+    /// free list with the text, readable by anyone who opens the file.
+    func testDeletesLeaveNoTraceOfTheTextInTheStoreFile() async throws {
+        let operations: [(String, (DictationSessionStore, DictationSessionRecord) -> Task<Void, Never>)] = [
+            ("delete", { store, doomed in store.delete(id: doomed.id) }),
+            ("trim", { store, _ in
+                store.trim(olderThan: DictationHistoryRetention.days30.cutoff(now: self.origin)!)
+            }),
+            ("delete all", { store, _ in store.deleteAll() }),
+        ]
+        for (name, deleting) in operations {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lv-scrub-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let url = directory.appendingPathComponent("history.store")
+            let store = try DictationSessionStore.open(url: url).get()
+            let marker = "quokkamarker\(UUID().uuidString.prefix(8))"
+            // Several pages of speech, the marker past the first.
+            let speech = String(repeating: "and then we shipped it tonight ", count: 400)
+            let doomed = record(speech + marker, polished: speech + marker + ".", daysAgo: 60)
+            store.save(record("fresh", daysAgo: 1))
+            store.save(doomed)
+            _ = await store.count()
+            XCTAssertTrue(try storeBytes(url).contains(Data(marker.utf8)), "\(name): the marker was never written")
+
+            await deleting(store, doomed).value
+
+            XCTAssertFalse(try storeBytes(url).contains(Data(marker.utf8)), "\(name) left the text in the file")
+            withExtendedLifetime(store) {}
+        }
+    }
+
+    /// The store file and its WAL after a checkpoint, as anyone reading the
+    /// files would see them.
+    private func storeBytes(_ url: URL) throws -> Data {
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        sqlite3_busy_timeout(db, 5_000)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil), SQLITE_OK)
+        var bytes = try Data(contentsOf: url)
+        bytes.append((try? Data(contentsOf: URL(fileURLWithPath: url.path + "-wal"))) ?? Data())
+        return bytes
     }
 
     func testEntriesSinceCountsFromTheGivenDate() async throws {

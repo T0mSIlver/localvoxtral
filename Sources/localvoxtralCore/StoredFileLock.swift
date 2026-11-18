@@ -38,7 +38,7 @@ package final class StoredFileLock: @unchecked Sendable {
     /// runs unlocked: the store's re-read still narrows the race, and
     /// refusing every write would lose more.
     package static func withLock<T>(beside url: URL, _ body: () throws -> T) rethrows -> T {
-        guard let lock = acquire(beside: url, blocking: true) else {
+        guard let lock = acquire(beside: url) else {
             Log.persistence.error(
                 "\(url.lastPathComponent, privacy: .public): could not take the lock shared with other running copies, writing without it"
             )
@@ -53,17 +53,10 @@ package final class StoredFileLock: @unchecked Sendable {
     /// must not run unlocked, such as Start Over deleting a file once it is
     /// linked aside.
     package static func holding(beside url: URL) -> StoredFileLock? {
-        acquire(beside: url, blocking: true)
+        acquire(beside: url)
     }
 
-    /// Takes the lock only when no one holds it, and keeps it until the
-    /// returned value is released. For a job exactly one running copy does,
-    /// such as scanning the voice memo folder.
-    package static func tryHolding(beside url: URL) -> StoredFileLock? {
-        acquire(beside: url, blocking: false)
-    }
-
-    private static func acquire(beside url: URL, blocking: Bool) -> StoredFileLock? {
+    private static func acquire(beside url: URL) -> StoredFileLock? {
         let directory = url.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: directory.path) {
             try? FileManager.default.createDirectory(
@@ -73,7 +66,7 @@ package final class StoredFileLock: @unchecked Sendable {
         let descriptor = path.withCString { open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600) }
         guard descriptor >= 0 else { return nil }
         while true {
-            if flock(descriptor, LOCK_EX | (blocking ? 0 : LOCK_NB)) == 0 {
+            if flock(descriptor, LOCK_EX) == 0 {
                 return StoredFileLock(descriptor: descriptor)
             }
             if errno == EINTR { continue }

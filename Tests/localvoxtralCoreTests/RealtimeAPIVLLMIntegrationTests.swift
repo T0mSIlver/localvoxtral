@@ -211,11 +211,11 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         )
     }
 
-    /// A voice memo as the app sends it (#1135): every chunk at once, then a
+    /// A recorded file as the file transcriber sends it (#1135): every chunk at once, then a
     /// final commit with no run going. vLLM answers a final commit only behind
     /// a run, so this hung until the timeout there; speechd must still answer
     /// it once.
-    func testVLLMTranscribesAVoiceMemoThroughTheFileTranscriber() async throws {
+    func testVLLMTranscribesARecordedFileThroughTheFileTranscriber() async throws {
         let configuration = try integrationConfiguration()
         let phrase = "when the back end crashes on startup, we lose the error message."
         let pcm = try IntegrationTestSupport.makeSpokenPCM16Data(phrase: phrase)
@@ -225,7 +225,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
 
         let accuracy = IntegrationTestSupport.wordAccuracy(expected: phrase, actual: text)
         print(
-            "speechd voice memo integration: word accuracy \(String(format: "%.3f", accuracy)); "
+            "speechd recorded-file integration: word accuracy \(String(format: "%.3f", accuracy)); "
                 + "transcript: \(text)"
         )
         XCTAssertGreaterThanOrEqual(accuracy, 0.55, "Transcript: \(text)")

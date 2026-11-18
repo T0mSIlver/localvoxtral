@@ -30,8 +30,9 @@ final class WidgetSnapshotWriter {
     static let coalesceInterval: Duration = .seconds(2)
     static let downloadInterval: Duration = .seconds(20)
     /// A helper's memory grows as its model loads and caches; nothing else
-    /// would rewrite the snapshot while the Mac sits idle.
-    static let memoryRefreshInterval: Duration = .seconds(600)
+    /// would rewrite the snapshot while the Mac sits idle. Each tick is also
+    /// the heartbeat that tells the Engines widget the app still runs.
+    static let memoryRefreshInterval: Duration = .seconds(WidgetSnapshot.heartbeatInterval)
 
     typealias HistoryCounter = @Sendable (
         _ entries: [DictationHistoryEntry], _ terms: [String], _ now: Date, _ calendar: Calendar
@@ -268,15 +269,21 @@ final class WidgetSnapshotWriter {
         return (bytes + step / 2) / step * step
     }
 
+    /// An unchanged snapshot is still written, as the heartbeat the Engines
+    /// widget checks (#2058), but reloads nothing: WidgetKit budgets
+    /// reloads, and the widget's timeline rereads the file on its own. The
+    /// exception is a heartbeat late enough that the widget already shows
+    /// the app as quit, after the Mac slept.
     private func persist(_ snapshot: WidgetSnapshot) {
         var unchanged = lastWritten
         unchanged?.writtenAt = snapshot.writtenAt
-        guard unchanged != snapshot else { return }
+        let reload = unchanged != snapshot || lastWritten?.isStale(at: snapshot.writtenAt) == true
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(snapshot).write(to: fileURL, options: .atomic)
             lastWritten = snapshot
+            guard reload else { return }
             reloadTimelines()
             Log.widgets.info("wrote the widget snapshot and reloaded the widgets")
         } catch {

@@ -19,7 +19,7 @@ import Foundation
 /// resolver's own content-free outcome categories — the same strings it already
 /// writes to `Log.claudeContext`, which are audited for exactly this.
 package struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
-    /// `tty`, `herdrPane`, `browserTab`, `desktopSession`, `cmuxSurface`, `remoteHerdrPane`,
+    /// `tty`, `herdrPane`, `browserTab`, `desktopSession`, `t3Thread`, `cmuxSurface`, `remoteHerdrPane`,
     /// `federatedHerdrPane`, `remoteSSHConnection`, `remoteLocalTTY`, or
     /// `none`. The resolver's mechanism vocabulary,
     /// not a second naming of it.
@@ -90,6 +90,7 @@ package struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
         case .herdrPane: return "herdrPane"
         case .browserTab: return "browserTab"
         case .desktopSession: return "desktopSession"
+        case .t3Thread: return "t3Thread"
         case .cmuxSurface: return "cmuxSurface"
         case .remoteHerdrPane: return "remoteHerdrPane"
         case .federatedHerdrPane: return "federatedHerdrPane"

@@ -3,11 +3,7 @@ import Foundation
 /// What the keyboard triggers ask of the dictation session they drive.
 /// `DictationViewModel` adopts it; a test fake records the calls.
 @MainActor
-protocol ShortcutSessionControlling: AnyObject {
-    var isDictating: Bool { get }
-    var isConnectingRealtimeSession: Bool { get }
-    var isFinalizingStop: Bool { get }
-    var isAwaitingMicrophonePermission: Bool { get }
+protocol ShortcutSessionControlling: DictationPhaseReading {
     var isAccessibilityTrusted: Bool { get }
     var statusText: String { get set }
     var lastError: String? { get set }
@@ -19,12 +15,6 @@ protocol ShortcutSessionControlling: AnyObject {
     func clearSecureInputRefusalSignalsIfAttemptEnded()
     func overlayReachabilityDidChange(wasReachable: Bool)
     func copyLastDictation()
-    /// The answer shortcut (#717): goes to the agent session that needs you
-    /// and listens, or stops the dictation running.
-    func answerAgentThatNeedsYou()
-    /// The quick capture shortcut (#725): starts an Overlay Buffer capture,
-    /// or stops the one running.
-    func toggleQuickCapture()
 }
 
 /// The keyboard triggers: the push-to-talk, toggle and modifier-only
@@ -45,13 +35,29 @@ final class ShortcutController {
     private var session: any ShortcutSessionControlling { owner ?? Self.detached }
     private static let detached = DetachedShortcutSession()
 
-    // Tracks physical key state so repeat key-down events do not retrigger actions.
-    var isPushToTalkShortcutHeld = false
-    // True only when a start attempt was initiated by push-to-talk and may still need
-    // to be cancelled if the user releases before dictation actually begins.
-    var hasActivePushToTalkShortcutSession = false
-    // True when a modifier-only hold gesture started dictation (push-to-talk semantics).
-    var isModifierOnlyHoldActive = false
+    /// The push-to-talk key, and whether the start it made is still its to
+    /// end. Toggle presses and modifier taps have no release event and never
+    /// leave `idle`.
+    enum PushToTalkGesture: Equatable {
+        enum Key: Equatable {
+            /// A dictation shortcut, in push-to-talk mode.
+            case shortcut
+            /// The single modifier or the chord, held past its threshold.
+            case modifierHold
+        }
+
+        /// No key down, and no start waits on a release.
+        case idle
+        /// The key is down; its repeats are ignored. `ownsStart`: this press
+        /// started the session, so its release stops it, or drops the start
+        /// while it still connects.
+        case held(Key, ownsStart: Bool)
+        /// The key came up while the start it made still connects or waits
+        /// for the microphone prompt: that start is dropped when it lands.
+        case releasedBeforeStart
+    }
+
+    var gesture: PushToTalkGesture = .idle
 
     /// True while the user is still physically holding the dictation
     /// shortcut/modifier — a release event is still coming, and it owns
@@ -59,7 +65,18 @@ final class ShortcutController {
     /// DictationSessionController+Session.swift consults this: a secure-input
     /// refusal that fires after backend boot may land with no gesture-end
     /// event left to clear it.
-    var isDictationAttemptGestureActive: Bool { isPushToTalkShortcutHeld }
+    var isDictationAttemptGestureActive: Bool {
+        if case .held = gesture { true } else { false }
+    }
+
+    /// The session's stop is a release: a push-to-talk start still owned, or
+    /// a modifier hold still down.
+    var isHoldGestureSession: Bool {
+        switch gesture {
+        case .held(.modifierHold, _), .held(.shortcut, ownsStart: true), .releasedBeforeStart: true
+        case .idle, .held(.shortcut, ownsStart: false): false
+        }
+    }
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -69,8 +86,6 @@ final class ShortcutController {
         hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
         hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
         hotKeyManager.onCopyLastDictation = { [weak self] in self?.session.copyLastDictation() }
-        hotKeyManager.onAnswerAgent = { [weak self] in self?.session.answerAgentThatNeedsYou() }
-        hotKeyManager.onQuickCapture = { [weak self] in self?.session.toggleQuickCapture() }
     }
 
     func install(session: any ShortcutSessionControlling) {
@@ -91,25 +106,20 @@ final class ShortcutController {
         if case .failure = hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
             applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
         }
-        if case .failure = hotKeyManager.registerAnswerAgent(settings.answerAgentShortcut) {
-            applyHotKeyRegistrationFailure(.answerAgentShortcutUnavailable)
-        }
-        if case .failure = hotKeyManager.registerQuickCapture(settings.quickCaptureShortcut) {
-            applyHotKeyRegistrationFailure(.quickCaptureShortcutUnavailable)
-        }
     }
 
     func unregister() {
         hotKeyManager.unregister()
         hotKeyManager.registerCopyLastDictation(nil)
-        hotKeyManager.registerAnswerAgent(nil)
-        hotKeyManager.registerQuickCapture(nil)
     }
 
     func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
         switch settings.dictationShortcutMode {
         case .toggle:
-            hasActivePushToTalkShortcutSession = false
+            // A toggle press also ends a hold whose release never came (the
+            // trigger re-registered mid-hold): that release would otherwise
+            // stop the session this press starts.
+            gesture = .idle
             if session.isDictating {
                 session.endDictation(reason: "manual toggle")
             } else if session.isConnectingRealtimeSession {
@@ -120,29 +130,30 @@ final class ShortcutController {
                 session.startDictation(outputMode: mode)
             }
         case .pushToTalk:
-            guard !isPushToTalkShortcutHeld else { return }
-            isPushToTalkShortcutHeld = true
-            guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else { return }
-            hasActivePushToTalkShortcutSession = true
-            session.startDictation(outputMode: mode)
-            if !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission {
-                hasActivePushToTalkShortcutSession = false
+            if case .held = gesture { return }
+            guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else {
+                // A press while the start an earlier press dropped still
+                // connects takes that start back: this release ends it.
+                gesture = .held(.shortcut, ownsStart: gesture == .releasedBeforeStart)
+                return
             }
+            startHoldSession(.shortcut, outputMode: mode)
         }
     }
 
     func handleDictationShortcutRelease() {
-        // A REFUSED live start (secure input) resets the hold flags inside
-        // handleModifierOnlyHoldStart, so no branch below fires for it —
+        // A REFUSED modifier-hold start (secure input) forgets the key in
+        // startHoldSession, so no branch below fires for it —
         // this is the moment the user's attempt gesture ends, and the
         // warning icon must end with it (owner field feedback on #90). The
         // popover line stays as the explanation until the next start
         // re-samples.
         session.clearSecureInputRefusalSignalsIfAttemptEnded()
-        // Modifier-only hold release
-        if isModifierOnlyHoldActive {
-            isModifierOnlyHoldActive = false
-            isPushToTalkShortcutHeld = false
+        guard case .held(let key, let ownsStart) = gesture else { return }
+        gesture = ownsStart ? .releasedBeforeStart : .idle
+
+        switch key {
+        case .modifierHold:
             if session.isDictating {
                 session.endDictation(reason: "modifier hold release")
             } else if session.isConnectingRealtimeSession {
@@ -152,31 +163,24 @@ final class ShortcutController {
                 session.statusText = DictationViewModel.StatusStrings.ready
                 return
             }
-            clearPushToTalkShortcutSessionAttempt()
-            return
-        }
-
-        guard isPushToTalkShortcutHeld else { return }
-        isPushToTalkShortcutHeld = false
-
-        guard settings.dictationShortcutMode == .pushToTalk else {
-            hasActivePushToTalkShortcutSession = false
-            return
-        }
-        guard hasActivePushToTalkShortcutSession else { return }
-
-        if session.isConnectingRealtimeSession {
-            // Keep the connection attempt alive so timeout/errors surface to the user
-            // instead of silently resetting to Ready on key release.
-            session.statusText = DictationViewModel.StatusStrings.connectingRealtimeBackend
-            return
-        } else if session.isDictating {
-            session.endDictation(reason: "push-to-talk release")
-        } else if session.isAwaitingMicrophonePermission {
-            // Keep the pending-session flag until the permission callback resolves so we can
-            // suppress starting if the key was released before permission was granted.
-            session.statusText = DictationViewModel.StatusStrings.ready
-            return
+        case .shortcut:
+            guard settings.dictationShortcutMode == .pushToTalk, ownsStart else {
+                gesture = .idle
+                return
+            }
+            if session.isConnectingRealtimeSession {
+                // Keep the connection attempt alive so timeout/errors surface to the user
+                // instead of silently resetting to Ready on key release.
+                session.statusText = DictationViewModel.StatusStrings.connectingRealtimeBackend
+                return
+            } else if session.isDictating {
+                session.endDictation(reason: "push-to-talk release")
+            } else if session.isAwaitingMicrophonePermission {
+                // Keep the dropped start until the permission callback resolves so we can
+                // suppress starting if the key was released before permission was granted.
+                session.statusText = DictationViewModel.StatusStrings.ready
+                return
+            }
         }
         clearPushToTalkShortcutSessionAttempt()
     }
@@ -185,15 +189,22 @@ final class ShortcutController {
     /// unless Advanced → "Hold the key for Live Auto-Paste" is on (#840).
     func handleModifierOnlyHoldStart() {
         guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else { return }
-        isModifierOnlyHoldActive = true
-        isPushToTalkShortcutHeld = true
-        hasActivePushToTalkShortcutSession = true
-        session.startDictation(outputMode: settings.modifierHoldLiveAutoPaste ? .liveAutoPaste : .overlayBuffer)
-        if !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission {
-            hasActivePushToTalkShortcutSession = false
-            isModifierOnlyHoldActive = false
-            isPushToTalkShortcutHeld = false
-        }
+        startHoldSession(
+            .modifierHold,
+            outputMode: settings.modifierHoldLiveAutoPaste ? .liveAutoPaste : .overlayBuffer
+        )
+    }
+
+    /// Starts the session a push-to-talk press or a modifier hold owns. A
+    /// refused start (secure input, no backend) leaves its release nothing to
+    /// stop; a refused modifier hold forgets the key altogether, so its
+    /// release only ends the refusal signals.
+    private func startHoldSession(_ key: PushToTalkGesture.Key, outputMode: DictationOutputMode?) {
+        gesture = .held(key, ownsStart: true)
+        session.startDictation(outputMode: outputMode)
+        guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission
+        else { return }
+        gesture = key == .shortcut ? .held(.shortcut, ownsStart: false) : .idle
     }
 
     /// Modifier-only TAP is a toggle by contract regardless of the configured
@@ -204,12 +215,16 @@ final class ShortcutController {
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
-        hasActivePushToTalkShortcutSession
-            && !isPushToTalkShortcutHeld
+        gesture == .releasedBeforeStart
     }
 
+    /// The session stopped or its start was dropped: no release owns it any more.
     func clearPushToTalkShortcutSessionAttempt() {
-        hasActivePushToTalkShortcutSession = false
+        switch gesture {
+        case .held(let key, ownsStart: true): gesture = .held(key, ownsStart: false)
+        case .releasedBeforeStart: gesture = .idle
+        case .idle, .held(_, ownsStart: false): break
+        }
     }
 
     /// Re-register the hotkey based on current settings.
@@ -250,12 +265,6 @@ final class ShortcutController {
             (settings.copyLastDictationShortcut, hotKeyManager.isCopyLastDictationShortcutRegistered,
              { self.hotKeyManager.registerCopyLastDictation($0) },
              HotKeyManager.copyLastDictationUnavailableErrorMessage),
-            (settings.answerAgentShortcut, hotKeyManager.isAnswerAgentShortcutRegistered,
-             { self.hotKeyManager.registerAnswerAgent($0) },
-             HotKeyManager.answerAgentUnavailableErrorMessage),
-            (settings.quickCaptureShortcut, hotKeyManager.isQuickCaptureShortcutRegistered,
-             { self.hotKeyManager.registerQuickCapture($0) },
-             HotKeyManager.quickCaptureUnavailableErrorMessage),
         ]
         for (shortcut, registered, register, message) in slots
         where shortcut?.modifierChord != nil && !registered {
@@ -300,27 +309,6 @@ final class ShortcutController {
         )
     }
 
-    func updateDictationShortcut(_ shortcut: DictationShortcut?) {
-        let previousShortcut = settings.dictationShortcut
-        let previousWasEnabled = settings.dictationShortcutEnabled
-
-        settings.setDictationShortcut(shortcut)
-
-        switch registerCurrentHotKeys() {
-        case .success:
-            clearHotKeyErrors()
-            return
-        case .failure(let reason):
-            if previousWasEnabled {
-                settings.setDictationShortcut(previousShortcut ?? SettingsStore.defaultDictationShortcut)
-            } else {
-                settings.setDictationShortcut(nil)
-            }
-            _ = registerCurrentHotKeys()
-            applyHotKeyRegistrationFailure(reason)
-        }
-    }
-
     /// What recording a shortcut into one slot means once the other slot is
     /// taken into account.
     enum ShortcutAssignment: Equatable {
@@ -338,8 +326,6 @@ final class ShortcutController {
     }
 
     static let copyLastDictationConflictMessage = "Already the Copy last dictation shortcut."
-    static let answerAgentConflictMessage = "Already the Answer the agent shortcut."
-    static let quickCaptureConflictMessage = "Already the Quick capture shortcut."
     static let dictationChordConflictMessage = "Already the dictation key."
 
     /// The Modifier key picker. A chord (#863) that an action slot took while
@@ -386,8 +372,6 @@ final class ShortcutController {
     /// The sentence for a shortcut one of the action slots already holds.
     private func actionSlotConflict(_ key: DictationShortcut) -> String? {
         if settings.copyLastDictationShortcut == key { return Self.copyLastDictationConflictMessage }
-        if settings.answerAgentShortcut == key { return Self.answerAgentConflictMessage }
-        if settings.quickCaptureShortcut == key { return Self.quickCaptureConflictMessage }
         return nil
     }
 
@@ -404,12 +388,6 @@ final class ShortcutController {
         if let shortcut, settings.copyLastDictationShortcut == shortcut.normalized {
             return .refused(message: Self.copyLastDictationConflictMessage)
         }
-        if let shortcut, settings.answerAgentShortcut == shortcut.normalized {
-            return .refused(message: Self.answerAgentConflictMessage)
-        }
-        if let shortcut, settings.quickCaptureShortcut == shortcut.normalized {
-            return .refused(message: Self.quickCaptureConflictMessage)
-        }
         if let shortcut, settings.livePasteShortcut == shortcut.normalized {
             return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .liveAutoPaste)
         }
@@ -420,12 +398,6 @@ final class ShortcutController {
     func requestLivePasteShortcut(_ shortcut: DictationShortcut?) -> ShortcutAssignment {
         if let shortcut, settings.copyLastDictationShortcut == shortcut.normalized {
             return .refused(message: Self.copyLastDictationConflictMessage)
-        }
-        if let shortcut, settings.answerAgentShortcut == shortcut.normalized {
-            return .refused(message: Self.answerAgentConflictMessage)
-        }
-        if let shortcut, settings.quickCaptureShortcut == shortcut.normalized {
-            return .refused(message: Self.quickCaptureConflictMessage)
         }
         if let shortcut, settings.overlayBufferShortcut == shortcut.normalized {
             return .needsMoveConfirmation(shortcut: shortcut.normalized, from: .overlayBuffer)
@@ -537,12 +509,6 @@ final class ShortcutController {
             if settings.livePasteShortcut == key {
                 return "Already the \(DictationOutputMode.liveAutoPaste.displayName) shortcut."
             }
-            if settings.answerAgentShortcut == key {
-                return Self.answerAgentConflictMessage
-            }
-            if settings.quickCaptureShortcut == key {
-                return Self.quickCaptureConflictMessage
-            }
             if isDictationChord(key) {
                 return Self.dictationChordConflictMessage
             }
@@ -562,74 +528,6 @@ final class ShortcutController {
         return nil
     }
 
-    /// Records the answer shortcut (#717), nil to clear it, under the copy
-    /// shortcut's rules: a key another slot holds is refused with a sentence,
-    /// and a key macOS refuses puts the previous one back.
-    func requestAnswerAgentShortcut(_ shortcut: DictationShortcut?) -> String? {
-        if let key = shortcut?.normalized {
-            if settings.overlayBufferShortcut == key {
-                return "Already the \(DictationOutputMode.overlayBuffer.displayName) shortcut."
-            }
-            if settings.livePasteShortcut == key {
-                return "Already the \(DictationOutputMode.liveAutoPaste.displayName) shortcut."
-            }
-            if settings.copyLastDictationShortcut == key {
-                return Self.copyLastDictationConflictMessage
-            }
-            if settings.quickCaptureShortcut == key {
-                return Self.quickCaptureConflictMessage
-            }
-            if isDictationChord(key) {
-                return Self.dictationChordConflictMessage
-            }
-        }
-        let previous = settings.answerAgentShortcut
-        settings.setAnswerAgentShortcut(shortcut)
-        switch hotKeyManager.registerAnswerAgent(settings.answerAgentShortcut) {
-        case .success:
-            clearHotKeyErrors(actionMessage: HotKeyManager.answerAgentUnavailableErrorMessage)
-        case .failure:
-            settings.setAnswerAgentShortcut(previous)
-            hotKeyManager.registerAnswerAgent(previous)
-            applyHotKeyRegistrationFailure(.answerAgentShortcutUnavailable)
-        }
-        return nil
-    }
-
-    /// Records the quick capture shortcut (#725), nil to clear it, under the
-    /// copy shortcut's rules: a key another slot holds is refused with a
-    /// sentence, and a key macOS refuses puts the previous one back.
-    func requestQuickCaptureShortcut(_ shortcut: DictationShortcut?) -> String? {
-        if let key = shortcut?.normalized {
-            if settings.overlayBufferShortcut == key {
-                return "Already the \(DictationOutputMode.overlayBuffer.displayName) shortcut."
-            }
-            if settings.livePasteShortcut == key {
-                return "Already the \(DictationOutputMode.liveAutoPaste.displayName) shortcut."
-            }
-            if settings.copyLastDictationShortcut == key {
-                return Self.copyLastDictationConflictMessage
-            }
-            if settings.answerAgentShortcut == key {
-                return Self.answerAgentConflictMessage
-            }
-            if isDictationChord(key) {
-                return Self.dictationChordConflictMessage
-            }
-        }
-        let previous = settings.quickCaptureShortcut
-        settings.setQuickCaptureShortcut(shortcut)
-        switch hotKeyManager.registerQuickCapture(settings.quickCaptureShortcut) {
-        case .success:
-            clearHotKeyErrors(actionMessage: HotKeyManager.quickCaptureUnavailableErrorMessage)
-        case .failure:
-            settings.setQuickCaptureShortcut(previous)
-            hotKeyManager.registerQuickCapture(previous)
-            applyHotKeyRegistrationFailure(.quickCaptureShortcutUnavailable)
-        }
-        return nil
-    }
-
     /// Clears a hotkey registration error once a registration succeeded.
     /// The dictation triggers and each action shortcut register apart, so
     /// each clears only its own error: a working copy shortcut must not hide
@@ -642,8 +540,6 @@ final class ShortcutController {
         {
             let actionMessages = [
                 HotKeyManager.copyLastDictationUnavailableErrorMessage,
-                HotKeyManager.answerAgentUnavailableErrorMessage,
-                HotKeyManager.quickCaptureUnavailableErrorMessage,
             ]
             let standingActionMessage = actionMessages.contains(lastError) ? lastError : nil
             guard standingActionMessage == actionMessage else { return }
@@ -678,12 +574,6 @@ final class ShortcutController {
         case .copyLastDictationShortcutUnavailable:
             session.statusText = HotKeyManager.registrationErrorStatus
             session.lastError = HotKeyManager.copyLastDictationUnavailableErrorMessage
-        case .answerAgentShortcutUnavailable:
-            session.statusText = HotKeyManager.registrationErrorStatus
-            session.lastError = HotKeyManager.answerAgentUnavailableErrorMessage
-        case .quickCaptureShortcutUnavailable:
-            session.statusText = HotKeyManager.registrationErrorStatus
-            session.lastError = HotKeyManager.quickCaptureUnavailableErrorMessage
         }
     }
 }
@@ -691,10 +581,7 @@ final class ShortcutController {
 /// Where a gesture lands with no session to drive. Nothing happens, loudly.
 @MainActor
 private final class DetachedShortcutSession: ShortcutSessionControlling {
-    var isDictating: Bool { false }
-    var isConnectingRealtimeSession: Bool { false }
-    var isFinalizingStop: Bool { false }
-    var isAwaitingMicrophonePermission: Bool { false }
+    var phase: DictationPhase { .idle }
     var isAccessibilityTrusted: Bool { false }
     var statusText: String {
         get { "" }
@@ -712,8 +599,6 @@ private final class DetachedShortcutSession: ShortcutSessionControlling {
     func clearSecureInputRefusalSignalsIfAttemptEnded() { note("clearSecureInputRefusalSignals") }
     func overlayReachabilityDidChange(wasReachable _: Bool) { note("overlayReachabilityDidChange") }
     func copyLastDictation() { note("copyLastDictation") }
-    func answerAgentThatNeedsYou() { note("answerAgentThatNeedsYou") }
-    func toggleQuickCapture() { note("toggleQuickCapture") }
 
     private func note(_ what: String) {
         Log.dictation.error("shortcut: \(what, privacy: .public) reached no session owner; nothing happened")

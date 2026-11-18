@@ -1,6 +1,7 @@
 import XCTest
 
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// The sidebar is data-driven: a pane that is in no sidebar array is
 /// unreachable in the UI, and one in two would render twice. The AX
@@ -67,12 +68,12 @@ final class SettingsTabTests: XCTestCase {
         )
         let rawValues = Set(SettingsTab.allKnownPanes.map(\.rawValue))
 
-        // History, Insights, the Inbox and Projects are drilled by neither script. Both
+        // History, Insights and Projects are drilled by neither script. Both
         // run on the owner's Mac against his real store, the capture publishes
         // a picture of the pane and the drill dumps the window's AX tree into a
         // public CI log when an assertion fails: either would publish what he
         // dictated.
-        let scriptedRawValues = rawValues.subtracting(["history", "insights", "inbox", "projects"])
+        let scriptedRawValues = rawValues.subtracting(["history", "insights", "projects"])
         XCTAssertEqual(
             Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
             scriptedRawValues,
@@ -401,7 +402,7 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         let panes = SettingsTab.allKnownPanes
         XCTAssertEqual(Set(panes).count, panes.count, "a pane is listed in two sidebar sections")
-        XCTAssertEqual(SettingsTab.historySidebarItems, [.inbox, .history, .insights, .projects])
+        XCTAssertEqual(SettingsTab.historySidebarItems, [.history, .insights, .projects])
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
             [.general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about]
@@ -432,7 +433,7 @@ final class SettingsTabTests: XCTestCase {
             Set(SettingsTab.allKnownPanes.map(\.rawValue)),
             [
                 "general", "endpoints", "dictation", "textProcessing", "about", "history",
-                "insights", "inbox", "projects",
+                "insights", "projects",
                 "integrations.context", "integrations.claude", "integrations.opencode",
                 "integrations.vibe", "integrations.codex", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",
@@ -440,15 +441,6 @@ final class SettingsTabTests: XCTestCase {
                 "terminals.alacritty", "terminals.hyper", "terminals.tabby", "terminals.rio",
             ]
         )
-    }
-
-    /// The retired single-Integrations-pane raw value must never come back:
-    /// neither as a kind nor as a terminal pane's slug.
-    func testRetiredIntegrationsRawValueStaysRetired() {
-        XCTAssertNil(SettingsTab.Kind(rawValue: "integrations"))
-        for pane in SettingsTab.allKnownPanes {
-            XCTAssertNotEqual(pane.rawValue, "integrations")
-        }
     }
 
     /// A terminal pane's raw value is `terminals.<slug>`, and its title is the

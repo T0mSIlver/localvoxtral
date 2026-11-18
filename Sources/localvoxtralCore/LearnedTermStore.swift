@@ -25,7 +25,7 @@ import os
 /// write re-reads it under their shared lock and applies its change to what
 /// the other copy wrote (`StoredFile.update`), and Settings' Projects pane
 /// reads it again when it appears (`reloadIfChanged`, #1126).
-package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
+package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposalStoring, RemoteProjectReportStoring, ProjectOriginStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
         /// Set, the file on disk is left alone.
@@ -323,17 +323,6 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         }
     }
 
-    /// A remote host reported its project's README summary (#745).
-    package func recordSummary(_ summary: String?, projectKey: String) {
-        let moment = now()
-        mutate { memory in
-            let kept = memory.recordSummary(summary, projectKey: projectKey, now: moment)
-            Log.polishing.info(
-                "Learned terms: remote README summary \(kept ? (summary == nil ? "empty" : "kept") : "dropped, project gone", privacy: .public)"
-            )
-        }
-    }
-
     /// A hook from a remote session named its project (#819), and its
     /// `origin`'s GitHub repository when the host sent one (#926), and the
     /// host it came from.
@@ -375,35 +364,6 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
             // A checkout of an ignored repo joins its entry even before it
             // has a record, as after a first dictation that learned nothing.
             ignoring: { _, list in list.addCheckout(projectKey, ofEntryHolding: remote.key) })
-    }
-
-    /// The user's `owner/name` for a project with no GitHub `origin`.
-    package func recordTypedRepository(_ repository: String, projectKey: String) {
-        mutate { memory in
-            let kept = memory.recordTypedRepository(repository, projectKey: projectKey)
-            Log.polishing.info("Learned terms: a typed repository \(kept ? "kept" : "dropped", privacy: .public)")
-        }
-    }
-
-    /// A GitHub repository the user added from the Inbox (#930).
-    package func addRepositoryProject(_ repository: String) {
-        let moment = now()
-        mutate { memory in
-            let key = memory.addRepositoryProject(repository, now: moment)
-            Log.polishing.info("Learned terms: an Inbox repository \(key == nil ? "dropped" : "added", privacy: .public)")
-        }
-    }
-
-    /// GitHub's description of a repository (#926).
-    package func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String) {
-        let moment = now()
-        mutate { memory in memory.recordGitHub(facts, repository: repository, now: moment) }
-    }
-
-    /// The "File issues here" choice for a fork.
-    package func setFilesUpstream(_ upstream: Bool, repository: String) {
-        mutate { memory in memory.setFilesUpstream(upstream, repository: repository) }
-        Log.polishing.info("Learned terms: a fork files \(upstream ? "upstream" : "in the fork", privacy: .public)")
     }
 
     /// The Projects pane's Work or Personal choice for one row (#1005).

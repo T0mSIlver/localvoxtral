@@ -4,13 +4,11 @@ import XCTest
 final class PolishContextGroundingTests: XCTestCase {
     private func candidate(
         _ source: PolishContextSource,
-        _ entries: [(exact: String, heard: [String])],
-        fallbackOnly: Bool = false
+        _ entries: [(exact: String, heard: [String])]
     ) -> PolishContextGrounding.Candidate {
         PolishContextGrounding.Candidate(
             source: source,
-            entries: entries.map { ReplacementEntry(replaceWith: $0.exact, matches: $0.heard) },
-            isFallbackOnly: fallbackOnly
+            entries: entries.map { ReplacementEntry(replaceWith: $0.exact, matches: $0.heard) }
         )
     }
 
@@ -101,65 +99,6 @@ final class PolishContextGroundingTests: XCTestCase {
             candidate(.clipboard, [(exact: "useAuth.tsx", heard: ["use auth dot ts"])]),
         ])
         XCTAssertTrue(merged.all.isEmpty, "this merge abstains, it does not vote")
-    }
-
-    // MARK: - Fallback yields to a solid hit
-
-    func testFallbackOnlyGuessIsDroppedWhenAnotherSourceHasASolidHitOnTheSpan() {
-        let merged = PolishContextGrounding.merge([
-            candidate(.repository, [(exact: "useAuth.ts", heard: ["use auth dot ts"])]),
-            candidate(
-                .clipboard,
-                [(exact: "useAuthHook.tsx", heard: ["use auth dot ts"])],
-                fallbackOnly: true
-            ),
-        ])
-        XCTAssertEqual(
-            merged.all.map(\.replaceWith), ["useAuth.ts"],
-            "the guess must yield rather than contest the solid hit into abstention"
-        )
-    }
-
-    /// Order-independent: the guess still yields when it is presented first.
-    func testFallbackYieldsRegardlessOfCandidateOrder() {
-        let merged = PolishContextGrounding.merge([
-            candidate(
-                .clipboard,
-                [(exact: "useAuthHook.tsx", heard: ["use auth dot ts"])],
-                fallbackOnly: true
-            ),
-            candidate(.repository, [(exact: "useAuth.ts", heard: ["use auth dot ts"])]),
-        ])
-        XCTAssertEqual(merged.all.map(\.replaceWith), ["useAuth.ts"])
-    }
-
-    /// A guess on an UNCONTESTED span is still useful — it is dropped only
-    /// where a better-grounded source covers the same span.
-    func testFallbackSurvivesOnASpanNoSolidSourceCovers() {
-        let merged = PolishContextGrounding.merge([
-            candidate(.repository, [(exact: "useAuth.ts", heard: ["use auth dot ts"])]),
-            candidate(
-                .clipboard,
-                [(exact: "PaymentReconciler.swift", heard: ["paint reconciler dot swift"])],
-                fallbackOnly: true
-            ),
-        ])
-        XCTAssertEqual(
-            Set(merged.all.map(\.replaceWith)),
-            ["useAuth.ts", "PaymentReconciler.swift"]
-        )
-    }
-
-    /// Two guesses disagreeing on one span is still a conflict — being a guess
-    /// does not exempt it from abstention.
-    func testTwoFallbackGuessesConflictingOnASpanAbstain() {
-        let merged = PolishContextGrounding.merge([
-            candidate(.repository, [(exact: "useAuth.ts", heard: ["use auth dot ts"])],
-                      fallbackOnly: true),
-            candidate(.clipboard, [(exact: "useAuth.tsx", heard: ["use auth dot ts"])],
-                      fallbackOnly: true),
-        ])
-        XCTAssertTrue(merged.all.isEmpty)
     }
 
     // MARK: - Shape and determinism

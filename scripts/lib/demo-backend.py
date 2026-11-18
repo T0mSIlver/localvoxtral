@@ -17,10 +17,7 @@ app in External URL mode on that one port:
                             hears nothing.
   POST /v1/chat/completions polishing: the dictation polish writes the
                             spoken code forms of the demo's lines as code and
-                            echoes everything else; the Inbox's router picks
-                            the payments project and its drafter answers one
-                            issue draft. DEMO_ROUTE_TO names the project
-                            the router picks (default payments).
+                            echoes everything else.
 
 The 8 GB Mac Mini runner cannot hold the bundled 4B speech and polish models
 next to two Claude Code sessions: they ran from swap and timed out. The
@@ -32,7 +29,6 @@ as in scripts/ci/fake-speech-service.py.
 import base64
 import hashlib
 import json
-import os
 import re
 import socket
 import struct
@@ -42,9 +38,6 @@ import time
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WORDS_PER_SECOND = 2.8
-# Where the Inbox router sends a note, most specific name first.
-ROUTE_TO = [n.strip().lower() for n in os.environ.get("DEMO_ROUTE_TO", "payments").split(",") if n.strip()]
-
 # Spoken forms the agent polish writes as code in the demo's lines.
 REWRITES = [
     (r"\buse auth dot t s\b", "`useAuth.ts`"),
@@ -52,21 +45,6 @@ REWRITES = [
     (r"\bdash dash coverage\b", "`--coverage`"),
     (r"\bread ?me\b", "README"),
 ]
-
-DRAFT = {
-    "kind": "issue",
-    "title": "A zero-cent refund returns a 500 from the refunds endpoint",
-    "body": (
-        "Refunding an amount of 0 cents makes the refunds endpoint answer 500 "
-        "instead of rejecting the request with a 400.\n\n"
-        "`RefundWebhookHandler.handle` passes `amountCents / amountCents` to "
-        "`PaylaneClient.refund`, which is NaN for 0.\n\n"
-        "Expected: a 400 that names the invalid amount."
-    ),
-    "relation": "none",
-    "issue": None,
-}
-
 
 # --- websocket framing ----------------------------------------------------------------
 
@@ -213,20 +191,6 @@ def polish(text):
     return text
 
 
-def route(user):
-    """The first option whose id, else whose description, holds one of
-    ROUTE_TO's names, in order: payments' project is listed under its
-    GitHub repository, and the docs project mentions payments too."""
-    projects = user.split("\n\nNote:", 1)[0]
-    options = [(o.strip(), d.strip().lower()) for o, d in re.findall(r"^- ([^:\n]+):(.*)$", projects, flags=re.MULTILINE)]
-    for field in (0, 1):
-        for name in ROUTE_TO:
-            for option in options:
-                if name in option[field].lower():
-                    return {"project": option[0], "confidence": 0.97}
-    return {"project": options[0][0] if options else "", "confidence": 0.5}
-
-
 LOG = None
 
 
@@ -242,19 +206,13 @@ def complete(body):
     last = messages[-1].get("content", "") if messages else ""
     if isinstance(last, list):
         last = "".join(part.get("text", "") for part in last if isinstance(part, dict))
-    if system.startswith("You route a spoken note"):
-        answer = json.dumps(route(last))
-    elif system.startswith("You sort and draft"):
-        answer = json.dumps(DRAFT)
-    elif len(messages) == 1 and str(last).startswith("You are given many short texts"):
+    if len(messages) == 1 and str(last).startswith("You are given many short texts"):
         answer = "[]"
     elif "Working text:\n" in last:
         answer = polish(last.rsplit("Working text:\n", 1)[1].strip())
     else:
         answer = "Ready."
     log(f"chat: {system[:40]!r} -> {answer[:160]!r}")
-    if system.startswith("You route a spoken note"):
-        log("router options: " + last.split("\n\nNote:", 1)[0].replace("\n", " | ")[:600])
     return {
         "id": "demo",
         "object": "chat.completion",

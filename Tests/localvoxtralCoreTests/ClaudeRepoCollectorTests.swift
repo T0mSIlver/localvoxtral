@@ -332,7 +332,6 @@ final class ClaudeRepoCollectorTests: XCTestCase {
             renderBudget: 0
         )
         XCTAssertEqual(prepared.grounding.entries.first?.replaceWith, ".env.production")
-        XCTAssertFalse(prepared.grounding.isFallbackOnly)
     }
 
     // A symlink is not a regular file. Lexical containment says where the NAME
@@ -368,7 +367,7 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         XCTAssertFalse(snapshot.provenance.deadlineExpired, "the test must reach the file check")
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertFalse(
-            ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+            ClaudeRepoContextPreparation.groundingSources(snapshot: snapshot).entityText
                 .contains("never-attach-this-secret")
         )
     }
@@ -409,7 +408,7 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertEqual(snapshot.provenance.skippedUncontained, 1)
         XCTAssertFalse(
-            ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+            ClaudeRepoContextPreparation.groundingSources(snapshot: snapshot).entityText
                 .contains("never-attach-outside-directory-content")
         )
     }

@@ -5,7 +5,8 @@ Usage: scripts/speechd-bench-compare.py BASELINE.log RUN.log [RUN.log ...]
 
 Each log is the output of one `remote-build.sh speechd-bench ... speech` run
 (its .build/last-remote.log, or LOCALVOXTRAL_REMOTE_LOG). Prints one Markdown
-row per run: its step settings, mean step, worst lag, first text, and the
+row per run: its step settings, mean step, worst lag, first text, the time
+the stop's flush took (`BENCH stop`; "?" for a log from before that line), and the
 median over every word of its appearance time minus the baseline's, with how
 many words came later, sooner or at the same millisecond. A run whose
 transcript differs from the baseline's gets no word columns: its words are not
@@ -34,6 +35,7 @@ def parse(path):
         "mean_step": field(r"BENCH timeline .*?mean_step_ms=([0-9.]+)", "?"),
         "max_lag": field(r"BENCH timeline .*?max_lag_ms=([0-9.]+)", "?"),
         "first_text": field(r"BENCH timeline .*?first_text_s=(\S+)", "?"),
+        "stop": field(r"BENCH stop finish_ms=([0-9.]+)", "?"),
         "sha": field(r"BENCH transcript sha256=([0-9a-f]+)"),
         "words": [float(w) for w in words.split(",") if w],
     }
@@ -43,9 +45,9 @@ def main(paths):
     if len(paths) < 2:
         sys.exit(__doc__)
     base = parse(paths[0])
-    print("| Run | Model | Cadence | Phase | Mic buffer | Mean step | Worst lag | First text "
+    print("| Run | Model | Cadence | Phase | Mic buffer | Mean step | Worst lag | First text | Stop "
           "| Words later than baseline (median) | Later / sooner / same |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for path in paths:
         run = parse(path)
         if run["sha"] != base["sha"] or len(run["words"]) != len(base["words"]):
@@ -61,7 +63,7 @@ def main(paths):
         mic = "none" if run["mic"] == "0" else f"{int(run['mic']) / 1000:.2f} ms"
         print(f"| {path.rsplit('/', 1)[-1]} | {run['model'].rsplit('/', 1)[-1]} "
               f"| {run['cadence']} ms | {run['phase']} ms | {mic} | {run['mean_step']} ms "
-              f"| {run['max_lag']} ms | {run['first_text']} s | {median} | {counts} |")
+              f"| {run['max_lag']} ms | {run['first_text']} s | {run['stop']} ms | {median} | {counts} |")
 
 
 if __name__ == "__main__":

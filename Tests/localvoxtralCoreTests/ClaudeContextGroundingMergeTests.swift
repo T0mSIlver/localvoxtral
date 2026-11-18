@@ -12,13 +12,11 @@ import XCTest
 final class ClaudeContextGroundingMergeTests: XCTestCase {
     private func candidate(
         _ source: PolishContextSource,
-        _ entries: [(exact: String, heard: [String])],
-        fallbackOnly: Bool = false
+        _ entries: [(exact: String, heard: [String])]
     ) -> PolishContextGrounding.Candidate {
         PolishContextGrounding.Candidate(
             source: source,
-            entries: entries.map { ReplacementEntry(replaceWith: $0.exact, matches: $0.heard) },
-            isFallbackOnly: fallbackOnly
+            entries: entries.map { ReplacementEntry(replaceWith: $0.exact, matches: $0.heard) }
         )
     }
 
@@ -94,35 +92,6 @@ final class ClaudeContextGroundingMergeTests: XCTestCase {
             merged.entries(from: .claude).count, 0,
             "an agreed term is attributed to the earlier rank, never duplicated into both"
         )
-    }
-
-    // MARK: - Fallback provenance
-
-    /// A repo aligned-fallback GUESS yields to a solid hit from another source
-    /// on the same span, rather than competing with it.
-    func testClaudeRepoFallbackGuessYieldsToASolidClipboardHit() {
-        let merged = PolishContextGrounding.merge([
-            candidate(
-                .repository,
-                [(exact: "Widget.swift", heard: ["wigit dot swift"])],
-                fallbackOnly: true
-            ),
-            candidate(.clipboard, [(exact: "Widgit.swift", heard: ["wigit dot swift"])]),
-        ])
-        XCTAssertEqual(merged.all.map(\.replaceWith), ["Widgit.swift"])
-    }
-
-    /// A fallback guess survives when nothing better covers its span.
-    func testClaudeRepoFallbackGuessSurvivesUncontested() {
-        let merged = PolishContextGrounding.merge([
-            candidate(
-                .repository,
-                [(exact: "Widget.swift", heard: ["wigit dot swift"])],
-                fallbackOnly: true
-            ),
-            candidate(.clipboard, [(exact: "Other.swift", heard: ["other dot swift"])]),
-        ])
-        XCTAssertEqual(merged.all.map(\.replaceWith), ["Widget.swift", "Other.swift"])
     }
 
     // MARK: - Order

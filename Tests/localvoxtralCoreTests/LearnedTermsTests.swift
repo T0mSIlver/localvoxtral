@@ -229,6 +229,31 @@ final class LearnedTermsTests: XCTestCase {
         XCTAssertFalse(terms.projects.contains { $0.key == "/new" }, "no room is left for the rest")
     }
 
+    /// LVX-91: 50 checkouts linked to their repositories fill the cap. The
+    /// oldest checkout's repository holds a pin, so it stays; the checkout
+    /// pointing at it must stay too, or its terms are found by no lookup.
+    func testTheRecordCapKeepsAPinnedRepositorysCheckout() {
+        var terms = LearnedTerms()
+        for index in 0..<(LearnedTerms.maxProjects / 2) {
+            let checkout = LearnedTermProjectResolver.Identity(key: "/w/r\(index)", name: "r\(index)")
+            terms.record([observation("term\(index)")], project: checkout, now: start + Double(index) * 3600)
+            terms.recordOrigin(ProjectRemote("github.com/o/r\(index)")!, projectKey: checkout.key)
+        }
+        XCTAssertEqual(terms.projects.count, LearnedTerms.maxProjects, "each checkout and its repository's record")
+        XCTAssertTrue(terms.setPinned(true, term: "term0", projectKey: "/w/r0"))
+
+        terms.record(
+            [observation("other")], project: .init(key: "/w/new", name: "new"), now: start + day)
+
+        XCTAssertLessThanOrEqual(terms.projects.count, LearnedTerms.maxProjects)
+        XCTAssertEqual(terms.confirmedTerms(projectKey: "/w/r0"), ["term0"])
+        XCTAssertTrue(terms.projects.contains { $0.key == "/w/new" })
+        let pointedAt = Set(terms.projects.filter(\.isLinkedCheckout).compactMap(\.repositoryRecordKey))
+        XCTAssertEqual(
+            terms.projects.filter { $0.isRepositoryRecord && !pointedAt.contains($0.key) }.map(\.key), [],
+            "no repository record is kept without a checkout pointing at it")
+    }
+
     /// At capacity the pin is refused instead, and a project already
     /// holding a pin can still pin more.
     func testAPinIsRefusedWhenExplicitProjectsFillTheCap() {

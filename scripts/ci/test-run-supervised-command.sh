@@ -72,8 +72,8 @@ grep -q '^failed-output$' "$failure_log" || fail "failure output was not capture
 error_log="$TMP_DIR/compile-error.log"
 error_output="$TMP_DIR/compile-error.out"
 if "$SUPERVISOR" 30 "$error_log" -- /bin/bash -c '
-  echo "/src/QuickCaptureLLMPolisherTests.swift:12:5: error: missing argument for parameter"
-  echo "/src/QuickCaptureLLMPolisherTests.swift:12:5: error: missing argument for parameter"
+  echo "/src/ProjectsPaneTests.swift:12:5: error: missing argument for parameter"
+  echo "/src/ProjectsPaneTests.swift:12:5: error: missing argument for parameter"
   for i in $(seq 1 60); do echo "/src/Other.swift:$i:1: error: distinct failure $i"; done
   for i in $(seq 1 300); do echo "/src/Other.swift:$i:1: warning: var never mutated"; done
   exit 1' >"$error_output" 2>&1; then
@@ -82,9 +82,9 @@ else
   status=$?
 fi
 [[ "$status" == "1" ]] || fail "compile-error run: exit status changed from 1 to $status"
-grep -q 'QuickCaptureLLMPolisherTests.swift:12:5: error: missing argument' "$error_output" \
+grep -q 'ProjectsPaneTests.swift:12:5: error: missing argument' "$error_output" \
   || fail "failed run did not print the error line hidden above the tail"
-[[ "$(grep -c 'QuickCaptureLLMPolisherTests.swift:12:5: error:' "$error_output")" == "1" ]] \
+[[ "$(grep -c 'ProjectsPaneTests.swift:12:5: error:' "$error_output")" == "1" ]] \
   || fail "failed run printed a duplicated error line more than once"
 grep -q 'error: distinct failure 49$' "$error_output" \
   || fail "failed run dropped an error line inside the cap"

@@ -80,4 +80,15 @@ final class TranscriptDeltaEmitterTests: XCTestCase {
         XCTAssertFalse(r.emitter.emittedText.contains("\u{FFFD}"))
         XCTAssertEqual(r.emitter.rewriteCount, 0)
     }
+
+    func testGrowingGraphemeKeepsEmittedTextInStepWithTheWire() {
+        let (wire, emitter) = replay(["क", "कि", "किताब"])
+        XCTAssertEqual(wire, "किताब")
+        XCTAssertEqual(emitter.emittedText, "किताब")
+        XCTAssertEqual(emitter.rewriteCount, 0)
+
+        let (accentWire, accentEmitter) = replay(["cafe", "cafe\u{301} et"])
+        XCTAssertEqual(accentWire, "cafe\u{301} et")
+        XCTAssertEqual(accentEmitter.emittedText, "cafe\u{301} et")
+    }
 }

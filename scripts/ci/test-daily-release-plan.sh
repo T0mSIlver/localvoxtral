@@ -25,7 +25,7 @@ g() { git -C "$REPO" -c user.name=t -c user.email=t@t "$@"; }
 commit() { g commit -q --allow-empty -m "$1"; g rev-parse HEAD; }
 C1="$(commit c1)"
 g tag -a v0.9.0 -m v0.9.0
-g tag -a v0.9.1-nightly.20260926 -m nightly
+g tag -a v0.10.0-rc.1 -m rc
 g checkout -q -b side
 S1="$(commit s1)"
 g checkout -q main
@@ -118,7 +118,7 @@ dir="$(scenario newest-scored "4:$C4:absent" "3:$C3:skipped" "2:$C2:success" "1:
 run_plan "$dir" || fail "newest scored: exited non-zero: $(cat "$dir/err")"
 [[ "$(field run "$dir")" == true ]] || fail "newest scored: $(cat "$dir/out")"
 [[ "$(field sha "$dir")" == "$C2" ]] || fail "picked $(field sha "$dir"), expected c2 $C2"
-[[ "$(field base "$dir")" == v0.9.0 ]] || fail "base is the stable tag, never the nightly: $(field base "$dir")"
+[[ "$(field base "$dir")" == v0.9.0 ]] || fail "base is the stable tag, never the rc: $(field base "$dir")"
 grep -q "main is 2 commit(s) past it" "$dir/out" || fail "the reason says how far main moved: $(cat "$dir/out")"
 grep -q "branch=main&status=completed&" "$dir/calls" || fail "runs are read from main, red ones included: $(cat "$dir/calls")"
 pass "unscored runs are passed over; the newest scored commit ships, behind main's head"

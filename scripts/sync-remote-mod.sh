@@ -11,7 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FROM="$ROOT/integrations/claude-code/plugins/localvoxtral-mod"
 TO="$ROOT/integrations/claude-code/plugins/localvoxtral-remote"
-FILES=(hooks/register.tsx hooks/channel.ts hooks/inbox.ts hooks/hmac.ts hooks/remote.ts types/index.d.ts)
+FILES=(hooks/register.tsx hooks/channel.ts hooks/hmac.ts hooks/remote.ts types/index.d.ts)
 
 check=0
 [[ "${1:-}" == "--check" ]] && check=1

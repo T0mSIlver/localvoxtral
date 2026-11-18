@@ -72,7 +72,16 @@ package struct LiveHoldBackReplacementStream {
     private let bound: HoldBackBound
     /// Character offset into `corrector.correctedText` already released for
     /// typing. Everything before this offset is immutable by construction.
+    /// If a later chunk's leading scalars merge into the last released
+    /// character, that character counts as released: no correction may start
+    /// at it.
     private var releasedCharacterCount = 0
+    /// Unicode scalars of `corrector.correctedText` already released. Release
+    /// resumes from here, not from `releasedCharacterCount`, because an
+    /// appended chunk can merge into the last released character (a skin-tone
+    /// modifier, a flag's second half, a combining accent) without adding a
+    /// character; the scalars that merged in must still be typed.
+    private var releasedScalarCount = 0
 
     #if DEBUG
         /// Test seam: forces the viable-prefix bound even when a stricter
@@ -275,12 +284,15 @@ package struct LiveHoldBackReplacementStream {
     }
 
     private mutating func release(upTo limit: Int) -> String {
-        guard limit > releasedCharacterCount else { return "" }
         let text = corrector.correctedText
-        let start = text.index(text.startIndex, offsetBy: releasedCharacterCount)
+        let scalars = text.unicodeScalars
         let end = text.index(text.startIndex, offsetBy: limit)
-        releasedCharacterCount = limit
-        let released = String(text[start ..< end])
+        let endScalarCount = scalars.distance(from: scalars.startIndex, to: end)
+        guard endScalarCount > releasedScalarCount else { return "" }
+        let start = scalars.index(scalars.startIndex, offsetBy: releasedScalarCount)
+        releasedCharacterCount = max(limit, releasedCharacterCount)
+        releasedScalarCount = endScalarCount
+        let released = String(scalars[start ..< end])
         return sanitizesNewlines ? sanitizingNewlines(in: released) : released
     }
 

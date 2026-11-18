@@ -157,7 +157,8 @@ dump_file "${BACKENDS_ROOT}/installed.json"
 
 print_header "Recent app logs (last 10m, default level, last 80 lines)"
 # Excludes the opt-in Deltas category, which logs dictated content in
-# cleartext when debug.log_realtime_deltas is enabled.
+# cleartext when debug.log_realtime_deltas is enabled (debug and harness
+# builds only since LVX-80).
 app_logs="$(bounded 30 log show \
   --predicate 'process == "localvoxtral" AND NOT (category == "Deltas")' \
   --last 10m \

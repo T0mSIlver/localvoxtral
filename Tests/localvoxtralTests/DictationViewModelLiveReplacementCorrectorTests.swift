@@ -187,8 +187,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
     }
 
     private func stop(_ viewModel: DictationViewModel) {
-        viewModel.isDictating = false
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
     }
 
@@ -237,7 +236,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         }
 
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.configureLiveAutoPasteReplacementCorrectorForSession()
 
         return (viewModel, field, typed)

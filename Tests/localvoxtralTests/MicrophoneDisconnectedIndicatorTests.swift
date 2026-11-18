@@ -33,7 +33,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         viewModel.session.stopDictationForUnavailableMicrophone()
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.stopDictation(reason: "user")
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
@@ -53,7 +53,7 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Mic sent no audio. Dictation stopped.")
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
 
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.stopDictation(reason: "user")
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
 
@@ -73,7 +73,28 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Mic sent no audio. Dictation stopped.")
     }
 
-    private func makeDictatingViewModel() -> DictationViewModel {
+    /// The stop's own cleanup marks the failure again, which cancels the first
+    /// reset timer. A cancelled timer must not reset the icon: the red stays
+    /// for the full failure window after the stop completes.
+    func testRedIconStaysForTheFailureWindowAfterTheStopCompletes() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeDictatingViewModel(clock: clock)
+
+        viewModel.session.stopDictationForUnavailableMicrophone()
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertEqual(
+            viewModel.realtimeSessionIndicatorState, .recentFailure,
+            "the cancelled first timer must not reset the icon")
+
+        clock.advance(by: TimingConstants.recentFailureIndicatorDuration)
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
+    }
+
+    private func makeDictatingViewModel(clock: ManualSessionClock = ManualSessionClock()) -> DictationViewModel {
         let defaults = makeTestDefaults()
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = .liveAutoPaste
@@ -81,11 +102,11 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false,
-            dependencies: .init(clock: ManualSessionClock().clock)
+            dependencies: .init(clock: clock.clock)
         )
         retainForTestProcessLifetime(viewModel)
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         return viewModel
     }
 }

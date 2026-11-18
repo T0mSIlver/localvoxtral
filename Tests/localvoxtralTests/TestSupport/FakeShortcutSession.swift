@@ -6,12 +6,9 @@ import Foundation
 /// wrote, the way the view model's do.
 @MainActor
 final class FakeShortcutSession: ShortcutSessionControlling {
-    var isDictating = false
-    var isConnectingRealtimeSession = false
-    var isFinalizingStop = false
-    var isAwaitingMicrophonePermission = false
+    var phase: DictationPhase = .idle
     var isAccessibilityTrusted = true
-    /// A start makes `isDictating` true and a stop false, as a session that
+    /// A start makes the phase `dictating` and a stop `idle`, as a session that
     /// connects at once would.
     var startDictationSucceeds = false
     var statusText = "Ready"
@@ -26,21 +23,17 @@ final class FakeShortcutSession: ShortcutSessionControlling {
     private(set) var toggledModes: [DictationOutputMode?] = []
     private(set) var refusalSignalClears = 0
     private(set) var copyLastDictationCalls = 0
-    private(set) var answerAgentCalls = 0
 
     func startDictation(outputMode: DictationOutputMode?) {
         startedModes.append(outputMode)
-        if startDictationSucceeds { isDictating = true }
+        if startDictationSucceeds { phase = .dictating }
     }
     func endDictation(reason: String) {
         stopReasons.append(reason)
-        if startDictationSucceeds { isDictating = false }
+        if startDictationSucceeds { phase = .idle }
     }
     func toggleDictation(outputMode: DictationOutputMode?) { toggledModes.append(outputMode) }
     func clearSecureInputRefusalSignalsIfAttemptEnded() { refusalSignalClears += 1 }
     func overlayReachabilityDidChange(wasReachable: Bool) {}
     func copyLastDictation() { copyLastDictationCalls += 1 }
-    func answerAgentThatNeedsYou() { answerAgentCalls += 1 }
-    private(set) var toggleQuickCaptureCalls = 0
-    func toggleQuickCapture() { toggleQuickCaptureCalls += 1 }
 }

@@ -81,7 +81,7 @@ package struct ClaudeRepoContextPreparation: Sendable, Equatable {
     ///
     /// The split is the point. A path list is already structured — the harvest
     /// knows precisely which strings are paths — so it goes to
-    /// `RepoIndexing.buildVocabulary`, which decomposes each one into the
+    /// `RepoIndexing.buildVocabularyTerms`, which decomposes each one into the
     /// basename and directory components a speaker can actually utter. Text is
     /// unstructured, so it goes to `ClipboardVocabulary.entities`, which
     /// RECOGNIZES identifiers in prose.

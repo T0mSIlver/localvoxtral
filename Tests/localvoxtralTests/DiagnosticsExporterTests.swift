@@ -35,7 +35,6 @@ final class DiagnosticsExporterTests: XCTestCase {
         let store = makeStore()
         store.dictationBackendMode = .externalURL
         store.polishingBackendMode = .externalURL
-        store.realtimeProvider = .realtimeAPI
         store.realtimeAPIEndpointURL = endpoint
         return store
     }
@@ -74,7 +73,7 @@ final class DiagnosticsExporterTests: XCTestCase {
 
         let snapshot = makeSnapshot(settings: store)
 
-        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases).subtracting([.jevAPIKey]))
+        XCTAssertEqual(Set(secrets.reads), Set(SecretKey.allCases))
         XCTAssertTrue(snapshot.hasRealtimeAPIKey)
         XCTAssertTrue(snapshot.hasPolishingAPIKey)
         let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())

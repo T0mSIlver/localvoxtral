@@ -91,13 +91,13 @@ package final class ProjectTermProposer: @unchecked Sendable {
     /// handed to `RemoteProjectTermRequests`, which only marks the session
     /// for its host to run on. Tests await the task; the app drops it.
     ///
-    /// - Parameter excluding: the user's own terms and the suggestions they
-    ///   refused, which a proposal never repeats.
+    /// - Parameter excluding: what a proposal never repeats, read when the
+    ///   answer is stored.
     @discardableResult
     package func dictationCommitted(
         join: ClaudeSessionSnapshot?,
         enabled: Bool,
-        excluding: [String]
+        excluding: @escaping ProjectTermProposal.Exclusions
     ) -> Task<Void, Never>? {
         guard enabled, let join else { return nil }
         guard let request = ProjectTermProposal.request(for: join) else {
@@ -111,7 +111,9 @@ package final class ProjectTermProposer: @unchecked Sendable {
         }
     }
 
-    private func propose(_ request: ProjectTermProposal.Request, excluding: [String]) async {
+    private func propose(
+        _ request: ProjectTermProposal.Request, excluding: ProjectTermProposal.Exclusions
+    ) async {
         let directory = request.workspace.path
         let gitRoot = RepoIndexing.findGitRoot(startingAt: directory, fileManager: fileManager)
         let repositoryRoot: LearnedTermProjectResolver.RepositoryRoot = gitRoot.map {
@@ -173,7 +175,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
             // still counts as answered, so the project is not asked daily.
             store.recordProposal(
                 accepted, line: line ?? "", revision: ProjectTermProposal.promptRevision, agent: request.agent,
-                project: project, excluding: excluding)
+                project: project, excluding: excluding())
         case .failed(let failure):
             if failure.agentRan {
                 usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: nil))

@@ -25,6 +25,27 @@ final class SpeechModelSelectionSettingsTests: XCTestCase {
         XCTAssertEqual(relaunched.effectiveModelName(for: .realtimeAPI), nemotron.repoID)
     }
 
+    /// The dictation language persists, and a session sends it only while the
+    /// selected model takes it (Nemotron Unified), never to Voxtral.
+    @MainActor
+    func testDictationLanguagePersistsAndReachesOnlyAModelThatTakesIt() {
+        let defaults = makeSettingsDefaults()
+        let settings = makeSettings(defaults: defaults)
+        settings.dictationBackendMode = .managedLocal
+        XCTAssertEqual(settings.dictationLanguage, "")
+        XCTAssertNil(settings.sessionDictationLanguage)
+
+        settings.dictationLanguage = "fr"
+        settings.managedSpeechModel = "T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit"
+        XCTAssertEqual(settings.sessionDictationLanguage, "fr")
+
+        settings.managedSpeechModel = SpeechModelCatalog.defaultOption.repoID
+        XCTAssertNil(settings.sessionDictationLanguage)
+
+        let relaunched = makeSettings(defaults: defaults)
+        XCTAssertEqual(relaunched.dictationLanguage, "fr")
+    }
+
     /// A repo this build doesn't know may be one a newer build added (#1040):
     /// this build launches the default but leaves the stored choice alone.
     @MainActor

@@ -18,7 +18,7 @@ final class SoundAlikeNominationTests: XCTestCase {
     private func preapplied(_ transcript: String, terms: [String]) -> String {
         let result = outcome(transcript, terms: terms)
         return RepoVocabularyMatcher.preapplying(
-            entries: result.entries + result.phoneticEntries,
+            entries: result.entries,
             to: transcript
         )
     }
@@ -47,7 +47,6 @@ final class SoundAlikeNominationTests: XCTestCase {
         let result = outcome(transcript, terms: ["localvoxtral.js"])
 
         XCTAssertTrue(result.entries.isEmpty)
-        XCTAssertTrue(result.phoneticEntries.isEmpty)
         XCTAssertTrue(result.verificationCandidates.isEmpty)
     }
 
@@ -105,8 +104,7 @@ final class SoundAlikeNominationTests: XCTestCase {
 
         let merged = PolishContextGrounding.merge(
             [.init(
-                source: .repository, entries: [], isFallbackOnly: false,
-                verificationEntries: result.verificationCandidates
+                source: .repository, entries: [], verificationEntries: result.verificationCandidates
             )],
             maxVerificationPairs: RepoVocabularyMatcher.nominationCap(forTranscript: transcript)
         )
@@ -119,13 +117,11 @@ final class SoundAlikeNominationTests: XCTestCase {
         let merged = PolishContextGrounding.merge([
             .init(
                 source: .repository,
-                entries: [ReplacementEntry(replaceWith: "ConfigStore", matches: ["config store"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "ConfigStore", matches: ["config store"])]
             ),
             .init(
                 source: .clipboard,
                 entries: [],
-                isFallbackOnly: false,
                 verificationEntries: [
                     ReplacementEntry(replaceWith: "ConfigStore", matches: ["config stor"]),
                     ReplacementEntry(replaceWith: "ConfigLoader", matches: ["config lauder"]),

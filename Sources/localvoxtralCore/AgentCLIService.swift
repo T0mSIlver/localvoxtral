@@ -7,6 +7,10 @@ import Foundation
 package protocol AgentCLIDataSource: Sendable {
     /// False under History's "Don't keep".
     func historyKept() async -> Bool
+    /// Under any other choice, why History holds nothing to read: its file
+    /// did not open, or its last read or write failed (the app's
+    /// `historyUnavailableText`). Nil when History works or is off.
+    func historyUnavailable() async -> String?
     /// Newest first: dictations whose transcript or final text contains
     /// `text` (all of them when empty), started at or after `since`.
     func dictations(matching text: String, since: Date?, limit: Int) async -> [AgentCLIDictation]
@@ -28,16 +32,6 @@ package protocol AgentCLIDataSource: Sendable {
     func status() async -> AgentCLIStatus
     /// What `doctor` checks (`AgentCLIDoctorChecks`).
     func doctorFacts() async -> AgentCLIDoctorFacts
-    /// The quick capture Inbox, newest first; nil when the app has none.
-    func captures() async -> [QuickCaptureItem]?
-    /// A coding agent filed the capture with its own `gh`
-    /// (`QuickCaptureInboxModel.markFiled`); nil when the app has no Inbox.
-    func markCaptureFiled(
-        _ id: UUID, url: String
-    ) async -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal>?
-    /// Brings the Inbox forward on the capture. False when it is no longer
-    /// there; nil when the app has no Inbox.
-    func openCapture(_ id: UUID) async -> Bool?
 }
 
 /// Answers the command's requests. Everything here is the part that does not
@@ -85,10 +79,6 @@ package struct AgentCLIService: Sendable {
             response = AgentCLIResponse(
                 doctor: AgentCLIDoctor(checks: AgentCLIDoctorChecks.checks(await source.doctorFacts()))
             )
-        case .captureList: response = await captureList(request)
-        case .captureShow: response = await captureShow(request)
-        case .captureFiled: response = await captureFiled(request)
-        case .captureOpen: response = await captureOpen(request)
         }
         if let error = response.error {
             Log.backends.error(
@@ -107,6 +97,7 @@ package struct AgentCLIService: Sendable {
         guard (1...AgentCLIWire.maxHistoryLimit).contains(limit) else {
             return .failure(.badRequest, "--limit must be between 1 and \(AgentCLIWire.maxHistoryLimit)")
         }
+        if let unavailable = await historyUnavailableResponse() { return unavailable }
         guard await source.historyKept() else {
             return AgentCLIResponse(history: AgentCLIHistory(historyKept: false, dictations: []))
         }
@@ -131,11 +122,18 @@ package struct AgentCLIService: Sendable {
     }
 
     private func historyLast(_ request: AgentCLIRequest) async -> AgentCLIResponse {
+        if let unavailable = await historyUnavailableResponse() { return unavailable }
         guard await source.historyKept() else {
             return AgentCLIResponse(history: AgentCLIHistory(historyKept: false, dictations: []))
         }
         let last = await source.lastDictation()
         return AgentCLIResponse(history: AgentCLIHistory(historyKept: true, dictations: last.map { [$0] } ?? []))
+    }
+
+    private func historyUnavailableResponse() async -> AgentCLIResponse? {
+        guard let reason = await source.historyUnavailable() else { return nil }
+        return AgentCLIResponse(
+            history: AgentCLIHistory(historyKept: false, dictations: [], historyUnavailable: reason))
     }
 
     // MARK: Terms
@@ -222,7 +220,8 @@ package struct AgentCLIService: Sendable {
         }
 
         let userList = await source.userTerms() + source.refusedTerms()
-        let userKeys = Set(userList.map(\.caseFoldedForMatching))
+        // Refusals hold across spacing and punctuation, as the store drops them.
+        let userKeys = Set(userList.map(PolishProjectNames.key))
         var known = Set(memory.termRecord(project.key)?.terms.map(\.term.caseFoldedForMatching) ?? [])
         var accepted: [String] = []
         var skipped: [AgentCLIProposal.Skipped] = []
@@ -236,7 +235,7 @@ package struct AgentCLIService: Sendable {
                 continue
             }
             let key = term.caseFoldedForMatching
-            if userKeys.contains(key) {
+            if userKeys.contains(PolishProjectNames.key(term)) {
                 skipped.append(.init(term: term, reason: .userList))
             } else if !known.insert(key).inserted {
                 skipped.append(.init(term: term, reason: .known))
@@ -265,99 +264,6 @@ package struct AgentCLIService: Sendable {
                 skipped: skipped
             )
         )
-    }
-
-    // MARK: Quick capture
-
-    private func captureList(_ request: AgentCLIRequest) async -> AgentCLIResponse {
-        let filter: ProjectFilter?
-        switch projectFilter(request.project) {
-        case .success(let value): filter = value
-        case .failure(let error): return AgentCLIResponse(error: error)
-        }
-        guard let items = await source.captures() else {
-            return AgentCLIResponse(captures: AgentCLICaptures(inboxAvailable: false, captures: []))
-        }
-        var cache: [String: AgentCLIProject] = [:]
-        let captures = items
-            .filter { item in request.since.map { item.capturedAt >= $0 } ?? true }
-            .map { AgentCLICaptureLookup.capture($0, detail: false) }
-            .filter { filter?.matches($0.project, cache: &cache) ?? true }
-            .sorted { $0.capturedAt > $1.capturedAt }
-        return AgentCLIResponse(captures: AgentCLICaptures(inboxAvailable: true, captures: captures))
-    }
-
-    private func captureShow(_ request: AgentCLIRequest) async -> AgentCLIResponse {
-        switch await findCapture(request) {
-        case .success(let item): AgentCLIResponse(capture: AgentCLICaptureLookup.capture(item, detail: true))
-        case .failure(let error): AgentCLIResponse(error: error)
-        }
-    }
-
-    private func captureFiled(_ request: AgentCLIRequest) async -> AgentCLIResponse {
-        guard let url = request.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty else {
-            return .failure(.badRequest, "no issue URL")
-        }
-        let item: QuickCaptureItem
-        switch await findCapture(request) {
-        case .success(let found): item = found
-        case .failure(let error): return AgentCLIResponse(error: error)
-        }
-        switch await source.markCaptureFiled(item.id, url: url) {
-        case nil:
-            return .failure(.unknownCapture, "the Inbox is not available")
-        case .success(let filed)?:
-            Log.backends.info("CLI: \((request.caller ?? .unknown).rawValue, privacy: .public) marked a capture filed")
-            return AgentCLIResponse(capture: AgentCLICaptureLookup.capture(filed, detail: false))
-        case .failure(let refusal)?:
-            let message = switch refusal {
-            case .notFound: "the capture is no longer in the Inbox"
-            case .notReady(.filed): "already filed: \(item.filedURL ?? "no URL")"
-            case .notReady(let state): "still \(state.rawValue); mark it filed once it is ready"
-            case .notAnIssue: "\(url) is not a GitHub issue URL (https://github.com/<owner>/<name>/issues/<n>)"
-            case .otherRepository(let repository): "this capture files in \(repository)"
-            case .notAnIssueKind(let kind): "a \(kind.rawValue) is never filed"
-            }
-            return .failure(refusal == .notFound ? .unknownCapture : .notFileable, message)
-        }
-    }
-
-    private func captureOpen(_ request: AgentCLIRequest) async -> AgentCLIResponse {
-        let item: QuickCaptureItem
-        switch await findCapture(request) {
-        case .success(let found): item = found
-        case .failure(let error): return AgentCLIResponse(error: error)
-        }
-        switch await source.openCapture(item.id) {
-        case nil:
-            return .failure(.unknownCapture, "the Inbox is not available")
-        case false?:
-            return .failure(.unknownCapture, "the capture is no longer in the Inbox")
-        case true?:
-            Log.backends.info("CLI: opened a capture in the Inbox")
-            return AgentCLIResponse(capture: AgentCLICaptureLookup.capture(item, detail: false))
-        }
-    }
-
-    private func findCapture(_ request: AgentCLIRequest) async -> Result<QuickCaptureItem, AgentCLIError> {
-        let reference = request.capture?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !reference.isEmpty else { return .failure(AgentCLIError(.badRequest, "no capture named")) }
-        guard let items = await source.captures() else {
-            return .failure(AgentCLIError(.unknownCapture, "the Inbox is not available"))
-        }
-        switch AgentCLICaptureLookup.find(reference, in: items) {
-        case .found(let item):
-            return .success(item)
-        case .none:
-            return .failure(AgentCLIError(
-                .unknownCapture, "no capture matches \"\(reference)\"; localvoxtral capture list shows them all"))
-        case .ambiguous(let matches):
-            let names = matches.prefix(5)
-                .map { "\(AgentCLICaptureLookup.shortID($0)) \(AgentCLICaptureLookup.title(of: $0))" }
-                .joined(separator: "; ")
-            return .failure(AgentCLIError(
-                .ambiguousCapture, "\(matches.count) captures match \"\(reference)\": \(names). Pass more of the title, or the id"))
-        }
     }
 
     // MARK: Project filter

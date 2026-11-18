@@ -370,7 +370,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
         viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
 
@@ -384,7 +384,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
         viewModel.lastError = "mlx-lm failed to start."
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
 
@@ -471,8 +471,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // The exact mid-dismiss state stopDictation leaves behind: dictation
         // off, finalization (and the polish task) still running, indicator
         // on the yellow session icon.
-        viewModel.isDictating = false
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.session.setRealtimeIndicatorConnected()
 
         viewModel.session.clearSecureInputRefusalSignalsIfAttemptEnded()
@@ -482,7 +481,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         )
 
         // Once finalization actually ends, the gesture-end clear may act.
-        viewModel.isFinalizingStop = false
+        viewModel.phase = .idle
         viewModel.session.clearSecureInputRefusalSignalsIfAttemptEnded()
         XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
     }
@@ -497,7 +496,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
@@ -747,7 +746,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
         retainForTestProcessLifetime(viewModel)
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
 
@@ -771,7 +770,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
         retainForTestProcessLifetime(viewModel)
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
 

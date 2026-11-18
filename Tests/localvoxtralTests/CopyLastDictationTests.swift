@@ -183,7 +183,7 @@ final class CopyLastDictationTests: XCTestCase {
     func testCopyingDuringADictationLeavesTheStatusLineAlone() {
         let (viewModel, written) = makeViewModel(polishing: nil)
         finishOverlayDictation(viewModel, text: "the one before")
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.statusText = "Listening..."
 
         viewModel.copyLastDictation()
@@ -317,7 +317,7 @@ final class CopyLastDictationTests: XCTestCase {
 
     private func finishOverlayDictation(_ viewModel: DictationViewModel, text: String) {
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
     }
@@ -395,13 +395,13 @@ final class CopyLastDictationShortcutTests: XCTestCase {
         shortcuts.settings.dictationShortcutMode = .pushToTalk
 
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: true, hotKeyID: .overlay)
-        XCTAssertTrue(shortcuts.isPushToTalkShortcutHeld)
+        XCTAssertTrue(shortcuts.isDictationAttemptGestureActive)
 
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: true, hotKeyID: .copyLastDictation)
         shortcuts.hotKeyManager.debugDeliverHotKeyEventForTesting(pressed: false, hotKeyID: .copyLastDictation)
 
         XCTAssertEqual(session.copyLastDictationCalls, 1)
-        XCTAssertTrue(shortcuts.isPushToTalkShortcutHeld, "the copy key's release is not the dictation key's")
+        XCTAssertTrue(shortcuts.isDictationAttemptGestureActive, "the copy key's release is not the dictation key's")
         XCTAssertEqual(session.refusalSignalClears, 0)
     }
 

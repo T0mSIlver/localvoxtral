@@ -31,6 +31,10 @@ package enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     /// `CLAUDE_CODE_HOST_SESSION_ID`. No screen is ever read for this
     /// mechanism either — see `TerminalScreenClaudeJoinAuthorizer`.
     case desktopSession
+    /// T3 Code's thread composer holds keyboard focus, and the thread id in its
+    /// web view's address matched a live session's `T3CODE_THREAD_ID`
+    /// (LVX-55). No screen is ever read for this mechanism either.
+    case t3Thread
     /// A cmux surface, matched by the surface id cmux injected into the
     /// session's environment. Local surfaces and `cmux ssh` remote shells both
     /// arrive here — see `ClaudeSessionJoinResolver.resolveViaCmux`.
@@ -122,6 +126,16 @@ package struct ClaudeDesktopSessionBinding: Sendable, Equatable {
     }
 }
 
+/// The T3 Code thread id a `.t3Thread` join resolved on. Same role as
+/// `ClaudeDesktopSessionBinding`.
+package struct ClaudeT3ThreadBinding: Sendable, Equatable {
+    package let t3ThreadID: String
+
+    package init(t3ThreadID: String) {
+        self.t3ThreadID = t3ThreadID
+    }
+}
+
 /// The cmux surface a `.cmuxSurface` join resolved to. Same role as
 /// `ClaudeHerdrPaneBinding`: captured at resolution so the surface-text fetch
 /// can only ever be keyed by the surface the join is ABOUT.
@@ -167,6 +181,9 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
     /// focused web view and the session's hooks agreed on. Commit-time
     /// liveness re-checks it the way it re-checks a browser tab's.
     package let desktopSession: ClaudeDesktopSessionBinding?
+    /// Non-nil exactly for `.t3Thread` joins: the thread id the focused T3
+    /// Code view and the session's hooks agreed on, re-checked at commit.
+    package let t3Thread: ClaudeT3ThreadBinding?
     /// Non-nil exactly for `.cmuxSurface` joins: the surface whose clean,
     /// per-surface text (`surface.read_text`) is the ONLY screen route cmux has.
     package let cmuxSurface: ClaudeCmuxSurfaceBinding?
@@ -202,6 +219,7 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         herdrPane: ClaudeHerdrPaneBinding? = nil,
         browserTab: ClaudeBrowserTabBinding? = nil,
         desktopSession: ClaudeDesktopSessionBinding? = nil,
+        t3Thread: ClaudeT3ThreadBinding? = nil,
         cmuxSurface: ClaudeCmuxSurfaceBinding? = nil,
         remoteHerdrForward: ClaudeRemoteHerdrForwardHandle? = nil,
         remoteHerdrIndicator: HerdrPanelMicIndicator? = nil,
@@ -215,6 +233,7 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         self.herdrPane = herdrPane
         self.browserTab = browserTab
         self.desktopSession = desktopSession
+        self.t3Thread = t3Thread
         self.cmuxSurface = cmuxSurface
         self.remoteHerdrForward = remoteHerdrForward
         self.remoteHerdrIndicator = remoteHerdrIndicator
@@ -228,7 +247,7 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         switch mechanism {
         case .herdrPane, .remoteHerdrPane, .federatedHerdrPane: return herdrPane?.paneID
         case .cmuxSurface: return cmuxSurface?.surfaceID
-        case .ttyDevice, .browserTab, .desktopSession, .remoteSSHConnection, .remoteLocalTTY:
+        case .ttyDevice, .browserTab, .desktopSession, .t3Thread, .remoteSSHConnection, .remoteLocalTTY:
             return nil
         }
     }

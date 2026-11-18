@@ -2,66 +2,23 @@ import ClaudeContextWire
 import Foundation
 import localvoxtralCore
 
-/// Records the sessions it was asked to bring forward and answers with
-/// `outcome`. `onFocus` runs as the pane comes forward, so a test can move
-/// what it reads as frontmost.
+/// Answers the read-back before a Return into a joined session's pane.
+/// `onReadBack` runs first, so a test can move what it reads as frontmost;
+/// `holdReadBack` keeps the read-back pending until the test lets it go.
 @MainActor
 package final class FakeSessionPaneFocuser: SessionPaneFocusing {
-    package var outcome: SessionPaneFocusOutcome
-    package private(set) var focusedSessionIDs: [String] = []
-    package var onFocus: ((String) -> Void)?
-    /// Sessions whose focus was cancelled by the time `onFocus` returned:
-    /// a real focuser activates no terminal for those.
-    package private(set) var cancelledSessionIDs: [String] = []
-
-    package init(outcome: SessionPaneFocusOutcome = .focused(bundleID: "com.mitchellh.ghostty")) {
-        self.outcome = outcome
-    }
-
-    package func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome {
-        focusedSessionIDs.append(session.sessionID)
-        if holdsFocus {
-            await withCheckedContinuation { heldFocuses.append($0) }
-        }
-        onFocus?(session.sessionID)
-        if Task.isCancelled { cancelledSessionIDs.append(session.sessionID) }
-        return outcome
-    }
-
-    /// While true, `focusPane` waits for `releaseHeldFocuses()`, as a
-    /// terminal slow to answer would.
-    package var holdsFocus = false
-    private var heldFocuses: [CheckedContinuation<Void, Never>] = [] {
-        didSet { resumeHoldWaiters() }
-    }
-    private var holdWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
-
-    /// Returns once `count` focuses are held.
-    package func waitUntilHeld(_ count: Int) async {
-        guard heldFocuses.count < count else { return }
-        await withCheckedContinuation { holdWaiters.append((count, $0)) }
-    }
-
-    package func releaseHeldFocuses() {
-        let held = heldFocuses
-        heldFocuses = []
-        held.forEach { $0.resume() }
-    }
-
-    private func resumeHoldWaiters() {
-        let ready = holdWaiters.filter { $0.count <= heldFocuses.count }
-        holdWaiters.removeAll { $0.count <= heldFocuses.count }
-        ready.forEach { $0.continuation.resume() }
-    }
+    package init() {}
 
     /// The answer to the read-back before a Return; `onReadBack` runs first.
     package var paneStillShowsSession = true
     package private(set) var readBackSessionIDs: [String] = []
     package var onReadBack: (@MainActor (String) -> Void)?
+    package var holdReadBack: (@MainActor () async -> Void)?
 
     package func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID _: String) async -> Bool {
         readBackSessionIDs.append(session.sessionID)
         onReadBack?(session.sessionID)
+        await holdReadBack?()
         return paneStillShowsSession
     }
 }

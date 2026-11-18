@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HttpResponse, Register } from 'claude-code'
 
-import type { Band, InboxView } from '../types'
+import type { Band } from '../types'
 import {
   AppendStream,
   BAND_STALE_MS,
@@ -14,7 +14,6 @@ import {
   type ChannelReply,
   NEW_SESSION_POLL_MS,
   NEW_SESSION_WAIT_MS,
-  NO_TURN,
   NOT_RESTORED,
   type Outcome,
   parseMessage,
@@ -28,7 +27,6 @@ import {
   WIRE_VERSION,
 } from './channel'
 import { sameHex } from './hmac'
-import { detailOf, INBOX_PANE, inboxOf } from './inbox'
 import {
   answerProof,
   BACKOFF_MS,
@@ -36,10 +34,6 @@ import {
   hookOKAt,
   isChannelKey,
   isToken,
-  ASK_ABANDON_MS,
-  INBOX_OPEN_PATH,
-  INBOX_PATH,
-  type InboxRequest,
   parsePollAnswer,
   POLL_ABANDON_MS,
   POLL_PATH,
@@ -76,25 +70,6 @@ async function findPublisher($: EngineInterface, configured: string): Promise<st
     configured,
     '/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook',
     `${home}/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook`,
-  ]
-  for (const path of candidates) {
-    if (path !== '' && (await $.fs.exists(path))) return path
-  }
-  return undefined
-}
-
-/** The `localvoxtral` command: the app's own copy beside the publisher first. */
-async function findCLI($: EngineInterface, configuredPublisher: string): Promise<string | undefined> {
-  const home = (await $.env.get('HOME')) ?? ''
-  const bundled = 'localvoxtral.app/Contents/MacOS/localvoxtral-cli'
-  const candidates = [
-    (await $.env.get('LOCALVOXTRAL_CLI_BIN')) ?? '',
-    configuredPublisher.endsWith('/localvoxtral-claude-hook')
-      ? configuredPublisher.replace(/localvoxtral-claude-hook$/, 'localvoxtral-cli')
-      : '',
-    `/Applications/${bundled}`,
-    `${home}/Applications/${bundled}`,
-    '/usr/local/bin/localvoxtral',
   ]
   for (const path of candidates) {
     if (path !== '' && (await $.fs.exists(path))) return path
@@ -510,15 +485,6 @@ async function handle($: EngineInterface, sessionID: string, message: ChannelMes
   }
   if (await moved($, sessionID)) return changed
   switch (message.kind) {
-    case 'abort': {
-      // A spoken stop phrase (#1696): ends the main loop's running turn, as
-      // Escape would, with no key. Nothing running is not an error the
-      // person needs a key for.
-      const turnId = runningTurn
-      if (turnId === undefined) return { ok: false, reason: NO_TURN }
-      await $.turn.abort({ turnId })
-      return { ok: true }
-    }
     case 'draft':
       // What the person already typed, for polish and the space before the
       // fill (#1406). Read where the dictation will land, at the stop.
@@ -626,139 +592,7 @@ async function putBack($: EngineInterface, sessionID: string, text: string): Pro
 // How the channel reaches the app, once `session.start` found a way.
 let channelLink: Link | undefined
 
-// Not gated on `isInteractive`, which is false for an SDK host and may be
-// for a Claude Desktop session, where the indicator and the channel matter
-// most.
-const inbox = atom({ plugin: 'localvoxtral-remote', key: 'inbox' } as const, { status: 'loading' })
-
-/**
- * Reads this project's captures into the Inbox pane. Their words stay in the
- * pane: none reaches the session's prompt or its model.
- */
-async function loadInbox($: EngineInterface, cli: string | undefined): Promise<void> {
-  let view: InboxView
-  if (cli === undefined) {
-    view = { status: 'failed', reason: 'The localvoxtral command is not installed here.' }
-  } else {
-    try {
-      const run = await $.process.run([cli, 'capture', 'list', '--project', await $.session.cwd(), '--json'], {
-        timeoutMs: 5000,
-      })
-      view = inboxOf(run, await $.clock.now())
-    } catch {
-      view = { status: 'failed', reason: 'localvoxtral could not list the Inbox.' }
-    }
-  }
-  await update($, inbox, () => view)
-}
-
-/**
- * One Inbox ask through a remote host's forward (#1412), signed like a poll:
- * the status and body of an answer that carries the key's proof, `old` for
- * an app without the route, or undefined.
- */
-async function askApp(
-  $: EngineInterface,
-  link: RemoteLink,
-  path: string,
-  id?: string,
-): Promise<{ status: number; text: string } | 'old' | undefined> {
-  try {
-    const nonce = randomHex(16)
-    const request: InboxRequest = { mod_inbox: WIRE_VERSION, session_id: await $.session.id(), nonce }
-    if (id !== undefined) request.id = id
-    const body = JSON.stringify(request)
-    const asked = $.http.fetch(`http://127.0.0.1:${link.port}${path}`, {
-      method: 'POST',
-      headers: remoteHeaders(link, body),
-      body,
-    })
-    asked.catch(() => {})
-    const answered = await Promise.race([asked, $.clock.sleep(ASK_ABANDON_MS).then(() => undefined)])
-    if (answered === undefined) return undefined
-    const proof = answered.headers[PROOF_HEADER.toLowerCase()] ?? ''
-    if (sameHex(proof, answerProof(link.key, nonce, answered.text))) return { status: answered.status, text: answered.text }
-    // Unsigned, so it says nothing the pane acts on beyond this line.
-    return answered.status === 404 ? 'old' : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Reads this session's project's captures from the app through the forward:
- * ids, titles, kinds, states and dates; their words stay on the Mac.
- */
-async function loadRemoteInbox($: EngineInterface, link: RemoteLink): Promise<void> {
-  const result = await askApp($, link, INBOX_PATH)
-  let view: InboxView
-  if (result === 'old') view = { status: 'failed', reason: 'Update localvoxtral on your Mac to see its Inbox here.' }
-  else if (result?.status === 200) view = inboxOf({ exitCode: 0, stdout: result.text }, await $.clock.now())
-  else if (result?.status === 409) view = { status: 'failed', reason: 'localvoxtral has not seen this session yet.' }
-  else view = { status: 'failed', reason: 'localvoxtral could not list the Inbox.' }
-  await update($, inbox, () => view)
-}
-
-/** Brings the app's Inbox forward on the capture; filing happens there. */
-async function openCapture($: EngineInterface, cli: string | undefined, id: string): Promise<void> {
-  try {
-    if (channelLink?.kind === 'remote') {
-      const result = await askApp($, channelLink, INBOX_OPEN_PATH, id)
-      if (typeof result === 'object' && result.status === 200) return
-    } else if (cli !== undefined) {
-      const { exitCode } = await $.process.run([cli, 'capture', 'open', id, '--json'], { timeoutMs: 5000 })
-      if (exitCode === 0) return
-    }
-  } catch {
-    // Said below.
-  }
-  $.ui.toast('localvoxtral could not open that capture.')
-}
-
-async function registerInbox($: EngineInterface): Promise<void> {
-  try {
-    await $.command.register({ name: 'inbox', description: "Show this project's localvoxtral captures" })
-  } catch {
-    // A host with no slash commands still gets the indicator and the channel.
-  }
-}
-
 export const register: Register = (on, options) => {
-  on('command.run', { command: 'inbox' }, async $ => {
-    await update($, inbox, () => ({ status: 'loading' }) as const)
-    await $.ui.open({ id: INBOX_PANE, title: 'Inbox' })
-    if (channelLink?.kind === 'remote') await loadRemoteInbox($, channelLink)
-    else await loadInbox($, await findCLI($, String(options.publisher_path ?? '')))
-    return { text: 'Opened the Inbox pane.' }
-  })
-
-  on('ui.render', { component: 'Pane', requestId: INBOX_PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const view = await read($, inbox)
-    if (view.status === 'loading') return <Text dimColor>Reading the Inbox…</Text>
-    if (view.status === 'failed') return <Text dimColor>{view.reason}</Text>
-    if (view.captures.length === 0) return <Text dimColor>No captures for this project.</Text>
-    const cli = channelLink?.kind === 'remote' ? undefined : await findCLI($, String(options.publisher_path ?? ''))
-    return (
-      <Box flexDirection="column">
-        {view.captures.map(capture => (
-          <Box key={capture.id} flexDirection="column" marginBottom={1}>
-            <Text>{capture.title === '' ? 'Untitled capture' : capture.title}</Text>
-            <Box>
-              <Text dimColor>{detailOf(capture, view.at)} </Text>
-              <Button
-                key={`open-${capture.id}`}
-                label="Open in localvoxtral"
-                dimColor
-                onPress={() => openCapture($, cli, capture.id)}
-              />
-            </Box>
-          </Box>
-        ))}
-      </Box>
-    )
-  })
-
   on('turn.start', async ($, e, next) => {
     runningTurn = e.turnId
     return next(e)
@@ -811,17 +645,14 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     if ('token' in options) {
-      // The remote plugin's copy (#1412): the channel and the Inbox over the
-      // forward, and no indicator, which needs the app's binaries on this
-      // machine.
+      // The remote plugin's copy (#1412): the channel over the forward, and
+      // no indicator, which needs the app's binaries on this machine.
       const remote = remoteLinkOf(options)
       if (remote === undefined) return started
       channelLink = remote
-      await registerInbox($)
       runRemoteChannel($, remote).catch(() => {})
       return started
     }
-    await registerInbox($)
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))
     if (publisher === undefined) return started
     const link = { kind: 'publisher', publisher } as const

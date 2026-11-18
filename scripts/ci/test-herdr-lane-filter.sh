@@ -86,9 +86,7 @@ expect true "the join authorizer runs the lane" \
   Sources/localvoxtral/ClaudeContext/TerminalScreenClaudeJoinAuthorizer.swift
 expect true "the saved-machine catalog reader runs the lane" \
   Sources/localvoxtral/ClaudeContext/HerdrMachineFederation.swift
-expect true "the prompt route that types into a herdr pane runs the lane" \
-  Sources/localvoxtralCore/ClaudeContext/HerdrPanePromptRoute.swift
-expect true "the pane focuser that sends pane.focus runs the lane" \
+expect true "the pane focuser that reads herdr's focused pane back runs the lane" \
   Sources/localvoxtralCore/HerdrSessionPaneFocuser.swift
 
 # --- The assumptions themselves -------------------------------------------

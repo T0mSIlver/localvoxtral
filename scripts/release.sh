@@ -18,14 +18,16 @@ set -euo pipefail
 #                                             # a minor release of the newest
 #                                             # main commit the e2e dictation
 #                                             # check passed on, if any
-#   ./scripts/release.sh nightly              # a prerelease of main's head,
-#                                             # on demand, no e2e gate
+#   ./scripts/release.sh rc [ref]             # a release candidate, the next
+#                                             # daily's X.(Y+1).0-rc.N, from
+#                                             # any ref (default main), on
+#                                             # demand, no e2e gate
 #   ./scripts/release.sh rehearse [target] [ref]
 #                                             # every gate, no tag, no
 #                                             # release: the artifacts land on
 #                                             # the run instead. Any ref.
 #                                             # target defaults to patch and
-#                                             # may be daily or nightly.
+#                                             # may be daily or rc.
 #   ./scripts/release.sh publish <tag>        # finish a release whose
 #                                             # publish step failed after
 #                                             # tagging, from that run's
@@ -33,7 +35,7 @@ set -euo pipefail
 #   ./scripts/release.sh --dry-run ...        # check, print what would be
 #                                             # dispatched, dispatch nothing
 #
-# A stable release (every form but daily, nightly and rehearse) needs the
+# A stable release (every form but daily, rc and rehearse) needs the
 # e2e dictation check to have passed on the release commit. That check
 # (scripts/e2e-dictation.sh) is the only one where the packaged app dictates
 # into another app's window; it holds the owner's Mac and keyboard, so it
@@ -45,7 +47,7 @@ set -euo pipefail
 # does not check it.
 #
 # The channels: stable and daily follow GitHub's /releases/latest; stable is
-# cut by hand, daily by the cron. nightly is a prerelease of main that never
+# cut by hand, daily by the cron. rc is a prerelease, from any ref, that never
 # touches that pointer. Same pipeline, same gates.
 
 DRY_RUN=false
@@ -103,7 +105,7 @@ REF="${2:-main}"
 
 DISPATCH_ARGS=()
 case "$ARG" in
-  daily|nightly)
+  daily|rc)
     DISPATCH_ARGS=(-f "channel=$ARG") ;;
   patch|minor|major)
     DISPATCH_ARGS=(-f channel=stable -f "bump=$ARG") ;;
@@ -111,15 +113,15 @@ case "$ARG" in
     if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
       DISPATCH_ARGS=(-f channel=stable -f "version=$ARG")
     else
-      echo "Usage: $0 [--dry-run] [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|daily|nightly] | $0 [--dry-run] rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|daily|nightly] [ref]" >&2
+      echo "Usage: $0 [--dry-run] [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|daily|rc [ref]] | $0 [--dry-run] rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|daily|rc] [ref]" >&2
       exit 1
     fi
     ;;
 esac
 DISPATCH_ARGS+=(-f "publish=$PUBLISH")
 
-if [[ ( "$ARG" == "daily" || "$ARG" == "nightly" ) && "$PUBLISH" == "true" && "$REF" != "main" ]]; then
-  echo "$ARG releases publish from main only. Use 'rehearse $ARG $REF' to exercise the pipeline from that ref." >&2
+if [[ "$ARG" == "daily" && "$PUBLISH" == "true" && "$REF" != "main" ]]; then
+  echo "daily releases publish from main only. Use 'rehearse daily $REF' to exercise the pipeline from that ref." >&2
   exit 1
 fi
 
@@ -129,7 +131,7 @@ fi
 E2E_STEP="E2E dictation scored"
 
 GATE_E2E=false
-if [[ "$PUBLISH" == "true" && "$ARG" != "daily" && "$ARG" != "nightly" ]]; then
+if [[ "$PUBLISH" == "true" && "$ARG" != "daily" && "$ARG" != "rc" ]]; then
   GATE_E2E=true
 fi
 RELEASE_SHA=""
@@ -158,7 +160,7 @@ if $GATE_E2E; then
 else
   case "$ARG" in
     daily) echo "e2e dictation check: the workflow picks a commit that passed it" ;;
-    *) echo "e2e dictation check: not required for a nightly or a rehearsal" ;;
+    *) echo "e2e dictation check: not required for an rc or a rehearsal" ;;
   esac
 fi
 
@@ -209,7 +211,7 @@ echo "Watching run $RUN_ID (Ctrl+C detaches; the release continues remotely)"
 gh run watch "$RUN_ID" --exit-status
 if [[ "$PUBLISH" != "true" ]]; then
   echo "Rehearsal done. Artifacts: https://github.com/T0mSIlver/localvoxtral/actions/runs/$RUN_ID"
-elif [[ "$ARG" == "nightly" || "$ARG" == "daily" ]]; then
+elif [[ "$ARG" == "rc" || "$ARG" == "daily" ]]; then
   # A daily run with nothing to ship ends green without a release; its
   # summary says why.
   echo "Done. Releases: https://github.com/T0mSIlver/localvoxtral/releases (run $RUN_ID's summary says what shipped)"

@@ -47,6 +47,15 @@ struct ConnectionSettingsPane: View {
         )
     }
 
+    /// Empty is Auto. A stored language this model doesn't take shows as Auto,
+    /// which is what its sessions send.
+    private var dictationLanguageBinding: Binding<String> {
+        Binding(
+            get: { settings.sessionDictationLanguage ?? "" },
+            set: { settings.dictationLanguage = $0 }
+        )
+    }
+
     private var mistralDictationModelEntries: [MistralModelPickerEntry] {
         MistralModelCatalog.pickerEntries(
             for: .dictation,
@@ -171,6 +180,21 @@ struct ConnectionSettingsPane: View {
                         .pickerStyle(.menu)
                         .labelsHidden()
                         .accessibilityIdentifier("engines.dictation.managedModel")
+                    }
+
+                    let languages = settings.dictationModelCapabilities.languages
+                    if !languages.isEmpty {
+                        SettingsFieldRow(title: "Language") {
+                            Picker("", selection: dictationLanguageBinding) {
+                                Text("Auto").tag("")
+                                ForEach(SpeechModelPickerSupport.languageEntries(languages), id: \.code) { entry in
+                                    Text(entry.name).tag(entry.code)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .accessibilityIdentifier("engines.dictation.language")
+                        }
                     }
 
                     ManagedBackendStatusRow(

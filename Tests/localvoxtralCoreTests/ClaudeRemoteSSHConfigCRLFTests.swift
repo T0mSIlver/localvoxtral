@@ -89,7 +89,6 @@ final class ClaudeRemoteSSHConfigCRLFTests: XCTestCase {
     func testTheReadersSeeTheBlockInACRLFConfig() {
         let (service, _) = service(config: enrolledCRLFConfig(remoteForwardPort: 28_542))
 
-        XCTAssertEqual(service.sshConfigForwardState(hostID: host.id), .forwards(28_542))
         XCTAssertEqual(
             service.sshConfigBlockIsCurrent(snippet: snippet(remoteForwardPort: 28_542), hostID: host.id),
             true

@@ -600,15 +600,6 @@ final class OnboardingViewModelTests: XCTestCase {
 
     // MARK: - Terminal actions
 
-    func testFinish_completesAndCloses() {
-        let (model, settings, _, closeCount, _) = makeModel()
-
-        model.finish()
-
-        XCTAssertTrue(settings.onboardingCompleted)
-        XCTAssertEqual(closeCount(), 1)
-    }
-
     func testSkip_completesAndCloses() {
         let (model, settings, _, closeCount, _) = makeModel()
 

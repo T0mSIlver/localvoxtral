@@ -18,6 +18,30 @@ final class TranscriptAccumulatorTests: XCTestCase {
         XCTAssertEqual(transcript.currentDictationEventText, "")
     }
 
+    /// The bundled speech helper's deltas settle once whitespace follows
+    /// them: a sentence end at the very end can still grow ("3." then "5").
+    func testStreamedTextSettlesUpToItsLastWhitespace() {
+        var transcript = TranscriptAccumulator()
+        XCTAssertNil(transcript.settledStreamedText)
+        transcript.appendPartial(" Version 3.")
+        XCTAssertEqual(transcript.settledStreamedText, "Version")
+        transcript.appendPartial("5 ships")
+        XCTAssertEqual(transcript.settledStreamedText, "Version 3.5")
+        transcript.appendPartial(" today.")
+        XCTAssertEqual(transcript.settledStreamedText, "Version 3.5 ships")
+        transcript.appendPartial(" And")
+        XCTAssertEqual(transcript.settledStreamedText, "Version 3.5 ships today.")
+    }
+
+    /// Once a final lands, finals settle the dictation event, not deltas.
+    func testStreamedTextStopsSettlingOnceAFinalLands() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial(" first part. ")
+        _ = transcript.applyFinal(" first part.")
+        transcript.appendPartial(" second part. ")
+        XCTAssertNil(transcript.settledStreamedText)
+    }
+
     // MARK: - Finals and the live insertion
 
     func testDisjointFinalJoinsBufferedTextWithASpace() {
@@ -169,6 +193,42 @@ final class TranscriptAccumulatorTests: XCTestCase {
 
         XCTAssertNil(transcript.promotePendingToLatestSegment())
         XCTAssertEqual(transcript, before)
+    }
+
+    // A reconnect promotes the partial, and the new socket's text opens on a
+    // space. A word before the boundary that is a prefix of the word after it
+    // ("be | better") is not an overlap.
+    func testAWordThatPrefixesTheNextSocketsFirstWordIsKept() {
+        let specimens: [(before: String, after: [String], final: String, expected: String)] = [
+            ("I think it would be", [" better", " to wait."], "better to wait.",
+             "I think it would be better to wait."),
+            ("We can do this on", [" one", " machine."], "one machine.",
+             "We can do this on one machine."),
+            ("Let's go back to the", [" the", " plan."], "the plan.",
+             "Let's go back to the plan."),
+        ]
+        for specimen in specimens {
+            var transcript = TranscriptAccumulator()
+            transcript.appendPartial(specimen.before)
+            _ = transcript.promotePendingToLatestSegment()
+            for delta in specimen.after {
+                transcript.appendPartial(delta)
+            }
+            _ = transcript.applyFinal(specimen.final)
+            XCTAssertEqual(transcript.currentDictationEventText, specimen.expected)
+        }
+    }
+
+    func testASecondReconnectKeepsAWordThatPrefixesTheNextOne() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("I think it would be")
+        _ = transcript.promotePendingToLatestSegment()
+        transcript.appendPartial(" better")
+        transcript.appendPartial(" to")
+        _ = transcript.promotePendingToLatestSegment()
+        transcript.appendPartial(" today.")
+        _ = transcript.promotePendingToLatestSegment()
+        XCTAssertEqual(transcript.currentDictationEventText, "I think it would be better to today.")
     }
 
     // MARK: - Resets and the popover transcript

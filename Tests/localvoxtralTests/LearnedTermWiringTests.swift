@@ -47,7 +47,7 @@ final class LearnedTermWiringTests: XCTestCase {
     /// `polishAndCommitTask`, so the commit is awaited before anything is read.
     private func commit(_ viewModel: DictationViewModel, text: String) async {
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = text
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         XCTAssertNotNil(
@@ -85,8 +85,7 @@ final class LearnedTermWiringTests: XCTestCase {
     func testPreAppliedSpellingIsRemembered() async {
         let (viewModel, store) = makeViewModel(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
             )
         )
 
@@ -107,13 +106,12 @@ final class LearnedTermWiringTests: XCTestCase {
         let polishing = BlockingMockLLMPolishingService()
         let (viewModel, store) = makeViewModel(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
             ),
             service: polishing
         )
         viewModel.session.sessionOutputMode = .overlayBuffer
-        viewModel.isFinalizingStop = true
+        viewModel.phase = .finalizing
         viewModel.transcript.currentDictationEventText = "open useauth.ts please"
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
         let commitTask = viewModel.session.polishAndCommitTask
@@ -133,7 +131,6 @@ final class LearnedTermWiringTests: XCTestCase {
         let (viewModel, store) = makeViewModel(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
                 entries: [],
-                isFallbackOnly: false,
                 verificationCandidates: [
                     ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use off"])
                 ]
@@ -151,8 +148,7 @@ final class LearnedTermWiringTests: XCTestCase {
     func testTermIsRememberedUnderTheResolvedRepository() async {
         let (viewModel, store) = makeViewModel(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
             ),
             repositoryRoot: "/Users/t/work/localvoxtral"
         )
@@ -177,8 +173,7 @@ final class LearnedTermWiringTests: XCTestCase {
     func testSecondDictationConfirmsTheSameTerm() async {
         let (viewModel, store) = makeViewModel(
             outcome: RepoVocabularyMatcher.GroundingOutcome(
-                entries: [ReplacementEntry(replaceWith: "polishd", matches: ["polish d"])],
-                isFallbackOnly: false
+                entries: [ReplacementEntry(replaceWith: "polishd", matches: ["polish d"])]
             )
         )
 

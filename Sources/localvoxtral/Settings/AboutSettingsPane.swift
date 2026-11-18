@@ -4,6 +4,13 @@ import SwiftUI
 struct AboutSettingsPane: View {
     let settings: SettingsStore
     let viewModel: DictationViewModel
+    @Bindable private var updates: AppUpdateModel
+
+    init(settings: SettingsStore, viewModel: DictationViewModel) {
+        self.settings = settings
+        self.viewModel = viewModel
+        self.updates = viewModel.updates
+    }
 
     private var appName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
@@ -29,6 +36,21 @@ struct AboutSettingsPane: View {
 
                 SettingsFieldRow(title: "Version") {
                     Text("\(appVersion) (build \(appBuild))")
+                }
+
+                if updates.isAvailable {
+                    SettingsFieldRow(title: "Install updates automatically") {
+                        Toggle("", isOn: $updates.installsAutomatically)
+                            .labelsHidden()
+                            .accessibilityIdentifier("settings.about.installUpdatesAutomatically")
+                    }
+
+                    SettingsFieldRow(title: "Updates") {
+                        Button("Check for Updates…") {
+                            updates.checkForUpdates()
+                        }
+                        .accessibilityIdentifier("settings.about.checkForUpdates")
+                    }
                 }
 
                 SettingsFieldRow(title: "Project") {

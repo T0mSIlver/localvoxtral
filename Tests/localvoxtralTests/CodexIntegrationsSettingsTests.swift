@@ -3,6 +3,7 @@ import Foundation
 import Synchronization
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// The Codex pane: its dot turns green only after a Codex hook reached the
 /// app, because Codex skips an untrusted hook silently (#716).

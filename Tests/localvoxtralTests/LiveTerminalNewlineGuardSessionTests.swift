@@ -139,7 +139,7 @@ final class LiveTerminalNewlineGuardSessionTests: XCTestCase {
         viewModel.session.applyPreCapturedSessionTargetVerdict()
 
         viewModel.session.sessionOutputMode = .liveAutoPaste
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.session.configureLiveAutoPasteReplacementCorrectorForSession()
         return viewModel
     }

@@ -9,6 +9,62 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         try await super.tearDown()
     }
 
+    /// Auto-copy replaces the clipboard with the trimmed text. A Cmd+V paste
+    /// reads the pasteboard after it is posted, so the copy waits for the paste to settle.
+    func testAutoCopyWaitsForTheCommandVPasteSoTheLeadingSpaceSurvives() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        var copiedTexts: [String] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: MockOverlayAnchorResolver(),
+            copyToPasteboard: { copiedTexts.append($0); return true }
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.pasteResult = true
+        committer.pasteIsPending = true
+        var destination = OverlayCommitDestination.keyboard(committer)
+        destination.leadingSpace = true
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "next sentence", commitBufferText: "next sentence")
+        let outcome = coordinator.commitIfNeeded(into: destination, autoCopyEnabled: true)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(committer.pastedTexts, [" next sentence"])
+        XCTAssertEqual(copiedTexts, [], "the clipboard still holds the pasted text")
+
+        committer.settlePastes()
+        XCTAssertEqual(copiedTexts, ["next sentence"])
+    }
+
+    /// A failed commit's copy also waits for a paste still pending from an
+    /// earlier commit, or that paste would read this commit's text (LVX-97).
+    func testAFailedCommitsCopyWaitsForAnEarlierPendingPaste() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        var copiedTexts: [String] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: MockOverlayAnchorResolver(),
+            copyToPasteboard: { copiedTexts.append($0); return true }
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.pasteIsPending = true  // commit A's Cmd+V awaits its restore
+        committer.insertResult = .failed
+        committer.pasteResult = false
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "second commit", commitBufferText: "second commit")
+        let outcome = coordinator.commitIfNeeded(into: .keyboard(committer), autoCopyEnabled: true)
+
+        guard case .failed = outcome else { return XCTFail("expected a failed commit, got \(outcome)") }
+        XCTAssertEqual(copiedTexts, [], "the clipboard still holds the earlier paste's text")
+
+        committer.settlePastes()
+        XCTAssertEqual(copiedTexts, ["second commit"])
+    }
+
     // MARK: - Secure Keyboard Entry at commit time (#89)
 
     func testCommitUnderSecureInputSkipsInsertionAndCopiesToClipboard() {
@@ -636,6 +692,9 @@ private final class MockOverlayTextCommitter: OverlayKeyboardInserting {
     var isAccessibilityTrusted = true
     var insertResult: TextInsertResult = .failed
     var pasteResult = false
+    /// A paste is awaiting its restore: clipboard writes are held until `settlePastes()`.
+    var pasteIsPending = false
+    private var heldClipboardWrite: (@MainActor () -> Void)?
 
     var insertedTexts: [String] = []
     var pastedTexts: [String] = []
@@ -652,5 +711,20 @@ private final class MockOverlayTextCommitter: OverlayKeyboardInserting {
         pastedTexts.append(text)
         pastePreferredPIDs.append(preferredAppPID)
         return pasteResult
+    }
+
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void) {
+        if pasteIsPending {
+            heldClipboardWrite = write
+        } else {
+            write()
+        }
+    }
+
+    func settlePastes() {
+        pasteIsPending = false
+        let write = heldClipboardWrite
+        heldClipboardWrite = nil
+        write?()
     }
 }

@@ -323,6 +323,7 @@ package struct StoredClaudeSessions: Codable, Sendable {
         package var cmuxSocketPath: String?
         package var bridgeSessionID: String?
         package var desktopSessionID: String?
+        package var t3ThreadID: String?
         package var tmux: String?
         package var tmuxPane: String?
         package var screenSession: String?
@@ -340,6 +341,7 @@ package struct StoredClaudeSessions: Codable, Sendable {
             cmuxSocketPath = value.cmuxSocketPath
             bridgeSessionID = value.bridgeSessionID
             desktopSessionID = value.desktopSessionID
+            t3ThreadID = value.t3ThreadID
             tmux = value.tmux
             tmuxPane = value.tmuxPane
             screenSession = value.screenSession
@@ -359,6 +361,7 @@ package struct StoredClaudeSessions: Codable, Sendable {
                 cmuxSocketPath: cmuxSocketPath,
                 bridgeSessionID: bridgeSessionID,
                 desktopSessionID: desktopSessionID,
+                t3ThreadID: t3ThreadID,
                 tmux: tmux,
                 tmuxPane: tmuxPane,
                 screenSession: screenSession,

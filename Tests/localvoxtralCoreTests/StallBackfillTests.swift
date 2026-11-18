@@ -79,15 +79,99 @@ final class StallBackfillTests: XCTestCase {
             "we should ship it tonight then archive every session and then start fresh tomorrow.")
     }
 
-    func testABackfillForACommittedSegmentIsDropped() {
+    /// A stop right after a stall: the final closes the segment before the
+    /// batch reply is back (LVX-75). The words still land in that segment,
+    /// and the next one is left alone.
+    func testABackfillAnsweringAfterTheFinalLandsInTheSegmentItClosed() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("we should ship it tonight")
+        let mark = transcript.stallMark()
+        transcript.appendPartial(" and then start fresh")
+        _ = transcript.applyFinal("we should ship it tonight and then start fresh.")
+        transcript.appendPartial(" new segment")
+
+        XCTAssertEqual(
+            transcript.spliceBackfill("ship it tonight then archive every session and then", at: mark),
+            "then archive every session")
+        let spliced = "we should ship it tonight then archive every session and then start fresh."
+        XCTAssertEqual(transcript.currentDictationEventText, spliced)
+        XCTAssertEqual(transcript.lastFinalSegment, spliced)
+        XCTAssertEqual(transcript.transcriptText, spliced)
+        XCTAssertEqual(transcript.pendingSegmentText, " new segment")
+    }
+
+    /// Two stalls of the segment the stop closed, both answering after it.
+    func testTwoBackfillsAnsweringAfterTheFinalBothLand() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("alpha beta")
+        let first = transcript.stallMark()
+        transcript.appendPartial(" gamma delta")
+        let second = transcript.stallMark()
+        transcript.appendPartial(" epsilon")
+        _ = transcript.applyFinal("alpha beta gamma delta epsilon")
+
+        XCTAssertNotNil(transcript.spliceBackfill("gamma delta two three", at: second))
+        XCTAssertNotNil(transcript.spliceBackfill("alpha beta one", at: first))
+        XCTAssertEqual(transcript.currentDictationEventText, "alpha beta one gamma delta two three epsilon")
+    }
+
+    /// The final added a word past the deltas; the late backfill hears it too
+    /// and must not insert it a second time (review finding).
+    func testALateBackfillDoesNotRepeatWhatTheFinalAdded() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("hello world")
+        let mark = transcript.stallMark()
+        _ = transcript.applyFinal("hello world again")
+
+        XCTAssertNil(transcript.spliceBackfill("hello world again", at: mark))
+        XCTAssertEqual(transcript.currentDictationEventText, "hello world again")
+
+        XCTAssertEqual(transcript.spliceBackfill("hello world big again", at: mark), "big")
+        XCTAssertEqual(transcript.currentDictationEventText, "hello world big again")
+    }
+
+    /// A backend that strips leading spaces: the replay must not read the
+    /// final's added words as a space-prefixed delta and glue the segment
+    /// onto the one before (review finding).
+    func testALateBackfillKeepsTheSegmentApartFromTheOneBefore() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("previous")
+        _ = transcript.applyFinal("previous")
+        transcript.appendPartial("hello world")
+        let mark = transcript.stallMark()
+        _ = transcript.applyFinal("hello world again")
+        let beforeBackfill = transcript.currentDictationEventText
+
+        XCTAssertEqual(transcript.spliceBackfill("hello world big again", at: mark), "big")
+        XCTAssertEqual(
+            transcript.currentDictationEventText,
+            beforeBackfill.replacingOccurrences(of: "hello world again", with: "hello world big again"))
+    }
+
+    func testABackfillForAnOlderSegmentIsDropped() {
         var transcript = TranscriptAccumulator()
         transcript.appendPartial("we should ship it tonight")
         let mark = transcript.stallMark()
         _ = transcript.applyFinal("we should ship it tonight")
         transcript.appendPartial(" new segment")
+        _ = transcript.applyFinal(" new segment")
 
         XCTAssertNil(transcript.spliceBackfill("ship it tonight then archive", at: mark))
-        XCTAssertEqual(transcript.pendingSegmentText, " new segment")
+        XCTAssertEqual(transcript.currentDictationEventText, "we should ship it tonight new segment")
+    }
+
+    /// Once the stop rewrote the text (the second pass, the dictionary), a
+    /// late backfill has nothing left to line up with.
+    func testABackfillAfterTheTextWasRewrittenIsDropped() {
+        var transcript = TranscriptAccumulator()
+        transcript.appendPartial("we should ship it tonight")
+        let mark = transcript.stallMark()
+        transcript.appendPartial(" and then start fresh")
+        _ = transcript.applyFinal("we should ship it tonight and then start fresh")
+        transcript.currentDictationEventText = "We ship tonight, then start fresh."
+
+        XCTAssertNil(transcript.spliceBackfill("ship it tonight then archive every session and then", at: mark))
+        XCTAssertEqual(transcript.currentDictationEventText, "We ship tonight, then start fresh.")
     }
 
     /// After a reconnect committed the text before the stall, the lead

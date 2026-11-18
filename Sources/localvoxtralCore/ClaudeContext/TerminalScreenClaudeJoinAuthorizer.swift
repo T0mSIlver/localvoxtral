@@ -87,6 +87,13 @@ package struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAu
                 "Claude Desktop join cannot authorize raw screen attachment; withheld"
             )
             return false
+        case .t3Thread:
+            // T3 Code's window shows the whole thread, its terminal and its
+            // browser. Session/repository context only, as for Claude Desktop.
+            Log.claudeContext.info(
+                "T3 Code join cannot authorize raw screen attachment; withheld"
+            )
+            return false
         }
         // The join must be about THIS pane. A join resolved for one target
         // says nothing about another, and a recycled PID must not inherit the

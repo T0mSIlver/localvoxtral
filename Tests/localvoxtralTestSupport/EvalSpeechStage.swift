@@ -12,15 +12,34 @@ import localvoxtralCore
 /// exists only on macOS; on Linux the audio comes from a recorded set.
 package enum EvalSpeechStage {
     package struct Failure: Error, CustomStringConvertible {
+        /// How an utterance failed, in words a log may hold: unlike
+        /// `description`, it never carries a server's message (LVX-109).
+        package enum Kind: String, Sendable {
+            case noAnswer = "no final transcript in time"
+            case socketError = "socket error"
+            case emptyFinal = "empty final transcript"
+            case other = "other"
+        }
+
         package let description: String
         /// The service never answered: a socket error or no final transcript
         /// within the timeout. An empty transcript is an answer.
         package let serviceStalled: Bool
+        package let kind: Kind
 
-        package init(_ description: String, serviceStalled: Bool = false) {
+        package init(_ description: String, serviceStalled: Bool = false, kind: Kind = .other) {
             self.description = description
             self.serviceStalled = serviceStalled
+            self.kind = kind
         }
+    }
+
+    /// What a log of user audio may say about a failed utterance: the speech
+    /// stage's failure kind, or the error's type for anything else. Never the
+    /// error's message, which can echo the request.
+    package static func logSafeSummary(of error: any Error) -> String {
+        if let failure = error as? Failure { return "speech stage, \(failure.kind.rawValue)" }
+        return String(describing: type(of: error))
     }
 
     /// Ends a live eval once the STT service stops answering. Each utterance
@@ -347,7 +366,8 @@ package enum EvalSpeechStage {
         let errors = socketErrors.snapshot()
         if !errors.isEmpty {
             throw Failure(
-                "realtime socket error: \(errors.joined(separator: " | "))", serviceStalled: true
+                "realtime socket error: \(errors.joined(separator: " | "))", serviceStalled: true,
+                kind: .socketError
             )
         }
         if allowsEmptyTranscript, !finalized.snapshot().isEmpty {
@@ -355,10 +375,11 @@ package enum EvalSpeechStage {
         }
         if !answered {
             throw Failure(
-                "no final transcript within \(Int(timeout))s from \(endpoint.url)", serviceStalled: true
+                "no final transcript within \(Int(timeout))s from \(endpoint.url)", serviceStalled: true,
+                kind: .noAnswer
             )
         }
-        throw Failure("empty final transcript from \(endpoint.url)")
+        throw Failure("empty final transcript from \(endpoint.url)", kind: .emptyFinal)
     }
 }
 

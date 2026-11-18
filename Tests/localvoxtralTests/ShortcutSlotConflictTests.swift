@@ -106,7 +106,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
             "the key cannot be registered twice, so the slot it came from is cleared"
         )
         XCTAssertEqual(
-            shortcuts.hotKeyManager.debugCurrentRegistrationKind,
+            shortcuts.hotKeyManager.registration,
             .dual(overlay: true, livePaste: false),
             "the move re-registers — settings alone would leave the old hotkey live"
         )
@@ -123,7 +123,7 @@ final class ShortcutSlotConflictTests: XCTestCase {
         XCTAssertEqual(shortcuts.settings.livePasteShortcut, bareF13)
         XCTAssertNil(shortcuts.settings.overlayBufferShortcut)
         XCTAssertEqual(
-            shortcuts.hotKeyManager.debugCurrentRegistrationKind,
+            shortcuts.hotKeyManager.registration,
             .dual(overlay: false, livePaste: true)
         )
     }

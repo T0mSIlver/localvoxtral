@@ -23,30 +23,16 @@ final class SameOriginHTTPTests: XCTestCase {
 
     /// `configured` answers 307 to `elsewhere`, a different port and so a
     /// different origin.
-    private func redirectPair() throws -> (configured: FakeOpencodePromptRelay, elsewhere: FakeOpencodePromptRelay, hits: Hits) {
+    private func redirectPair() throws -> (configured: FakeLoopbackHTTPServer, elsewhere: FakeLoopbackHTTPServer, hits: Hits) {
         let hits = Hits()
-        let elsewhere = try FakeOpencodePromptRelay(status: { _ in hits.record() })
+        let elsewhere = try FakeLoopbackHTTPServer(status: { _ in hits.record() })
         let target = "http://127.0.0.1:\(elsewhere.port)/v1/chat/completions"
-        let configured = try FakeOpencodePromptRelay(status: { _ in 307 }, location: { _ in target })
+        let configured = try FakeLoopbackHTTPServer(status: { _ in 307 }, location: { _ in target })
         addTeardownBlock {
             configured.stop()
             elsewhere.stop()
         }
         return (configured, elsewhere, hits)
-    }
-
-    func testFirstDraftRedirectCannotCarryCaptureToAnotherOrigin() async throws {
-        let (configured, _, hits) = try redirectPair()
-        let drafter = QuickCaptureFirstDrafter(configuration: LLMPolishingConfiguration(
-            endpointURL: URL(string: "http://127.0.0.1:\(configured.port)/v1/chat/completions")!,
-            apiKey: "", model: "m"
-        ))
-
-        _ = await drafter.firstDraft(capture: "dictated text", projectName: "p", context: QuickCaptureContext())
-
-        let reached = await configured.waitForCalls(1)
-        XCTAssertTrue(reached, "the configured endpoint got the request")
-        XCTAssertEqual(hits.value, 0, "the redirect target got nothing")
     }
 
     func testBatchTranscriptionRedirectCannotCarryAudioToAnotherOrigin() async throws {
@@ -75,7 +61,7 @@ final class SameOriginHTTPTests: XCTestCase {
     }
 
     func testRedirectWithinTheOriginIsFollowed() async throws {
-        let server = try FakeOpencodePromptRelay(
+        let server = try FakeLoopbackHTTPServer(
             status: { $0.path == "/old" ? 307 : 200 },
             location: { $0.path == "/old" ? "/new" : nil }
         )

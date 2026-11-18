@@ -185,7 +185,7 @@ package enum SocketPaneScreenContext {
             return await resolver.herdrPaneVisibleText(for: join)
         case .cmuxSurface:
             return await resolver.cmuxSurfaceVisibleText(for: join)
-        case .ttyDevice, .browserTab, .desktopSession, .remoteSSHConnection, .remoteLocalTTY:
+        case .ttyDevice, .browserTab, .desktopSession, .t3Thread, .remoteSSHConnection, .remoteLocalTTY:
             // A browser tab or a Claude Desktop window has no pane socket to
             // read, and no verified screen route of any kind — their joins buy
             // session/repository context only.

@@ -23,6 +23,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         var onInputDevicesChanged: (@Sendable () -> Void)?
         var onError: (@Sendable (String) -> Void)?
         var chunkHandler: MicrophoneCaptureService.ChunkHandler?
+        var fullQualityChunkHandler: MicrophoneCaptureService.FullQualityChunkHandler?
         var startWaiters: [BoundedWait] = []
     }
 
@@ -77,6 +78,19 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
             return false
         }
         handler(chunk)
+        return true
+    }
+
+    /// Hands `chunk` to the running capture's full-quality handler, as the
+    /// capture tap would at a device running at `sampleRate`. False, and
+    /// nothing delivered, when no capture runs or it was started without
+    /// one: a session that keeps no full-quality audio asks for none.
+    @discardableResult
+    func deliverFullQuality(_ chunk: Data, sampleRate: Int) -> Bool {
+        guard let handler = state.withLock({ $0.isCapturing ? $0.fullQualityChunkHandler : nil }) else {
+            return false
+        }
+        handler(chunk, sampleRate)
         return true
     }
 
@@ -155,6 +169,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
     func start(
         preferredDeviceID: String?,
         preferredInputChannel: Int,
+        fullQualityChunkHandler: MicrophoneCaptureService.FullQualityChunkHandler? = nil,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
     ) throws {
         let waiters = state.withLock { state -> [BoundedWait] in
@@ -162,6 +177,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
             state.isCapturing = true
             state.capturingDeviceID = preferredDeviceID
             state.chunkHandler = chunkHandler
+            state.fullQualityChunkHandler = fullQualityChunkHandler
             let waiters = state.startWaiters
             state.startWaiters = []
             return waiters
@@ -175,6 +191,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
             $0.isCapturing = false
             $0.capturingDeviceID = nil
             $0.chunkHandler = nil
+            $0.fullQualityChunkHandler = nil
         }
     }
 

@@ -79,31 +79,6 @@ package protocol HerdrPaneQuerying: Sendable {
     func paneVisibleText(socketPath: String, paneID: String) async -> String?
 }
 
-/// The two calls that write into a herdr pane (#726), and nothing else: no
-/// `pane.run`, no other key. Wire shapes from herdr 0.9.0
-/// (`src/api/schema/panes.rs`, `src/app/api/panes.rs`). Read
-/// docs/agent/invariants.md ("The app writes into an agent only through
-/// three routes") before adding a third.
-package protocol HerdrPaneWriting: Sendable {
-    /// `pane.send_text`: the bytes of `text` into the pane's input, as-is.
-    /// herdr applies no bracketed paste to it, so the caller must never pass
-    /// a control character.
-    func sendText(socketPath: String, paneID: String, text: String) async -> HerdrWriteOutcome
-    /// `pane.send_keys` with exactly `["enter"]`.
-    func pressEnter(socketPath: String, paneID: String) async -> HerdrWriteOutcome
-}
-
-/// The one write session navigation makes (#1012; owner ruling on #1012,
-/// 2026-09-28): focus the pane of the session the user asked to reach.
-/// herdr switches workspace and tab itself, and focus is per server, so every
-/// attached client follows. The caller confirms by reading the focus back
-/// (`HerdrPaneQuerying.focusedPane`); the answer alone never is.
-package protocol HerdrPaneFocusing: Sendable {
-    /// `pane.focus {pane_id}`. `.ok` only for herdr's `pane_info` answer
-    /// naming that pane as focused.
-    func focusPane(socketPath: String, paneID: String) async -> HerdrWriteOutcome
-}
-
 package enum HerdrWriteOutcome: Sendable, Equatable {
     /// herdr answered this request with `ok`.
     case ok
@@ -116,15 +91,14 @@ package enum HerdrWriteOutcome: Sendable, Equatable {
 }
 
 /// Minimal capability-bounded client for herdr's one-request-per-connection
-/// JSON API. Reads are limited to the focused/joined pane; the mutations are
-/// the short-lived `lvmark` panel token used by remote surface authorization,
-/// the two `HerdrPaneWriting` calls, which only the dictation's herdr route
-/// makes, and navigation's `pane.focus` (`HerdrPaneFocusing`).
+/// JSON API. Reads are limited to the focused/joined pane; the one mutation
+/// is the short-lived `lvmark` panel token used by remote surface
+/// authorization.
 ///
 /// Every syscall shares one absolute monotonic deadline. A per-phase timeout
 /// would let a slow connect, write, and response each consume the whole budget,
 /// while a per-read timeout would let a trickling peer retain the task forever.
-package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting, HerdrPaneWriting, HerdrPaneFocusing {
+package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
     /// Per-request observation: method name, latency in seconds, success, and
     /// — on failure only — the server's error (`ErrorBody.logDescription`)
     /// or a local failure cause (`"no-response"`, `"invalid-response"`).
@@ -306,37 +280,6 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
             noteLatency(method: "pane.report_metadata", startNanos: startNanos, success: true, detail: "ok")
             return true
         }.value
-    }
-
-    package func sendText(socketPath: String, paneID: String, text: String) async -> HerdrWriteOutcome {
-        await sendOK(
-            socketPath: socketPath,
-            method: "pane.send_text",
-            params: ["pane_id": paneID, "text": text]
-        )
-    }
-
-    package func pressEnter(socketPath: String, paneID: String) async -> HerdrWriteOutcome {
-        await sendOK(
-            socketPath: socketPath,
-            method: "pane.send_keys",
-            params: PaneSendKeysParams(paneID: paneID, keys: ["enter"])
-        )
-    }
-
-    package func focusPane(socketPath: String, paneID: String) async -> HerdrWriteOutcome {
-        await sendOK(
-            socketPath: socketPath,
-            method: "pane.focus",
-            params: ["pane_id": paneID],
-            accept: { line, requestID in
-                guard let envelope = try? JSONDecoder().decode(Envelope<PaneInfoResult>.self, from: line),
-                      envelope.id == requestID,
-                      let result = envelope.result
-                else { return false }
-                return result.type == "pane_info" && result.pane.paneID == paneID && result.pane.focused
-            }
-        )
     }
 
     /// One write whose only success answer is `ok` (or what `accept` takes

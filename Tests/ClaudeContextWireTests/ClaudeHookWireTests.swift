@@ -207,6 +207,17 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertNil(record.process?.herdrSocketPath)
     }
 
+    /// An opencode plugin from before the prompt relay was removed still sends
+    /// `prompt_relay` on its focus declaration: the record decodes, and the
+    /// declaration stands without it.
+    func testAnOldOpencodeFocusRecordWithAPromptRelayStillDecodes() throws {
+        let relay = #""prompt_relay":{"port":41000,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
+        let record = try ClaudeHookWireCodec.decodeLine(line(
+            #"{"v":2,"event":"FocusChanged","agent":"opencode","session_id":"ses_a","ts":0,"files":[],"process":{"hook_pid":4242,"claude_pid":4242,"tty":"/dev/ttys004"},\#(relay)}"#))
+        XCTAssertEqual(record.event, .focusChanged)
+        XCTAssertEqual(record.process?.tty, "/dev/ttys004")
+    }
+
     func testOldWireLineWithoutHerdrFieldsRemainsCompatible() throws {
         let oldLine = line(
             #"{"event":"SessionStart","process":{"claude_pid":1,"hook_pid":2,"term_program":"ghostty","tty":"device"},"session_id":"old","ts":1,"v":1}"#

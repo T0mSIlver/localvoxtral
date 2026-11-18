@@ -105,7 +105,9 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertFalse(mistral.sendAudioChunk(Data([3, 4])))
     }
 
-    func testRealtimeTerminalErrorSuppressesErrorForUserInitiatedDisconnect() {
+    /// The socket's failure callback lands after `disconnect()` closed it:
+    /// the user's disconnect is the only event.
+    func testRealtimeTerminalErrorAfterUserDisconnectRaisesNothing() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0, from: $1) }
@@ -116,7 +118,8 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        client.debugPrimeConnectedStateForTesting(task: task, isUserInitiatedDisconnect: true)
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.disconnect()
         client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "socket failed")
 
         let after = client.debugStateSnapshot()
@@ -257,6 +260,12 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             lock.unlock()
         }
 
+        func texts(on task: URLSessionWebSocketTask) -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return frames.filter { $0.task === task }.map(\.text)
+        }
+
         /// Each frame's JSON `type`, or its text when it is not JSON.
         func kinds(on task: URLSessionWebSocketTask) -> [String] {
             lock.lock()
@@ -326,6 +335,52 @@ final class WebSocketClientLifecycleTests: XCTestCase {
 
         XCTAssertEqual(secondReplay.kinds(on: task), [], "the late handshake must not race the timer's replay")
         XCTAssertTrue(client.debugStateSnapshot().hasReceivedSessionCreated)
+    }
+
+    // The term list rides the one session.update as `context_bias` (LVX-29),
+    // and only when the model takes terms: a server whose model takes none
+    // (every local and External URL model today) gets the frame it always got.
+
+    func testSessionUpdateCarriesNoContextBiasWhenTheModelTakesNoTerms() {
+        XCTAssertEqual(
+            RealtimeAPIWebSocketClient.sessionUpdateFrame(model: "model", contextBias: []),
+            #"{"model":"model","type":"session.update"}"#
+        )
+    }
+
+    func testSessionUpdateCarriesTheTermListOnTheSocketItWasDialledWith() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(
+            task: task, modelName: "model", contextBias: ["Claude Code", "herdr"])
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(
+            wire.texts(on: task).first,
+            #"{"context_bias":["Claude Code","herdr"],"model":"model","type":"session.update"}"#
+        )
+    }
+
+    /// The dictation language rides the same frame, for a model that takes one
+    /// (Nemotron Unified); a session without one sends the frame it always did.
+    func testSessionUpdateCarriesTheDictationLanguage() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model", language: "fr")
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(
+            wire.texts(on: task).first,
+            #"{"language":"fr","model":"model","type":"session.update"}"#
+        )
     }
 
     // The handshake fallback and the keepalive ping sleep on the session

@@ -212,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "Open localvoxtral at login". Built here so the pane reads the login
     /// item once per launch rather than on every view update.
     let loginItemController = LoginItemController()
+    /// Installs each release while nobody is dictating (LVX-57).
+    private var appUpdater: SparkleAppUpdater?
     /// SwiftUI's own `openSettings`, handed over by the menu bar label
     /// (`SettingsOpenerHandoff`). Nil until the label has appeared.
     var settingsOpener: (@MainActor () -> Void)?
@@ -370,6 +372,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startDogfoodControlSocket()
         #endif
         reconcileBundledConfigDefaults()
+        let updater = SparkleAppUpdater(model: viewModel.updates) { [weak viewModel] in
+            viewModel?.engines.isDictationIdle() ?? true
+        }
+        updater.start()
+        appUpdater = updater
         widgetSnapshotWriter = WidgetSnapshotWriter(viewModel: viewModel)
         widgetSnapshotWriter?.start()
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
@@ -603,9 +610,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
-    /// A herdr pane (#1012): the window found with the join's process-table
-    /// probes, herdr reached over its local socket or the join's `ssh -L`
-    /// forward, the window raised with the terminal focuser's tty path.
+    /// A herdr pane (#1012), read back: the window found with the join's
+    /// process-table probes, herdr reached over its local socket or the
+    /// join's `ssh -L` forward.
     private func liveHerdrFocuser(
         terminal: TerminalSessionPaneFocuser,
         herdrClient: HerdrSocketClient,
@@ -617,6 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sshConnection: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
             federation: { HerdrMachineFederationReader.live().federation() },
             liveLocalHerdrSockets: { [claudeSessionRegistry] in claudeSessionRegistry.liveLocalHerdrSocketPaths() },
+            wholeViewClientSession: { HerdrClientTTYProbe.wholeViewSessionName(onTTYDevicePath: $0) },
             enrolledHosts: { [weak self] destination in
                 self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
             },
@@ -626,7 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         return HerdrSessionPaneFocuser(
-            windowTTY: { await locator.windowTTY(for: $0) },
+            windowShows: { await locator.windowShows($0, tty: $1) },
             openSocket: { [weak self] target in
                 switch target {
                 case .local(_, let socketPath):
@@ -643,20 +651,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return HerdrFocusSocket(path: forward.localSocketPath, release: { forward.close() })
                 }
             },
-            // A write waits longer than a read, like the pane route's.
-            focuser: HerdrSocketClient(timeout: 2),
             panes: herdrClient,
-            raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
             focusedTTY: { await terminal.frontmostTTY(bundleID: $0) },
             paneSessionID: { [claudeSessionRegistry] in claudeSessionRegistry.sessionID(shownIn: $0) }
         )
     }
 
-    /// Claude Desktop's session link, opened in Desktop itself (another app
-    /// may also claim `claude://`), read back through the join's resolver.
+    /// Claude Desktop's focused session view, read back through the join's
+    /// resolver.
     private static func liveClaudeDesktopFocuser(
-        resolver: ClaudeSessionJoinResolver,
-        sleep: @escaping @Sendable (Duration) async -> Void
+        resolver: ClaudeSessionJoinResolver
     ) -> ClaudeDesktopSessionPaneFocuser {
         let runningDesktop = {
             NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeDesktopAllowlist.bundleID).first
@@ -664,21 +668,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ClaudeDesktopSessionPaneFocuser(
             desktopPID: { runningDesktop()?.processIdentifier },
             frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
-            open: { link in
-                guard let appURL = runningDesktop()?.bundleURL else { return false }
-                NSWorkspace.shared.open([link], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-                    if error != nil {
-                        Log.claudeContext.error("go to session: Claude Desktop refused its session link")
-                    }
-                }
-                return true
-            },
             shownSessionID: { pid in
                 await resolver.sessionShown(
                     target: TerminalScreenTarget(pid: pid, bundleID: ClaudeDesktopAllowlist.bundleID)
                 )
-            },
-            sleep: sleep
+            }
         )
     }
 
@@ -691,7 +685,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ttyReader: AppleScriptTerminalTTYReader,
         desktopSessionReader: AXClaudeDesktopSessionURLReader,
         herdrClient: HerdrSocketClient,
-        nicknames: SessionNicknameStore,
         desktopTitles: ClaudeDesktopSessionTitles
     ) {
         let registry = claudeSessionRegistry
@@ -720,8 +713,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AgentAttentionText.name(
                     of: session,
                     among: registry.liveSessions(),
-                    title: desktopTitles.title(of:),
-                    nickname: nicknames.nickname(for:)
+                    title: desktopTitles.title(of:)
                 )
             }
         )
@@ -767,8 +759,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let agentCLI = AgentCLIService(
             source: AgentCLIAppDataSource(
                 viewModel: viewModel,
-                sessions: claudeSessionRegistry,
-                openInbox: { [weak self] in self?.openWindow(on: .inbox) }
+                sessions: claudeSessionRegistry
             )
         )
         let broker = ClaudeContextBroker(
@@ -793,6 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
             let desktopSessionReader = AXClaudeDesktopSessionURLReader()
+            let t3ThreadReader = AXT3CodeThreadURLReader()
             let herdrClient = HerdrSocketClient()
             // The cmux password is read from the Keychain lazily, per query, so
             // a user who never enables the arm is never prompted for keychain
@@ -806,6 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 focusedDesktopSessionURL: {
                     await desktopSessionReader.focusedSessionURL(applicationPID: $0)
                 },
+                focusedT3ThreadURL: { await t3ThreadReader.focusedThreadURL(applicationPID: $0) },
                 focusedWindowID: { TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
@@ -813,9 +806,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrFederation: { HerdrMachineFederationReader.live().federation() },
                 herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
                 herdrPanes: herdrClient,
-                // Writes wait longer than reads: a write that times out after
-                // landing would be typed a second time by the fallback.
-                herdrPaneWriter: HerdrSocketClient(timeout: 2),
                 cmuxSurfaces: CmuxSocketClient(
                     password: { cmuxPasswords.password() },
                     bundleIDOfRunningPID: { CmuxSocketClient.runningBundleID(ofPID: $0) }
@@ -860,20 +850,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel.context.claudeSessionJoinResolver = resolver
             viewModel.context.claudeModChannels = claudeModChannels
             viewModel.session.projectTermProposer?.attachSessionChannels(claudeModChannels)
-            // "Go to <name>" (#723): the same registry and the same
-            // focused-pane reader as the join, so a pane counts as brought
-            // forward by the evidence the join trusts.
-            let nicknames = SessionNicknameStore.userDefaults(AppDefaults.shared, key: "session_navigation.nicknames")
+            // "Send it" reads the joined pane back before it presses Return,
+            // with the same registry and focused-pane reader as the join.
             let desktopTitles = ClaudeDesktopSessionTitles.live()
-            let terminalFocuser = TerminalSessionPaneFocuser.live(ttyReader: ttyReader)
+            let terminalFocuser = TerminalSessionPaneFocuser.live(
+                ttyReader: ttyReader,
+                sessionOnTTY: { [claudeSessionRegistry] tty in
+                    if case .resolved(let snapshot) = claudeSessionRegistry.resolve(tty: tty) {
+                        return snapshot.sessionID
+                    }
+                    return nil
+                }
+            )
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
-                repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: SessionPaneFocuserRouter(
                     terminal: terminalFocuser,
                     claudeDesktop: Self.liveClaudeDesktopFocuser(
-                        resolver: resolver,
-                        sleep: viewModel.session.dependencies.clock.sleep
+                        resolver: resolver
                     ),
                     herdr: liveHerdrFocuser(
                         terminal: terminalFocuser,
@@ -881,17 +875,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         canonicalizer: sshDestinationCanonicalizer
                     )
                 ),
-                sleep: viewModel.session.dependencies.clock.sleep,
-                nicknames: nicknames,
-                branch: { RepoIndexing.branch(root: $0) },
-                title: desktopTitles.title(of:),
                 ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) }
             )
             installAgentAttention(
                 ttyReader: ttyReader,
                 desktopSessionReader: desktopSessionReader,
                 herdrClient: herdrClient,
-                nicknames: nicknames,
                 desktopTitles: desktopTitles
             )
             // Correction learning compares each submitted prompt with the
@@ -1126,21 +1115,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
-        // Quick capture's README summaries and drafts for remote projects
-        // (#745), on the same channel.
-        let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
-            viewModel.learnedTermStore.map {
-                RemoteQuickCaptureRequests(
-                    store: $0, hosts: hosts, registry: claudeSessionRegistry,
-                    usageRecorder: viewModel.engines.usageLedger
-                )
-            }
+        // The projects the hooks name (#819, #1027), and the Projects pane's
+        // hosts and live sessions.
+        let projectReports: RemoteProjectReports? = viewModel.learnedTermStore.map {
+            RemoteProjectReports(store: $0)
         }
-        viewModel.quickCapture?.attachRemote(quickCapture)
-        viewModel.quickCapture?.enrolledHosts = {
+        viewModel.projects?.enrolledHosts = {
             registry?.activeHostsIfReadable().map { (id: $0.id, name: $0.label) } ?? []
         }
-        viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
+        viewModel.projects?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -1165,7 +1148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     store?.record(hostID: hostID, names: names)
                 },
                 projectTerms: projectTerms,
-                quickCapture: quickCapture,
+                projectReports: projectReports,
                 doctor: RemoteDoctorRoute { @MainActor [weak viewModel, claudeSessionRegistry] hostID in
                     guard let viewModel else { return [] }
                     return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
@@ -1173,16 +1156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 // Remote sessions' mods poll through the same hub the local
                 // broker hands attaches to (#1412).
-                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry),
-                inbox: RemoteInboxRoute(
-                    registry: claudeSessionRegistry,
-                    captures: { @MainActor [weak viewModel] in viewModel?.quickCapture?.model.items },
-                    open: { @MainActor [weak viewModel, claudeSessionRegistry] id in
-                        guard let viewModel else { return nil }
-                        return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
-                            .openCapture(id)
-                    }
-                )
+                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry)
             )
         }
         claudeRemoteListenerCoordinator = coordinator
@@ -1295,6 +1269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch maintenance that creates the mirror.
             desiredMarketplacePath: { ClaudeMarketplaceMirror.usableURL()?.path },
             bundledPluginVersion: ClaudePluginAssets.localPluginVersion(),
+            bundledModVersion: ClaudePluginAssets.localPluginVersion(
+                pluginName: ClaudePluginAssets.modPluginName
+            ),
             statuslineService: {
                 ClaudeStatuslineInstallService(
                     fileSystem: LiveClaudeStatuslineFileSystem(),

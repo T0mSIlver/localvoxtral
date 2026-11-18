@@ -646,16 +646,10 @@ enum RepoVocabularyService {
         // The exact term pool matching runs against, which the returned
         // outcome no longer carries — see `DiagnosticCaptureTap`.
         DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(vocabulary.terms)
-        // Carries provenance, not just entries: whether these came from the
-        // exact / edit-distance-one tiers or from the bounded aligned fallback
-        // decides who yields when another context source covers the same heard
-        // span (`PolishContextGrounding`). Collapsing that to a bare array here
-        // is what forced the merge to assume every repo entry was solid.
         let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript, vocabulary: vocabulary
         )
         if outcome.entries.isEmpty,
-           outcome.phoneticEntries.isEmpty,
            outcome.verificationCandidates.isEmpty
         {
             // Static string + no content: the LAST silent skip on this path.

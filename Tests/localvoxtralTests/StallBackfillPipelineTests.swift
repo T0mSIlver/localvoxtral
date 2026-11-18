@@ -48,10 +48,36 @@ final class StallBackfillPipelineTests: XCTestCase {
         XCTAssertEqual(usage.first?.audioSeconds ?? 0, 10.5, accuracy: 1e-9)
 
         // Mistral's done repeats its deltas, without the stalled words.
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.phase = .finalizing
         session.handle(event: .finalTranscript(Self.beforeStall + Self.afterStall))
         session.finishStoppedSession(promotePendingSegment: false)
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(harness.overlay.committedTexts, [Self.spliced])
+        XCTAssertEqual(harness.records.all.map(\.rawText), [Self.spliced])
+    }
+
+    /// The user stops while the stall's batch reply is still out (LVX-75):
+    /// the commit waits for it, and the words it recovers reach the commit.
+    func testAStopRightAfterAStallWaitsForItsBackfill() async {
+        let clock = ManualSessionClock()
+        let transcriber = FakeBatchTranscriber(.delayed(.seconds(1), text: Self.batchText, sleep: clock.clock.sleep))
+        let harness = makeHarness(transcriber: transcriber, clock: clock)
+        let session = harness.viewModel.session
+
+        session.handle(event: .partialTranscript(Self.beforeStall))
+        session.handle(event: .serverStallEnded(Self.stall))
+        session.handle(event: .partialTranscript(Self.afterStall))
+        _ = await transcriber.called.value(failAfter: 10)
+
+        harness.viewModel.phase = .finalizing
+        session.handle(event: .finalTranscript(Self.beforeStall + Self.afterStall))
+        session.finishStoppedSession(promotePendingSegment: false)
+        XCTAssertEqual(harness.overlay.committedTexts, [], "the commit waits for the backfill in flight")
+
+        // The deadline's sleep and the reply's.
+        await clock.waitForSleepers(2)
+        clock.advance(by: 1)
         await awaitStoppedSessionCommit(harness.viewModel)
 
         XCTAssertEqual(harness.overlay.committedTexts, [Self.spliced])
@@ -133,7 +159,7 @@ final class StallBackfillPipelineTests: XCTestCase {
         )
         session.latchSessionAudio(outputMode: .overlayBuffer)
         session.audio.sessionRecording.append(Self.pcm)
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         return Harness(viewModel: viewModel, overlay: overlay, ledger: ledger, records: records)
     }
 }

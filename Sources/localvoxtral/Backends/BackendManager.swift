@@ -129,8 +129,8 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
     /// Callers parked on each shared ensure task. A cancelled caller leaves at
     /// once; the task itself is cancelled only when its last caller leaves, so
-    /// turning voice memos off no longer aborts a dictation start waiting on
-    /// the same helper (#1511).
+    /// one caller leaving no longer aborts a dictation start waiting on the
+    /// same helper (#1511).
     @ObservationIgnored private var ensureWaiters: [Task<Void, Error>: [UUID: CheckedContinuation<Void, Error>]] = [:]
     /// Backend ids whose in-flight ensure is being cancelled BY a pause, so the
     /// download's unwinding knows to land on `.pausedModelDownload` instead of

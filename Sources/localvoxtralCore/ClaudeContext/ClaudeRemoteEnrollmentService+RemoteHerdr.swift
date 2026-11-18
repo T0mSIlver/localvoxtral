@@ -20,22 +20,32 @@ extension ClaudeRemoteEnrollmentService {
               exit 0
             fi
             lv_config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
+            # Single-quoted: the snippet holds no single quote.
+            lv_snippet='\(Self.herdrPanelConfigSnippet)'
+            # The block an earlier run appended, line ends aside: already set
+            # up, and the pattern below would call it customized (#2067).
             if [ -f "$lv_config" ] \\
+              && LV_SNIPPET="$lv_snippet" awk '{ sub(/\\r$/, ""); text = text $0 "\\n" } END { exit !index(text, ENVIRON["LV_SNIPPET"]) }' "$lv_config"; then
+              :
+            elif [ -f "$lv_config" ] \\
               && sed -e 's/#.*//' "$lv_config" | tr -d " \\t\\r\\"'" | grep -Eq '\(Self.herdrAgentsConfigPattern)'; then
               printf '%s\\n' LVX_HERDR_CUSTOMIZED
               exit 42
+            else
+              mkdir -p "$(dirname "$lv_config")"
+              touch "$lv_config"
+              # A last line with no newline would take the table header onto it.
+              # $(...) drops a trailing newline, so it is empty only when the
+              # file is, or already ends with one.
+              if [ -n "$(tail -c 1 "$lv_config")" ]; then printf '\\n' >> "$lv_config"; fi
+              if [ -s "$lv_config" ]; then printf '\\n' >> "$lv_config"; fi
+              printf '%s\\n' "$lv_snippet" >> "$lv_config"
             fi
-            mkdir -p "$(dirname "$lv_config")"
-            touch "$lv_config"
-            # A last line with no newline would take the table header onto it.
-            # $(...) drops a trailing newline, so it is empty only when the
-            # file is, or already ends with one.
-            if [ -n "$(tail -c 1 "$lv_config")" ]; then printf '\\n' >> "$lv_config"; fi
-            if [ -s "$lv_config" ]; then printf '\\n' >> "$lv_config"; fi
-            cat >> "$lv_config" <<'LOCALVOXTRAL_HERDR_PANEL'
-            \(Self.herdrPanelConfigSnippet)
-            LOCALVOXTRAL_HERDR_PANEL
-            herdr server reload-config
+            # No herdr server running fails the reload; the server reads the
+            # file when it next starts.
+            if ! herdr server reload-config >/dev/null 2>&1; then
+              printf '%s\\n' LVX_HERDR_RELOAD_FAILED
+            fi
             printf '%s\\n' LVX_HERDR_CONFIGURED
             """
         guard let runner else { throw ServiceError.executionNotConfigured }
@@ -65,7 +75,14 @@ extension ClaudeRemoteEnrollmentService {
             )
         }
         if result.message.contains("LVX_HERDR_ABSENT") { return .notFound }
-        if result.message.contains("LVX_HERDR_CONFIGURED") { return .configured }
+        if result.message.contains("LVX_HERDR_CONFIGURED") {
+            if result.message.contains("LVX_HERDR_RELOAD_FAILED") {
+                Log.claudeContext.notice(
+                    "Remote herdr panel configured; reload-config failed, so it applies when herdr next starts"
+                )
+            }
+            return .configured
+        }
         throw ServiceError.runnerFailed(
             step: 0,
             command: "configure remote herdr",

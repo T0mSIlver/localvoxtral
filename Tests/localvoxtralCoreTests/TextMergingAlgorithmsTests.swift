@@ -64,6 +64,23 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         }
     }
 
+    func testAppendEventKeepsAWholeWordAfterASegmentsLeadingSpace() {
+        let cases: [(name: String, segment: String, existingText: String, expected: String)] = [
+            ("wordPrefixesTheNextWord", "better to wait.", "it would be", "it would be better to wait."),
+            ("wordPrefixesTheNextWordBeforePunctuation", "one.", "do this on", "do this on one."),
+            ("replayedWholeWordCollapses", "the plan", "back to the", "back to the plan"),
+            ("replayedWordBeforePunctuationCollapses", "the.", "back to the", "back to the."),
+        ]
+        for (name, segment, existingText, expected) in cases {
+            XCTAssertEqual(
+                TextMergingAlgorithms.appendToCurrentDictationEvent(
+                    segment: segment, existingText: existingText, segmentHadLeadingSpace: true),
+                expected,
+                name
+            )
+        }
+    }
+
     func testStartsMidWord() {
         XCTAssertTrue(TextMergingAlgorithms.startsMidWord("e help"))
         XCTAssertTrue(TextMergingAlgorithms.startsMidWord("ng"))
@@ -71,29 +88,6 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         XCTAssertFalse(TextMergingAlgorithms.startsMidWord("Second"))
         XCTAssertFalse(TextMergingAlgorithms.startsMidWord("."))
         XCTAssertFalse(TextMergingAlgorithms.startsMidWord(""))
-    }
-
-    // MARK: - normalizeTranscriptionFormatting
-
-    func testNormalizeFormatting() {
-        let cases: [(name: String, input: String, expected: String)] = [
-            ("compactsTokenizerSpacingArtifacts", "l'  homme  est  ici  -  maintenant", "l'homme est ici-maintenant"),
-            ("punctuationSpacing", "hello , world ! ( test ) [ value ]", "hello, world! (test) [value]"),
-            ("preservesNewlines", "hello\t\tworld\nfoo    bar", "hello world\nfoo bar"),
-            // Italian punctuation characterization (issue #13), see testTailOverlap.
-            // Tokenizer spacing artifact "sparisce ." must collapse to "sparisce.".
-            ("compactsSpaceBeforePeriod_italian", "sparisce .", "sparisce."),
-            // "al , fondo" → "al, fondo" (no relocation of the comma into the word).
-            ("compactsSpaceBeforeComma_italian", "al , fondo", "al, fondo"),
-            // "l' acqua" → "l'acqua" (elision glues without splitting).
-            ("apostropheElision_italian", "l' acqua", "l'acqua"),
-            // A legitimately mid-word period (abbreviation/url) must be preserved
-            // as-is — the normalizer never *inserts* punctuation into a word.
-            ("preservesWordInternalPeriod_italian", "sparisce.al fondo", "sparisce.al fondo"),
-        ]
-        for (name, input, expected) in cases {
-            XCTAssertEqual(TextMergingAlgorithms.normalizeTranscriptionFormatting(input), expected, name)
-        }
     }
 
     // MARK: - longestCommonPrefixLength

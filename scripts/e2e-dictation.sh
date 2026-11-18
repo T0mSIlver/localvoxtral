@@ -578,7 +578,6 @@ HARNESS_DEFAULTS_WRITTEN=1
 defaults delete "$HARNESS_BUNDLE_ID" >/dev/null 2>&1 || true
 if ! defaults write "$HARNESS_BUNDLE_ID" settings.dictation_backend_mode -string external_url \
   || ! defaults write "$HARNESS_BUNDLE_ID" settings.polishing_backend_mode -string external_url \
-  || ! defaults write "$HARNESS_BUNDLE_ID" settings.realtime_provider -string realtime_api \
   || ! defaults write "$HARNESS_BUNDLE_ID" settings.realtime_api_endpoint_url -string "$REALTIME_ENDPOINT" \
   || ! defaults write "$HARNESS_BUNDLE_ID" settings.realtime_api_model_name -string "$REALTIME_MODEL" \
   || ! defaults write "$HARNESS_BUNDLE_ID" settings.llm_polishing_enabled -bool false \

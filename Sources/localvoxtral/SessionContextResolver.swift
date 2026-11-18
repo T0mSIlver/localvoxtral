@@ -42,9 +42,8 @@ final class SessionContextResolver {
     /// polish profile. Set at the one resolution, cleared with the join.
     var claudeProjectFocused = false
     /// The route into the joined agent's prompt, resolved once at start
-    /// next to the join: opencode's prompt relay (#719) or the joined cmux
-    /// surface (#727). Nil unless one
-    /// resolved. Cleared with the join.
+    /// next to the join: the session's mod (#1645) or the joined cmux
+    /// surface (#727). Nil unless one resolved. Cleared with the join.
     var agentPromptRoute: (any AgentPromptRoute)?
     /// Whether this dictation's context join asked the terminal arms, even
     /// if it found no session. A route resolved without a join asks the
@@ -188,53 +187,6 @@ final class SessionContextResolver {
         )
     }
 
-    /// Resolves where this dictation may write instead of typing: the prompt
-    /// relay of the focused opencode pane (#719). Runs after the join. A
-    /// join that resolved answers from its own session and asks no surface
-    /// again; without one, the resolver asks the focused TTY (and, inside a
-    /// local herdr, herdr's focused pane, #733), and only while some opencode
-    /// pane has a relay, so a Mac with none sends no Apple event for it. Needs none of the join's context gates: nothing is read
-    /// here, and what is written is what the user dictated into that pane.
-    private func resolveOpencodePromptRoute() async -> OpencodePromptRoute? {
-        guard let resolver = claudeSessionJoinResolver,
-              resolver.registry.hasFreshOpencodePromptRelay()
-        else { return nil }
-        let relay: OpencodePromptRelay?
-        if let join = claudeSessionJoin {
-            guard join.snapshot.agent == .opencode else { return nil }
-            relay = resolver.registry.opencodePromptRelay(sessionID: join.snapshot.sessionID)
-        } else if let target = TerminalScreenContextSource.frontmostTarget() {
-            relay = await resolver.opencodePromptRelay(target: target)
-        } else {
-            relay = nil
-        }
-        let startPID = TerminalScreenContextSource.frontmostTarget()?.pid
-        return relay.map { relay in
-            OpencodePromptRoute(relay: relay, keysReachThePrompt: { @MainActor in
-                // The terminal the dictation started in, still frontmost,
-                // and its focused pane still the one this relay serves.
-                guard let target = TerminalScreenContextSource.frontmostTarget(), target.pid == startPID
-                else { return false }
-                return await resolver.opencodePromptRelay(target: target) == relay
-            })
-        }
-    }
-
-    /// The joined herdr pane, written through herdr's socket (#726). With
-    /// no context join (polishing off), a pane of a LOCAL herdr, found by
-    /// the route's own lookup and never kept as a join (#759).
-    private func resolveHerdrPaneRoute() async -> HerdrPanePromptRoute? {
-        guard let resolver = claudeSessionJoinResolver else { return nil }
-        let frontmostPID: @MainActor () -> pid_t? = { TerminalScreenContextSource.frontmostTarget()?.pid }
-        if let join = claudeSessionJoin {
-            return resolver.herdrPromptRoute(for: join, frontmostPID: frontmostPID)
-        }
-        guard !contextJoinAskedTheArms,
-              let target = TerminalScreenContextSource.frontmostTarget()
-        else { return nil }
-        return await resolver.localHerdrPromptRoute(target: target, frontmostPID: frontmostPID)
-    }
-
     /// The joined cmux surface's route (#727). Only for a cmux join, which
     /// proves the surface and the socket's peer. Writing needs none of the
     /// context join's gates (context settings, polishing endpoint,
@@ -297,8 +249,6 @@ final class SessionContextResolver {
     /// Buffer commit fills through the mod on its own (#1409).
     func resolveAgentPromptRoute(liveAutoPaste: Bool = false, isCurrent: @MainActor () -> Bool = { true }) async {
         var route: (any AgentPromptRoute)? = liveAutoPaste ? await resolveClaudeModRoute() : nil
-        if route == nil { route = await resolveOpencodePromptRoute() }
-        if route == nil { route = await resolveHerdrPaneRoute() }
         if route == nil { route = await resolveCmuxSurfaceRoute() }
         guard isCurrent() else { return }
         agentPromptRoute = route
@@ -367,6 +317,10 @@ final class SessionContextResolver {
         if ClaudeDesktopAllowlist.isSupported(target.bundleID),
            !settings.claudeRepoContextEnabled {
             return .gated(.desktopWithoutSessionContext)
+        }
+        if T3CodeAllowlist.isSupported(target.bundleID),
+           !settings.claudeRepoContextEnabled {
+            return .gated(.t3WithoutSessionContext)
         }
         return .resolved(await resolver.resolution(target: target))
     }

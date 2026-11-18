@@ -51,7 +51,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testSessionStartRefusesWhileADictationIsAlreadyRunning() async {
         let viewModel = makeViewModel()
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         let service = makeService(viewModel: viewModel)
 
         let refusal = await expectFailure(service, .sessionStart(.overlayBuffer))
@@ -72,7 +72,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testSessionStopEndsARunningDictationThroughTheGesturePath() async {
         let viewModel = makeViewModel()
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         let service = makeService(viewModel: viewModel)
 
         let reply = await expectSuccess(service, .sessionStop)
@@ -86,15 +86,14 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testAnExplicitStopReleasesTheCap() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         let gate = SleepGate()
         let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
 
         _ = await service.execute(.sessionStart(.overlayBuffer))
         XCTAssertTrue(service.isAutoStopArmed)
 
-        viewModel.isConnectingRealtimeSession = false
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         _ = await service.execute(.sessionStop)
 
         XCTAssertFalse(service.isAutoStopArmed, "a stopped session must not stay inside a cap")
@@ -102,7 +101,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testTheCapStopsASessionThatOutlivedIt() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         let gate = SleepGate()
         let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
 
@@ -112,8 +111,7 @@ final class DogfoodControlServiceTests: XCTestCase {
         XCTAssertEqual(reply["autoStopSeconds"] as? Int, 7)
 
         // The client is gone; the cap's window expires.
-        viewModel.isConnectingRealtimeSession = false
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         guard let cap = service.autoStopTaskForTesting else {
             return XCTFail("the cap must be armed before its window expires")
         }
@@ -135,7 +133,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// cannot see. Nothing else would ever stop it.
     func testAStopWhileConnectingNeverLeavesAnUncappedSessionBehind() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         let gate = SleepGate()
         let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
 
@@ -159,7 +157,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// STAY armed rather than be released on the assumption that it did.
     func testAStopThatCannotSettleThePhaseKeepsTheCapArmed() async {
         let viewModel = makeViewModel()
-        viewModel.isAwaitingMicrophonePermission = true
+        viewModel.phase = .awaitingMicrophonePermission
         let gate = SleepGate()
         let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
 
@@ -186,7 +184,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// that, because it advances at every dictation start.
     func testTheCapDoesNotStopADictationThatIsNotTheOneItArmedFor() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         let gate = SleepGate()
         let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
 
@@ -198,8 +196,7 @@ final class DogfoodControlServiceTests: XCTestCase {
         // second nor anything after it.
         DiagnosticCaptureTap.shared.beginSession()
         DiagnosticCaptureTap.shared.beginSession()
-        viewModel.isConnectingRealtimeSession = false
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         guard let cap = service.autoStopTaskForTesting else {
             return XCTFail("the cap must be armed before its window expires")
@@ -218,7 +215,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// session went live unbounded once the backend was ready.
     func testTheCapAbortsASessionStillConnectingWhenItExpires() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.session.managedStartupTaskID = UUID()
         let sleeps = ParkedCapSleeps()
         let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
@@ -240,7 +237,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// task does.
     func testTheCapLeavesAnotherStartsConnectAlone() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         viewModel.session.managedStartupTaskID = UUID()
         let sleeps = ParkedCapSleeps()
         let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
@@ -263,7 +260,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// it goes live.
     func testTheCapOutlastsAnUnansweredMicrophonePrompt() async {
         let viewModel = makeViewModel()
-        viewModel.isAwaitingMicrophonePermission = true
+        viewModel.phase = .awaitingMicrophonePermission
         let sleeps = ParkedCapSleeps()
         let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
 
@@ -281,8 +278,7 @@ final class DogfoodControlServiceTests: XCTestCase {
         XCTAssertTrue(service.isAutoStopArmed, "the prompt is still up, so the cap must not disarm")
 
         // The user answers; the session goes live and is still ours.
-        viewModel.isAwaitingMicrophonePermission = false
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         sleeps.releaseOne()
         await cap.value
 
@@ -291,7 +287,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testShutdownReleasesTheCapSoAQuitDoesNotLeaveItWaiting() async {
         let viewModel = makeViewModel()
-        viewModel.isConnectingRealtimeSession = true
+        viewModel.phase = .connecting
         let gate = SleepGate()
         let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
 
@@ -508,7 +504,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 
     func testSurfaceProbeRefusesWhileADictationIsResolvingItsOwnJoin() async {
         let viewModel = makeViewModel()
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         let service = makeService(viewModel: viewModel)
 
         let refusal = await expectFailure(service, .surfaceProbe)

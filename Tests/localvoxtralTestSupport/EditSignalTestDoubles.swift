@@ -2,8 +2,8 @@ import Foundation
 import Synchronization
 import localvoxtralCore
 
-// The edit-signal doubles `EditSignalTests`, `DiagnosticRecordWiringTests` and
-// `AddressedSendWiringTests` share.
+// The edit-signal doubles `EditSignalTests` and `DiagnosticRecordWiringTests`
+// share.
 
 /// A key source the watcher can be driven from without an event stream, an
 /// Accessibility grant, or the host's keyboard.

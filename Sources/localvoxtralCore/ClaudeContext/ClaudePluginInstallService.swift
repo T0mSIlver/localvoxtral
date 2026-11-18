@@ -354,6 +354,16 @@ public struct ClaudePluginInstallService: Sendable {
         try perform(.update)
         performModStep(.updateMod)
     }
+
+    /// The unattended update when the plugin is current and only the mod is
+    /// behind: a mod change can ship under an unchanged plugin version.
+    /// Not best-effort like `performModStep`: this is the whole flow, so its
+    /// failure reaches the caller's log. A mod that is not installed is never
+    /// installed here; the caller asks only after the listing named one.
+    public func updateInstalledMod() throws {
+        try perform(.addMarketplace)
+        try perform(.updateMod)
+    }
 }
 
 #if canImport(Darwin) || canImport(Glibc)

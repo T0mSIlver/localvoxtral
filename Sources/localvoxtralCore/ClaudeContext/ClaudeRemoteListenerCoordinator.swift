@@ -90,10 +90,9 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
         onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
-        quickCapture: RemoteQuickCaptureRequests? = nil,
+        projectReports: RemoteProjectReports? = nil,
         doctor: RemoteDoctorRoute? = nil,
-        modChannels: ClaudeRemoteModChannels? = nil,
-        inbox: RemoteInboxRoute? = nil
+        modChannels: ClaudeRemoteModChannels? = nil
     ) {
         self.init(hosts: hosts, sessions: sessions, modChannels: modChannels) { registry, rejections in
             ClaudeRemoteContextListener(
@@ -104,10 +103,9 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
                 onRemoteHerdrActivity: onRemoteHerdrActivity,
                 onRemoteSkills: onRemoteSkills,
                 projectTerms: projectTerms,
-                quickCapture: quickCapture,
+                projectReports: projectReports,
                 doctor: doctor,
-                modChannels: modChannels,
-                inbox: inbox
+                modChannels: modChannels
             )
         }
     }

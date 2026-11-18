@@ -85,7 +85,7 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
             while shared.marking.withLock({ $0 }) {
                 for session in sessions.liveSessions() where !marked.contains(session.sessionID) {
                     shared.seen.withLock { _ = $0.insert(session.sessionID) }
-                    if requests.request(for: session, excluding: []) { marked.insert(session.sessionID) }
+                    if requests.request(for: session, excluding: { [] }) { marked.insert(session.sessionID) }
                 }
                 usleep(20_000)
             }

@@ -22,28 +22,13 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         XCTAssertEqual(OverlayLayoutMetrics(bodyFontSize: 16).bodyFontSize, 16)
     }
 
-    // MARK: - Base size preserves the legacy fixed layout
+    // MARK: - Empty buffer
 
-    func testBaseFontSizeReproducesLegacyLayoutConstants() {
-        XCTAssertEqual(baseMetrics.scale, 1.0)
-        XCTAssertEqual(baseMetrics.bodyFontSize, 13)
-        XCTAssertEqual(baseMetrics.titleFontSize, 11)
-        XCTAssertEqual(baseMetrics.errorFontSize, 11)
-        XCTAssertEqual(baseMetrics.headerHeight, 16)
-        XCTAssertEqual(baseMetrics.panelMinWidth, 400)
-        XCTAssertEqual(baseMetrics.panelWidth, 420)
-        XCTAssertEqual(baseMetrics.panelMaxWidth, 540)
-        XCTAssertEqual(baseMetrics.maximumPanelHeight, 420)
-        XCTAssertEqual(baseMetrics.textMeasurementWidth, 400)
-    }
-
-    func testBaseEmptyTextContentHeightMatchesLegacyFormula() {
-        // Legacy measureContentHeight: padding(20) + header(16) + spacing(8)
-        // + one body line.
-        let expected = 20 + 16 + 8 + baseMetrics.bodyLineHeight
-        XCTAssertEqual(baseMetrics.contentHeight(text: "", errorMessage: nil), expected)
+    func testWhitespaceOnlyBufferHeightEqualsEmpty() {
         // Whitespace-only buffers render as empty.
-        XCTAssertEqual(baseMetrics.contentHeight(text: "  \n ", errorMessage: nil), expected)
+        XCTAssertEqual(
+            baseMetrics.contentHeight(text: "  \n ", errorMessage: nil),
+            baseMetrics.contentHeight(text: "", errorMessage: nil))
     }
 
     func testDefaultFontSizeIs14AndWithinSupportedRange() {
@@ -64,21 +49,6 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         XCTAssertGreaterThan(
             large.contentHeight(text: text, errorMessage: nil),
             baseMetrics.contentHeight(text: text, errorMessage: nil))
-    }
-
-    func testBodyHeightCapsAtFourLinesRegardlessOfFontSize() {
-        for size in [OverlayLayoutMetrics.minimumBodyFontSize, 13, 18, 24] {
-            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
-            let longText = String(repeating: "scrolling buffer text keeps growing ", count: 60)
-            XCTAssertEqual(
-                metrics.bodyTextHeight(for: longText),
-                metrics.maxScrollableBodyHeight,
-                "font size \(size)")
-            XCTAssertGreaterThan(
-                metrics.unclampedBodyTextHeight(for: longText),
-                metrics.maxScrollableBodyHeight,
-                "font size \(size)")
-        }
     }
 
     // MARK: - Session lock (opencode review finding, PR #104)
@@ -143,12 +113,25 @@ final class OverlayLayoutMetricsTests: XCTestCase {
                     metrics.unclampedBodyTextHeight(for: overflows),
                     metrics.maxScrollableBodyHeight, "\(context): N+1 lines don't scroll")
                 XCTAssertEqual(
+                    metrics.bodyTextHeight(for: overflows),
+                    metrics.maxScrollableBodyHeight, "\(context): body row isn't capped")
+                XCTAssertEqual(
                     metrics.maxScrollableBodyHeight,
                     swiftUIRenderedHeight(
                         fits, fontSize: metrics.bodyFontSize, width: metrics.textMeasurementWidth)
                         + OverlayBodyScrollContent.bottomAnchorHeight,
                     accuracy: 1, "\(context): viewport isn't N whole lines")
             }
+        }
+        // The cap holds at every font size the setting offers, not only the
+        // three rendered above.
+        for size in fontSizeRange {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            let overflows = Array(repeating: "dictated line", count: metrics.visibleLines + 1)
+                .joined(separator: "\n")
+            XCTAssertEqual(
+                metrics.bodyTextHeight(for: overflows),
+                metrics.maxScrollableBodyHeight, "font size \(size): body row isn't capped")
         }
     }
 
@@ -256,36 +239,6 @@ final class OverlayLayoutMetricsTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(
                 added, OverlayLayoutMetrics.stackSpacing + rendered,
                 "error row clips its last line at font size \(size)")
-        }
-    }
-
-    /// The open destination list (#1015) grows the panel by what the view
-    /// draws for it, at both ends of the font setting, below and past the
-    /// rows it shows before scrolling.
-    func testTheOpenDestinationListAddsWhatTheViewDraws() {
-        for size in [OverlayLayoutMetrics.minimumBodyFontSize, OverlayLayoutMetrics.maximumBodyFontSize] {
-            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
-            for waiting in [1, 10] {
-                func strip(open: Bool) -> OverlayDestinationStrip {
-                    OverlayDestinationStrip(
-                        list: DictationDestinationList(
-                            waitingSessionIDs: (0..<waiting).map { "s\($0)" }, focusedSessionID: nil),
-                        focusedAppLabel: "app", focusedAppJoined: nil, sessionName: { $0 }, isOpen: open)
-                }
-                func rendered(_ strip: OverlayDestinationStrip) -> CGFloat {
-                    let view = DictationOverlayView(
-                        phase: .buffering, text: "hello", errorMessage: nil, secureInputActive: false,
-                        metrics: metrics, destinations: strip)
-                        .frame(width: metrics.panelWidth)
-                    return NSHostingController(rootView: view)
-                        .sizeThatFits(in: CGSize(width: metrics.panelWidth, height: .greatestFiniteMagnitude))
-                        .height
-                }
-                let drawn = rendered(strip(open: true)) - rendered(strip(open: false))
-                let sized = metrics.contentHeight(text: "hello", errorMessage: nil, destinations: strip(open: true))
-                    - metrics.contentHeight(text: "hello", errorMessage: nil, destinations: strip(open: false))
-                XCTAssertEqual(sized, drawn, accuracy: 0.5, "font size \(size), \(waiting) waiting")
-            }
         }
     }
 

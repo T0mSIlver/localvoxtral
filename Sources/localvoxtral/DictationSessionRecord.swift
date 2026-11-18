@@ -1,12 +1,6 @@
 import Foundation
 import SwiftData
 
-enum DictationSessionStatus: String, Codable, Sendable {
-    case sttCompleted = "stt_completed"
-    case completed = "completed"
-    case llmFailed = "llm_failed"
-}
-
 @Model
 final class DictationSessionRecord {
     var id: UUID
@@ -41,13 +35,14 @@ final class DictationSessionRecord {
     var projectName: String?
     /// `claude`, `vibe`, `opencode`: the agent whose session it joined.
     var joinedAgent: String?
-    /// Where a quick capture went (#725): "Inbox" when saved, then the
+    /// Where a quick capture went (#725), on a record saved before quick
+    /// capture was removed: "Inbox" when saved, then the
     /// project it was routed to, then "Filed in owner/name". Nil for every
     /// other dictation. Additive optional field, like those above.
     var quickCaptureDestination: String?
 
     /// `outputMode` of a quick capture, which is never inserted anywhere.
-    static let quickCaptureOutputMode = "quickCapture"
+    static let quickCaptureOutputMode = DictationHistoryEntry.quickCaptureOutputMode
 
     /// Whether the user erased the insertion within seconds of it
     /// (`EditSignalOutcome`: `edited`, `clean`, `superseded`), copied from the

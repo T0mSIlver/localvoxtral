@@ -306,19 +306,21 @@ extension DictationSessionController {
     ) {
         audio.cancelSendAndCommitTasks()
         audio.healthMonitor.stop()
-        isAwaitingMicrophonePermission = false
         audio.stopSessionAudioCapture()
         // Here and not at the drop: a reconnect keeps the session running, and
         // fading the user's music back mid-sentence would announce a blip they
         // were never meant to notice. This is the end of the line.
         audio.audioDucking.restoreAfterSession()
-        isDictating = false
+        phase = .finalizing
         disarmSilenceAutoStop()
         disarmSpokenStop()
         escapeCancelHandler.stop()
-        endDestinations()
         ownStopWithoutFinalization()
+        // A polish or second pass commits after this returns, and its end
+        // would otherwise say Ready with the idle icon (#2065).
+        stoppedOnItsOwnStatus = Self.connectionLostMessage
         finishStoppedSession(promotePendingSegment: true)
+        holdFailureIndicatorUntilStopCompletes = isFinalizingStop
         statusText = Self.connectionLostMessage
         lastError = Self.connectionLostMessage
         logConnectionFailure(

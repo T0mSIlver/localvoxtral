@@ -37,7 +37,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 
         // Configure the VM as an active Live Auto-Paste session so
         // `handle(event:)` accepts and routes transcript events.
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         // Capture every chunk the insertion service would type, and report
         // success so the pending buffer drains synchronously each enqueue.

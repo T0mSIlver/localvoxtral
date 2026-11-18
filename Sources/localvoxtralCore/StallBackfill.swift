@@ -30,6 +30,23 @@ package enum StallBackfill {
         return loudest >= speechLevelDBFS
     }
 
+    /// Whether a recording holds speech: its loudest 100 ms reaches
+    /// `speechLevelDBFS`, the bar a stall clears to be backfilled.
+    package static func recordingReachesSpeech(pcm16: Data) -> Bool {
+        let window = 3_200
+        var offset = pcm16.startIndex
+        while offset < pcm16.endIndex {
+            let end = min(offset + window, pcm16.endIndex)
+            if let level = MistralStreamHealth.rmsDBFS(pcm16: pcm16[offset..<end]),
+                level >= speechLevelDBFS
+            {
+                return true
+            }
+            offset = end
+        }
+        return false
+    }
+
     /// Bytes of 16 kHz mono PCM16 to take from the end of the recording: the
     /// audio sent since the last server event, plus `leadSeconds`. Even, so
     /// the slice starts on a sample.

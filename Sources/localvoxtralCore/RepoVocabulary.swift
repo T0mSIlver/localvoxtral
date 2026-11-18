@@ -286,17 +286,12 @@ package enum RepoIndexing {
         return result
     }
 
-    /// Builds the vocabulary from relative paths + the branch: each path's
+    /// The vocabulary terms from relative paths + the branch: each path's
     /// basename (with extension), plus its directory components as auxiliary
     /// words, plus the branch name — each admitted only when it carries a
     /// technical signal (`isTechnicalTerm`). Deduped, first-appearance order.
-    package static func buildVocabulary(paths: [String], branch: String?) -> RepoVocabulary {
-        RepoVocabulary(terms: buildVocabularyTerms(paths: paths, branch: branch), branch: branch)
-    }
-
-    /// Builds only the ordered term list, without constructing matcher indexes.
-    /// Callers that need to merge another structured source can do that first,
-    /// then initialize `RepoVocabulary` once for the final combined terms.
+    /// Callers merge any other structured source, then build `RepoVocabulary`
+    /// once from the combined terms.
     package static func buildVocabularyTerms(paths: [String], branch: String?) -> [String] {
         var terms: [String] = []
         var seen = Set<String>()

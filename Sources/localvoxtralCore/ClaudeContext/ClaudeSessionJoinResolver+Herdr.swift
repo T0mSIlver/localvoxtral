@@ -65,8 +65,7 @@ extension ClaudeSessionJoinResolver {
     /// herdr client showing the local machine: the one live local socket's
     /// focused pane, the live local session registered in it, herdr's own
     /// session claim not disagreeing, and that session's pid in the pane's
-    /// foreground. Shared by the context join and the opencode relay
-    /// lookup (#733), which must accept exactly what the join accepts.
+    /// foreground.
     package func focusedLocalHerdrPaneSession(
         abstain: (String) -> Void
     ) async -> (pane: HerdrFocusedPane, snapshot: ClaudeSessionSnapshot, socketPath: String)? {
@@ -152,81 +151,6 @@ extension ClaudeSessionJoinResolver {
         }
         return await herdrPanes.paneVisibleText(
             socketPath: binding.socketPath, paneID: binding.paneID
-        )
-    }
-
-    /// The route that writes this dictation into the joined herdr pane
-    /// (#726), or nil when the join is not a herdr pane join. Like
-    /// `herdrPaneVisibleText(for:)`, it is keyed by the binding the arm
-    /// captured, so it reaches only the pane the join resolved, over the
-    /// socket (or forward) the join already trusted. Before each Enter it
-    /// asks that pane again whether the joined agent is foreground, with the
-    /// same test the arm joined on: the pid for a local pane, the parent pid
-    /// or agent name for a remote one. `frontmostPID` names the app keys
-    /// would go to, for the fallback's choice between typing and History;
-    /// that choice also needs the surface the join recorded to show the same
-    /// machine still (`displaysJoinedSurface`).
-    package func herdrPromptRoute(
-        for join: ClaudeSessionJoin,
-        frontmostPID: @escaping @MainActor () -> pid_t?
-    ) -> HerdrPanePromptRoute? {
-        let mechanism = join.mechanism
-        guard mechanism == .herdrPane
-            || mechanism == .remoteHerdrPane
-            || mechanism == .federatedHerdrPane,
-            let binding = join.herdrPane
-        else { return nil }
-        return herdrPromptRoute(
-            binding: binding,
-            snapshot: join.snapshot,
-            mechanism: mechanism,
-            terminal: join.target,
-            surface: join.herdrSurface,
-            frontmostPID: frontmostPID
-        )
-    }
-
-    /// The route over one herdr pane binding, found by a join or by the
-    /// local lookup without one (#759).
-    package func herdrPromptRoute(
-        binding: ClaudeHerdrPaneBinding,
-        snapshot: ClaudeSessionSnapshot,
-        mechanism: ClaudeSessionJoinMechanism,
-        terminal: TerminalScreenTarget,
-        surface: HerdrJoinedSurface?,
-        frontmostPID: @escaping @MainActor () -> pid_t?
-    ) -> HerdrPanePromptRoute? {
-        guard let writer = herdrPaneWriter, let panes = herdrPanes else { return nil }
-        // A remote or federated pane is written over a forward to an enrolled
-        // host; one whose session names no host fails closed.
-        let remoteHostID = Self.remoteHostID(of: snapshot)
-        return HerdrPanePromptRoute(
-            binding: binding,
-            writer: writer,
-            agentIsForeground: { @MainActor in
-                guard let processes = await panes.paneForegroundInfo(
-                    socketPath: binding.socketPath, paneID: binding.paneID
-                )?.foregroundProcesses else { return false }
-                if mechanism == .herdrPane {
-                    guard let pid = snapshot.process?.claudePID else { return false }
-                    return processes.contains { $0.pid == pid }
-                }
-                return Self.remoteAgentIsForeground(
-                    snapshot: snapshot, foregroundProcesses: processes, noteAbstention: { _ in }
-                )
-            },
-            keysReachThePane: { @MainActor in
-                // The frontmost app is read after the socket and the surface
-                // answer, so a focus change during either query is seen.
-                guard let surface,
-                      await panes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID,
-                      await self.displaysJoinedSurface(surface, terminal: terminal)
-                else { return false }
-                return frontmostPID() == terminal.pid
-            },
-            hostIsEnrolled: mechanism == .herdrPane ? nil : { @MainActor in
-                remoteHostID.map(self.remoteHostIsEnrolled) ?? false
-            }
         )
     }
 

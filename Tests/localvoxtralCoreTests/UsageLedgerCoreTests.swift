@@ -4,9 +4,9 @@ import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 /// The usage ledger's record of every model call, by feature and backend
-/// (#837): the line format old and new builds share, the two summaries, and
-/// the quick-capture routers that write it. The other writers are tested
-/// beside their own suites.
+/// (#837): the line format old and new builds share, the two summaries
+/// and how a ledger written before quick capture was removed still adds up.
+/// The writers are tested beside their own suites.
 final class UsageLedgerCoreTests: XCTestCase {
     private let moment = Date(timeIntervalSince1970: 1_800_000_000)
 
@@ -280,94 +280,6 @@ final class UsageLedgerCoreTests: XCTestCase {
         XCTAssertEqual(
             line(Array(repeating: entry(.projectTerms, .claudeCode, usd: 0.001), count: 1_200)),
             "1,200 · $1.20 of Claude usage", "counts group digits")
-    }
-
-    // MARK: - Quick-capture routing
-
-    private static let options = [
-        QuickCaptureOption(id: "quill", projectKey: "/w/quill", description: "Project quill."),
-        QuickCaptureOption(id: QuickCaptureRouting.catchAllID, projectKey: nil, description: "Anything else."),
-    ]
-
-    func testTheChatRouterRecordsEveryAnswerWithItsUsage() async throws {
-        let ledger = UsageLedger(fileURL: nil)
-        let classifier = QuickCaptureChatClassifier(
-            configuration: LLMPolishingConfiguration(
-                endpointURL: URL(string: "https://\(StubHTTPProtocol.host)")!,
-                apiKey: "k", model: "zai-glm-5-3", requestShape: .mistral),
-            session: StubHTTPProtocol.session(), usageRecorder: ledger, now: { [moment] in moment })
-
-        StubHTTPProtocol.reply.withLock {
-            $0 = .http(200, #"""
-                {"model":"zai-glm-5-3","choices":[{"message":{"content":"{\"project\":\"quill\",\"confidence\":0.9}"}}],
-                 "usage":{"prompt_tokens":1356,"completion_tokens":57,"prompt_tokens_details":{"cached_tokens":1216}}}
-                """#)
-        }
-        _ = try await classifier.classify(capture: "c", options: Self.options)
-        // Billed even though the answer is unusable.
-        StubHTTPProtocol.reply.withLock { $0 = .http(200, #"{"choices":[]}"#) }
-        _ = try? await classifier.classify(capture: "c", options: Self.options)
-        StubHTTPProtocol.reply.withLock { $0 = .http(429, "{}") }
-        _ = try? await classifier.classify(capture: "c", options: Self.options)
-
-        let entries = ledger.entries()
-        XCTAssertEqual(entries.count, 2, "a refusal is not recorded")
-        XCTAssertEqual(entries.map(\.feature), [.quickCaptureRouting, .quickCaptureRouting])
-        XCTAssertEqual(entries.first?.promptTokens, 1_356)
-        XCTAssertEqual(entries.first?.cachedPromptTokens, 1_216)
-        XCTAssertEqual(entries.first?.completionTokens, 57)
-        XCTAssertNotNil(entries.first?.costEUR)
-        XCTAssertNil(entries.last?.costEUR, "no usage, unpriced")
-    }
-
-    func testJevRecordsEachAnsweredCallButNotItsRetries() async throws {
-        let ledger = UsageLedger(fileURL: nil)
-        let classifier = JevClassifier(
-            host: .typesafe, apiKey: "k", session: StubHTTPProtocol.session(), sleep: { _ in },
-            usageRecorder: ledger, now: { [moment] in moment })
-
-        StubHTTPProtocol.reply.withLock { $0 = .http(429, #"{"detail":"busy"}"#) }
-        _ = try? await classifier.classify(capture: "c", options: Self.options)
-        XCTAssertTrue(ledger.entries().isEmpty)
-
-        StubHTTPProtocol.reply.withLock {
-            $0 = .http(200, #"{"answers":{"project":{"type":"choice","choice":"quill","probabilities":{"quill":0.95,"inbox":0.05}}}}"#)
-        }
-        _ = try await classifier.classify(capture: "c", options: Self.options)
-
-        XCTAssertEqual(
-            ledger.entries(),
-            [UsageEntry(date: moment, feature: .quickCaptureRouting, backend: .jev, model: "jev-latest")])
-    }
-
-    /// The Vercel gateway reports Jev's token counts (JevClassifierTests'
-    /// recorded answer); the call is priced at Jev's per-token list price.
-    func testAJevAnswerWithTokenCountsIsPricedPerInputToken() async throws {
-        let ledger = UsageLedger(fileURL: nil)
-        let classifier = JevClassifier(
-            host: .vercelGateway, apiKey: "k", session: StubHTTPProtocol.session(), sleep: { _ in },
-            usageRecorder: ledger, now: { [moment] in moment })
-        StubHTTPProtocol.reply.withLock {
-            $0 = .http(200, #"{"answers":{"project":{"type":"choice","choice":"quill","probabilities":{"quill":0.95,"inbox":0.05}}},"usage":{"inputTokens":358,"outputTokens":45}}"#)
-        }
-        _ = try await classifier.classify(capture: "c", options: Self.options)
-
-        let entry = try XCTUnwrap(ledger.entries().first)
-        XCTAssertEqual(entry.backend, .jev)
-        XCTAssertEqual(entry.model, "typesafe-ai/jev")
-        XCTAssertEqual(entry.promptTokens, 358)
-        XCTAssertEqual(entry.completionTokens, 45)
-        XCTAssertEqual(try XCTUnwrap(entry.costUSD), 358 * 0.042 / 1_000_000, accuracy: 1e-15)
-        let row = try XCTUnwrap(FeatureUsage.summarize(ledger.entries(), since: nil).first)
-        XCTAssertEqual(row.unpricedPaidCalls, 0)
-        XCTAssertEqual(row.line(locale: Locale(identifier: "en_US")), "1 · < $0.01 on Jev")
-        XCTAssertEqual(
-            FeatureUsage.summarize(
-                Array(repeating: entry, count: 1_000) + [UsageEntry(date: moment, feature: .quickCaptureRouting, backend: .jev, model: "jev-latest")],
-                since: nil
-            ).first?.line(locale: Locale(identifier: "en_US")),
-            "1,001 · $0.02 on Jev + 1 unpriced", "an answer without counts stays unpriced"
-        )
     }
 
     // MARK: -

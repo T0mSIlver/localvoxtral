@@ -170,6 +170,16 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         ])
     }
 
+    /// LVX-98: the mod-only launch update touches the mod and nothing else.
+    func testLaunchModUpdateUpdatesOnlyTheMod() throws {
+        let runner = RecordingRunner()
+        try makeService(runner: runner).updateInstalledMod()
+        XCTAssertEqual(runner.argumentLists, [
+            ["plugin", "marketplace", "add", marketplace.path],
+            ["plugin", "update", "localvoxtral-mod@localvoxtral"],
+        ])
+    }
+
     func testUninstallRemovesPluginThenMarketplace() throws {
         let runner = RecordingRunner()
         try makeService(runner: runner).uninstallPlugin()

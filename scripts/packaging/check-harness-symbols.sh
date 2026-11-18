@@ -25,8 +25,9 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 # The socket's three types, the WAV source, the socket's runtime switch and the
-# WAV's launch variable. Each is compiled only under
-# `DEBUG || LOCALVOXTRAL_E2E_HARNESS`.
+# WAV's launch variable; then the switches of the two debug logs that log
+# dictated text public, the realtime delta log and the insertion scalar trace
+# (LVX-80). Each is compiled only under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`.
 HARNESS_TOKENS=(
   DogfoodControlSocket
   DogfoodControlService
@@ -34,6 +35,8 @@ HARNESS_TOKENS=(
   DogfoodAudioFileSource
   dogfood_control_socket_enabled
   LOCALVOXTRAL_DOGFOOD_AUDIO_FILE
+  debug.log_realtime_deltas
+  insertion_scalar_trace
 )
 CONTROL_TOKEN=DictationSessionController
 

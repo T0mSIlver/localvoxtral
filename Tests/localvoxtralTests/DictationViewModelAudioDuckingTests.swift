@@ -84,7 +84,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
     func testStopWithoutADuckLeavesTheVolumeAlone() async {
         // The setting is off: stopping must not write a volume of its own.
         let (viewModel, volume) = makeSession(duckingEnabled: false)
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
         await viewModel.audio.audioDucking.debugFadeTask?.value
@@ -113,7 +113,7 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
     ) async -> (DictationViewModel, FakeOutputVolumeControl) {
         let (viewModel, volume) = makeSession(
             duckingEnabled: true, lifecycleCenter: lifecycleCenter, workspaceCenter: workspaceCenter)
-        viewModel.isDictating = true
+        viewModel.phase = .dictating
         viewModel.audio.audioDucking.duckForSessionStart()
         await viewModel.audio.audioDucking.debugFadeTask?.value
         assertVolume(volume.volume(of: Self.deviceA), Self.duckTarget, "precondition: ducked")
